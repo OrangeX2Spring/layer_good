@@ -9,7 +9,7 @@ from PIL import Image
 
 os.environ['OPENCV_IO_ENABLE_OPENEXR'] = '1'
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-os.environ["ATTN_BACKEND"] = "flash_attn_3"
+os.environ["ATTN_BACKEND"] = "flash_attn"
 os.environ["FLEX_GEMM_AUTOTUNE_CACHE_PATH"] = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'autotune_cache.json')
 os.environ["FLEX_GEMM_AUTOTUNER_VERBOSE"] = '1'
 
@@ -65,7 +65,8 @@ def build_image_cond_model(config: dict):
 
 def load_moge_model(device="cuda", model_name=MOGE_MODEL_NAME):
     from moge.model.v2 import MoGeModel
-    moge_model = MoGeModel.from_pretrained(model_name).to(device)
+    moge_model = MoGeModel.from_pretrained(model_name)
+    moge_model = moge_model.to(device)
     moge_model.eval()
     return moge_model
 
@@ -80,19 +81,22 @@ def init_pipeline(model_path=MODEL_PATH, device="cuda"):
     pipeline.image_cond_model_shape_1024 = build_image_cond_model(IMAGE_COND_CONFIGS["shape_1024"])
     pipeline.image_cond_model_tex_1024 = build_image_cond_model(IMAGE_COND_CONFIGS["tex_1024"])
 
-    pipeline.low_vram = False
-    pipeline.cuda()
+    # Pre-download/cache NAF weights now so the first inference doesn't stall.
+    # They load to CPU here; low_vram lazy-loading moves them to GPU alongside
+    # their DinoV3 extractor on demand.
+    print("[NAF] Pre-downloading NAF upsampler weights...")
+    for attr in ['image_cond_model_ss', 'image_cond_model_shape_512',
+                 'image_cond_model_shape_1024', 'image_cond_model_tex_1024']:
+        m = getattr(pipeline, attr, None)
+        if m is not None and getattr(m, 'use_naf_upsample', False):
+            m._load_naf()
 
-    pipeline.image_cond_model_ss.cuda()
-    pipeline.image_cond_model_shape_512.cuda()
-    pipeline.image_cond_model_shape_1024.cuda()
-    pipeline.image_cond_model_tex_1024.cuda()
-
-    print("[NAF] Pre-loading NAF upsampler model...")
-    for attr in ['image_cond_model_ss', 'image_cond_model_shape_512', 'image_cond_model_shape_1024', 'image_cond_model_tex_1024']:
-        model = getattr(pipeline, attr, None)
-        if model is not None and getattr(model, 'use_naf_upsample', False):
-            model._load_naf()
+    # Set target device. Keep low_vram=True (the default from the pipeline config).
+    # With low_vram=True every stage method (get_proj_cond_*, sample_*) already
+    # lazy-loads its model to GPU for that stage only, then immediately offloads it
+    # back to CPU. Peak VRAM = one flow model + one DinoV3, not all 18 GB at once.
+    pipeline._device = torch.device(device)
+    pipeline.low_vram = True
 
     return pipeline
 
@@ -166,10 +170,11 @@ def run_inference(
     model_path: str = MODEL_PATH,
     manual_fov: float = -1.0,
 ):
-    # Load models
+    # Load models (all stay on CPU; low_vram lazy-loading moves each to GPU per stage)
     pipeline = init_pipeline(model_path)
 
-    # Preprocess image
+    # Preprocess image first — rembg loads to GPU for this call, then offloads.
+    # MoGe is loaded afterwards so both never occupy VRAM at the same time.
     print(f"[Inference] Processing image: {image_path}")
     img = Image.open(image_path)
     image_preprocessed = pipeline.preprocess_image(img)
@@ -200,6 +205,10 @@ def run_inference(
             image_resolution=image_resolution,
         )
         print(f"  camera_angle_x={camera_params['camera_angle_x']:.4f}, distance={camera_params['distance']:.4f}")
+        # MoGe is only needed for camera estimation; free its VRAM for inference.
+        moge_model.cpu()
+        del moge_model
+        torch.cuda.empty_cache()
     os.remove(tmp_path)
 
     # Run pipeline

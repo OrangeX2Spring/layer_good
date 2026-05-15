@@ -67,7 +67,7 @@ def project_points_to_image_batch(
     points_homogeneous = torch.cat([points_3d_batch, ones], dim=-1)  # [B, N, 4]
     
     # Compute world to camera transformation matrix
-    world_to_camera = torch.linalg.inv(transform_matrix)  # [B, 4, 4]
+    world_to_camera = torch.linalg.inv(transform_matrix.float()).to(transform_matrix.dtype)  # linalg.inv requires fp32+
     
     # Batch transform to camera coordinate system: [B, N, 4] @ [B, 4, 4]^T -> [B, N, 3]
     points_camera = torch.bmm(points_homogeneous, world_to_camera.transpose(-2, -1))[..., :3]  # [B, N, 3]
@@ -453,7 +453,7 @@ class DinoV3ProjFeatureExtractor(nn.Module):
         hidden_states = self.model.embeddings(image, bool_masked_pos=None)
         position_embeddings = self.model.rope_embeddings(image)
 
-        for layer_module in self.model.layer:
+        for layer_module in self.model.model.layer:  # DINOv3ViTModel.model is the DINOv3ViTEncoder
             hidden_states = layer_module(
                 hidden_states,
                 position_embeddings=position_embeddings,
