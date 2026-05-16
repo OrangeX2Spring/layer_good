@@ -26,7 +26,7 @@ init_lock = threading.Lock()
 
 os.environ['OPENCV_IO_ENABLE_OPENEXR'] = '1'
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-os.environ["ATTN_BACKEND"] = "flash_attn_3"
+os.environ.setdefault("ATTN_BACKEND", "flash_attn")
 os.environ["FLEX_GEMM_AUTOTUNE_CACHE_PATH"] = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'autotune_cache.json')
 os.environ["FLEX_GEMM_AUTOTUNER_VERBOSE"] = '1'
 
@@ -120,6 +120,7 @@ def load_moge_model(device="cuda", model_name=MOGE_MODEL_NAME):
 pipeline = None
 moge_model = None
 envmap = None
+LOW_VRAM = os.environ.get("LOW_VRAM", "0") == "1"
 
 def init_models():
     global pipeline, moge_model, envmap
@@ -157,30 +158,47 @@ def init_models():
         pipeline.image_cond_model_shape_1024 = build_image_cond_model(IMAGE_COND_CONFIGS["shape_1024"])
         pipeline.image_cond_model_tex_1024 = build_image_cond_model(IMAGE_COND_CONFIGS["tex_1024"])
         
-        pipeline.low_vram = False
-        pipeline.cuda()
-        
-        # Ensure image_cond_models are on GPU
-        pipeline.image_cond_model_ss.cuda()
-        pipeline.image_cond_model_shape_512.cuda()
-        pipeline.image_cond_model_shape_1024.cuda()
-        pipeline.image_cond_model_tex_1024.cuda()
-        
-        print("[NAF] Pre-loading NAF upsampler model...")
-        for attr in ['image_cond_model_ss', 'image_cond_model_shape_512', 'image_cond_model_shape_1024', 'image_cond_model_tex_1024']:
-            model = getattr(pipeline, attr, None)
-            if model is not None and getattr(model, 'use_naf_upsample', False):
-                model._load_naf()
+        if LOW_VRAM:
+            # Low-VRAM mode: models stay on CPU, loaded to GPU on-demand per stage.
+            print("[NAF] Pre-downloading NAF upsampler weights (CPU only)...")
+            for attr in ['image_cond_model_ss', 'image_cond_model_shape_512',
+                         'image_cond_model_shape_1024', 'image_cond_model_tex_1024']:
+                m = getattr(pipeline, attr, None)
+                if m is not None and getattr(m, 'use_naf_upsample', False):
+                    m._load_naf()
+            pipeline._device = torch.device("cuda")
+            pipeline.low_vram = True
+            print("[Pipeline] Low-VRAM mode enabled.")
+        else:
+            # Standard mode: all models loaded to GPU at once.
+            pipeline.low_vram = False
+            pipeline.cuda()
+            pipeline.image_cond_model_ss.cuda()
+            pipeline.image_cond_model_shape_512.cuda()
+            pipeline.image_cond_model_shape_1024.cuda()
+            pipeline.image_cond_model_tex_1024.cuda()
+            print("[NAF] Pre-loading NAF upsampler model...")
+            for attr in ['image_cond_model_ss', 'image_cond_model_shape_512',
+                         'image_cond_model_shape_1024', 'image_cond_model_tex_1024']:
+                m = getattr(pipeline, attr, None)
+                if m is not None and getattr(m, 'use_naf_upsample', False):
+                    m._load_naf()
                 
         print("[MoGe-2] Loading model for camera estimation...")
-        moge_model = load_moge_model(device="cuda")
+        if LOW_VRAM:
+            # Low-VRAM: load MoGe to CPU, move to GPU on-demand per request.
+            moge_model = load_moge_model(device="cpu")
+            print("[MoGe-2] Low-VRAM mode: MoGe stays on CPU, loaded to GPU on-demand.")
+        else:
+            moge_model = load_moge_model(device="cuda")
         
         print("[EnvMap] Loading environment maps...")
         _base = os.path.dirname(os.path.abspath(__file__))
+        _envmap_device = 'cpu' if LOW_VRAM else 'cuda'
         envmap = {
-            'forest': EnvMap(torch.tensor(cv2.cvtColor(cv2.imread(os.path.join(_base, 'assets/hdri/forest.exr'), cv2.IMREAD_UNCHANGED), cv2.COLOR_BGR2RGB), dtype=torch.float32, device='cuda')),
-            'sunset': EnvMap(torch.tensor(cv2.cvtColor(cv2.imread(os.path.join(_base, 'assets/hdri/sunset.exr'), cv2.IMREAD_UNCHANGED), cv2.COLOR_BGR2RGB), dtype=torch.float32, device='cuda')),
-            'courtyard': EnvMap(torch.tensor(cv2.cvtColor(cv2.imread(os.path.join(_base, 'assets/hdri/courtyard.exr'), cv2.IMREAD_UNCHANGED), cv2.COLOR_BGR2RGB), dtype=torch.float32, device='cuda')),
+            'forest': EnvMap(torch.tensor(cv2.cvtColor(cv2.imread(os.path.join(_base, 'assets/hdri/forest.exr'), cv2.IMREAD_UNCHANGED), cv2.COLOR_BGR2RGB), dtype=torch.float32, device=_envmap_device)),
+            'sunset': EnvMap(torch.tensor(cv2.cvtColor(cv2.imread(os.path.join(_base, 'assets/hdri/sunset.exr'), cv2.IMREAD_UNCHANGED), cv2.COLOR_BGR2RGB), dtype=torch.float32, device=_envmap_device)),
+            'courtyard': EnvMap(torch.tensor(cv2.cvtColor(cv2.imread(os.path.join(_base, 'assets/hdri/courtyard.exr'), cv2.IMREAD_UNCHANGED), cv2.COLOR_BGR2RGB), dtype=torch.float32, device=_envmap_device)),
         }
 
 # ============================================================================
@@ -209,8 +227,13 @@ def get_camera_params_wild_moge(image_path, device="cuda", mesh_scale=1.0, exten
     width, height = pil_image.size
     image_np = np.array(pil_image).astype(np.float32) / 255.0
     image_tensor = torch.from_numpy(image_np).permute(2, 0, 1).to(device)
+    if LOW_VRAM:
+        moge_model.to(device)
     with torch.no_grad():
         output = moge_model.infer(image_tensor)
+    if LOW_VRAM:
+        moge_model.cpu()
+        torch.cuda.empty_cache()
     intrinsics = output["intrinsics"].squeeze().cpu().numpy()
     fx_normalized = intrinsics[0, 0]
     fx = fx_normalized * width
@@ -328,6 +351,11 @@ async def homepage():
     with open(html_path, "r", encoding="utf-8") as f:
         return HTMLResponse(content=f.read())
 
+@app.get("/app_config")
+async def get_config():
+    """Return server configuration for frontend (e.g. LOW_VRAM mode)."""
+    return JSONResponse({"low_vram": LOW_VRAM})
+
 @app.get("/progress")
 async def progress_poll(request: Request):
     """Polling endpoint for real-time progress updates during generation."""
@@ -438,12 +466,23 @@ def generate_3d(
     cam_dist = camera_params['distance']
     near = max(0.01, cam_dist - 2.0)
     far = cam_dist + 10.0
+    if LOW_VRAM:
+        for v in envmap.values():
+            v.image = v.image.cuda()
+            if hasattr(v, '_nvdiffrec_envlight'):
+                del v._nvdiffrec_envlight
     renders = render_utils.render_proj_aligned_video(
         mesh, camera_angle_x=camera_params['camera_angle_x'],
         distance=cam_dist, resolution=1024,
         num_frames=STEPS, envmap=envmap,
         near=near, far=far,
     )
+    if LOW_VRAM:
+        for v in envmap.values():
+            if hasattr(v, '_nvdiffrec_envlight'):
+                del v._nvdiffrec_envlight
+            v.image = v.image.cpu()
+        torch.cuda.empty_cache()
     _update_progress("Rendering views", 1, 1)
     
     # Save renders and return paths
@@ -500,9 +539,17 @@ app.mount("/assets", StaticFiles(directory="assets"), name="assets")
 app.mount("/tmp", StaticFiles(directory=TMP_DIR), name="tmp")
 
 if __name__ == "__main__":
+    import sys
+    parser = argparse.ArgumentParser(description="Pixal3D Demo Server")
+    parser.add_argument("--low_vram", action="store_true",
+                        help="Enable low-VRAM mode: models lazy-load to GPU per stage.")
+    args, remaining = parser.parse_known_args()
+    if args.low_vram:
+        LOW_VRAM = True
+
     # Re-install utils3d as in original app.py
     subprocess.run([
-        "pip", "install", "--force-reinstall", "--no-deps",
+        sys.executable, "-m", "pip", "install", "--force-reinstall", "--no-deps",
         "https://github.com/LDYang694/Storages/releases/download/20260430/utils3d-0.0.2-py3-none-any.whl"
     ], check=True)
     

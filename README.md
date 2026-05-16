@@ -78,8 +78,29 @@ pip install https://github.com/LDYang694/Storages/releases/download/20260430/uti
 Generate a GLB mesh from a single image:
 
 ```bash
-python inference.py --image assets/test_image/0.png --output ./output.glb
+python inference.py --image assets/images/0_img.png --output ./output.glb
 ```
+
+**Low-VRAM mode** (reduces peak VRAM by loading models on-demand):
+
+```bash
+python inference.py --image assets/images/0_img.png --output ./output.glb --low_vram
+```
+
+By default, the pipeline resolution is **1536** (standard mode) or **1024** (low-VRAM mode). You can override this with `--resolution`:
+
+```bash
+# Force 1536 even in low-VRAM mode
+python inference.py --image assets/images/0_img.png --output ./output.glb --low_vram --resolution 1536
+
+# Force 1024 in standard mode
+python inference.py --image assets/images/0_img.png --output ./output.glb --resolution 1024
+```
+
+**Tip**: If you don't have `flash_attn` installed, you can use PyTorch's built-in SDPA backend instead:
+> ```bash
+> ATTN_BACKEND=sdpa python inference.py --image assets/images/0_img.png --output ./output.glb --low_vram
+> ```
 
 ### Web Demo
 
@@ -87,6 +108,14 @@ We provide a Gradio web demo for Pixal3D, which allows you to generate 3D meshes
 
 ```bash
 python app.py 
+```
+
+Low-VRAM mode is also available for the web demo. The frontend default resolution will automatically switch to 1024 in low-VRAM mode (1536 otherwise), but can be changed manually in the UI.
+
+```bash
+python app.py --low_vram
+# or via environment variable:
+LOW_VRAM=1 python app.py
 ```
 
 ## 🤗 Acknowledgements
