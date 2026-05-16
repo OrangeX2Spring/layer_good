@@ -453,7 +453,7 @@ class DinoV3ProjFeatureExtractor(nn.Module):
         hidden_states = self.model.embeddings(image, bool_masked_pos=None)
         position_embeddings = self.model.rope_embeddings(image)
 
-        for layer_module in self.model.model.layer:  # DINOv3ViTModel.model is the DINOv3ViTEncoder
+        for layer_module in self.model.layer:
             hidden_states = layer_module(
                 hidden_states,
                 position_embeddings=position_embeddings,

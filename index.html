@@ -650,7 +650,7 @@
                         <label>Target Resolution</label>
                         <select id="resolution">
                             <option value="1024">1024 (Balanced)</option>
-                            <option value="1536" selected>1536 (High Quality)</option>
+                            <option value="1536">1536 (High Quality)</option>
                         </select>
                     </div>
                     <div class="input-wrapper">
@@ -881,6 +881,14 @@
 
         async function init() {
             lucide.createIcons();
+            // Set default resolution based on server config (LOW_VRAM → 1024, else 1536)
+            try {
+                const cfgResp = await fetch('/app_config');
+                const cfg = await cfgResp.json();
+                document.getElementById('resolution').value = cfg.low_vram ? '1024' : '1536';
+            } catch (e) {
+                document.getElementById('resolution').value = '1536';
+            }
             try {
                 client = await Client.connect(window.location.origin);
                 setupUI();
