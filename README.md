@@ -30,6 +30,7 @@
 
 ## ✨ News
 
+- **May 2026**: Release training code and data preparation toolkit. 🔧
 - **May 2026**: Release the improved version based on [Trellis.2](https://github.com/microsoft/TRELLIS.2) backbone. 💪
 - **May 2026**: Release inference code and online demo. 🤗
 - **Apr 2026**: Our paper is accepted to SIGGRAPH 2026! 🎉
@@ -117,6 +118,141 @@ python app.py --low_vram
 # or via environment variable:
 LOW_VRAM=1 python app.py
 ```
+## 🔧 Training
+
+We provide the full training codebase for reproducing Pixal3D from scratch.
+
+### Data Preparation
+
+Prepare view-aligned O-Voxel data and rendered condition images by following the data toolkit instructions:
+
+> 📂 **[data_toolkit/README.md](data_toolkit/README.md)**
+
+### Overview
+
+Pixal3D is trained as a three-stage cascade, each progressively increasing resolution:
+
+| Stage | Model | Resolutions | Config Prefix |
+|-------|-------|-------------|---------------|
+| 1 | Sparse Structure | 32 → 64 | `ss_flow_img_dit_*_proj_finetune` |
+| 2 | Shape | 256 → 512 → 1024 | `slat_flow_img2shape_*_proj_finetune` |
+| 3 | Texture | 256 → 512 → 1024 | `slat_flow_imgshape2tex_*_proj_finetune` |
+
+All stages use **pixel-aligned projection conditioning** and **view-aligned latents** (2 views by default). Within each stage, start from the lowest resolution and progressively fine-tune to higher resolutions by setting `finetune_ckpt` in the config.
+
+### Quick Start
+
+```sh
+python train.py \
+  --config <CONFIG_JSON> \
+  --output_dir <OUTPUT_DIR> \
+  --data_dir '<DATA_DIR_JSON>'
+```
+
+`--data_dir` is a JSON string describing the dataset layout. Different stages require different keys:
+
+| Stage | Required keys |
+|-------|---------------|
+| Sparse Structure | `base`, `ss_latent`, `render_cond` |
+| Shape | `base`, `shape_latent`, `render_cond` |
+| Texture | `base`, `shape_latent`, `pbr_latent`, `render_cond` |
+
+### Example: Training All Three Stages
+
+Below we show the full training sequence using ObjaverseXL as an example. Each higher-resolution step requires updating `finetune_ckpt` in its config JSON to point to the previous checkpoint.
+
+<details>
+<summary><b>Stage 1: Sparse Structure (32 → 64)</b></summary>
+
+```sh
+# Resolution 32
+python train.py \
+  --config configs/gen/ss_flow_img_dit_1_3B_32_bf16_proj_finetune.json \
+  --output_dir results/ss_32 \
+  --data_dir '{"ObjaverseXL_sketchfab": {"base": "datasets/ObjaverseXL_sketchfab", "ss_latent": "datasets/ObjaverseXL_sketchfab/ss_latents/ss_enc_conv3d_16l8_fp16_64_view", "render_cond": "datasets/ObjaverseXL_sketchfab/renders_cond"}}'
+
+# Resolution 64 (set finetune_ckpt → results/ss_32 checkpoint)
+python train.py \
+  --config configs/gen/ss_flow_img_dit_1_3B_32_bf16_proj_finetune_ft64.json \
+  --output_dir results/ss_ft64 \
+  --data_dir '{"ObjaverseXL_sketchfab": {"base": "datasets/ObjaverseXL_sketchfab", "ss_latent": "datasets/ObjaverseXL_sketchfab/ss_latents/ss_enc_conv3d_16l8_fp16_64_view", "render_cond": "datasets/ObjaverseXL_sketchfab/renders_cond"}}'
+```
+</details>
+
+<details>
+<summary><b>Stage 2: Shape (256 → 512 → 1024)</b></summary>
+
+```sh
+# Resolution 256
+python train.py \
+  --config configs/gen/slat_flow_img2shape_dit_1_3B_256_bf16_proj_finetune.json \
+  --output_dir results/shape_256 \
+  --data_dir '{"ObjaverseXL_sketchfab": {"base": "datasets/ObjaverseXL_sketchfab", "shape_latent": "datasets/ObjaverseXL_sketchfab/shape_latents/shape_enc_next_dc_f16c32_fp16_256_view", "render_cond": "datasets/ObjaverseXL_sketchfab/renders_cond"}}'
+
+# Resolution 512
+python train.py \
+  --config configs/gen/slat_flow_img2shape_dit_1_3B_256_bf16_proj_finetune_ft512.json \
+  --output_dir results/shape_ft512 \
+  --data_dir '{"ObjaverseXL_sketchfab": {"base": "datasets/ObjaverseXL_sketchfab", "shape_latent": "datasets/ObjaverseXL_sketchfab/shape_latents/shape_enc_next_dc_f16c32_fp16_512_view", "render_cond": "datasets/ObjaverseXL_sketchfab/renders_cond"}}'
+
+# Resolution 1024
+python train.py \
+  --config configs/gen/slat_flow_img2shape_dit_1_3B_512_bf16_proj_finetune_ft1024.json \
+  --output_dir results/shape_ft1024 \
+  --data_dir '{"ObjaverseXL_sketchfab": {"base": "datasets/ObjaverseXL_sketchfab", "shape_latent": "datasets/ObjaverseXL_sketchfab/shape_latents/shape_enc_next_dc_f16c32_fp16_1024_view", "render_cond": "datasets/ObjaverseXL_sketchfab/renders_cond"}}'
+```
+</details>
+
+<details>
+<summary><b>Stage 3: Texture (256 → 512 → 1024)</b></summary>
+
+```sh
+# Resolution 256
+python train.py \
+  --config configs/gen/slat_flow_imgshape2tex_dit_1_3B_256_bf16_proj_finetune.json \
+  --output_dir results/tex_256 \
+  --data_dir '{"ObjaverseXL_sketchfab": {"base": "datasets/ObjaverseXL_sketchfab", "shape_latent": "datasets/ObjaverseXL_sketchfab/shape_latents/shape_enc_next_dc_f16c32_fp16_256_view", "pbr_latent": "datasets/ObjaverseXL_sketchfab/pbr_latents/tex_enc_next_dc_f16c32_fp16_256_view", "render_cond": "datasets/ObjaverseXL_sketchfab/renders_cond"}}'
+
+# Resolution 512
+python train.py \
+  --config configs/gen/slat_flow_imgshape2tex_dit_1_3B_512_bf16_proj_finetune.json \
+  --output_dir results/tex_512 \
+  --data_dir '{"ObjaverseXL_sketchfab": {"base": "datasets/ObjaverseXL_sketchfab", "shape_latent": "datasets/ObjaverseXL_sketchfab/shape_latents/shape_enc_next_dc_f16c32_fp16_512_view", "pbr_latent": "datasets/ObjaverseXL_sketchfab/pbr_latents/tex_enc_next_dc_f16c32_fp16_512_view", "render_cond": "datasets/ObjaverseXL_sketchfab/renders_cond"}}'
+
+# Resolution 1024
+python train.py \
+  --config configs/gen/slat_flow_imgshape2tex_dit_1_3B_512_bf16_proj_finetune_ft1024.json \
+  --output_dir results/tex_ft1024 \
+  --data_dir '{"ObjaverseXL_sketchfab": {"base": "datasets/ObjaverseXL_sketchfab", "shape_latent": "datasets/ObjaverseXL_sketchfab/shape_latents/shape_enc_next_dc_f16c32_fp16_1024_view", "pbr_latent": "datasets/ObjaverseXL_sketchfab/pbr_latents/tex_enc_next_dc_f16c32_fp16_1024_view", "render_cond": "datasets/ObjaverseXL_sketchfab/renders_cond"}}'
+```
+</details>
+
+### Additional Options
+
+<details>
+<summary><b>All command-line arguments</b></summary>
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `--config` | Config JSON path | *required* |
+| `--output_dir` | Output directory | *required* |
+| `--data_dir` | Dataset JSON string | `./data/` |
+| `--load_dir` | Checkpoint load directory | `output_dir` |
+| `--ckpt` | Resume from step | `latest` |
+| `--auto_retry` | Retries on failure | `3` |
+| `--tryrun` | Dry run | `false` |
+| `--profile` | Profiling | `false` |
+| `--num_nodes` | Number of nodes | `1` |
+| `--node_rank` | Current node rank | `0` |
+| `--num_gpus` | GPUs per node | all |
+| `--master_addr` | Master address | `localhost` |
+| `--master_port` | Master port | `12666` |
+| `--use_wandb` | Enable W&B logging | `false` |
+| `--wandb_project` | W&B project | `trellis2-training` |
+| `--wandb_name` | W&B run name | basename of `output_dir` |
+| `--wandb_id` | W&B run ID (resume) | — |
+
+</details>
 
 ## 🤗 Acknowledgements
 
