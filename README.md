@@ -262,6 +262,12 @@ python train.py \
 
 </details>
 
+## 🌐 Community Projects
+
+We thank the community for building extensions and deployment guides for Pixal3D!
+
+- [Pixal3D-ComfyUI](https://github.com/Saganaki22/Pixal3D-ComfyUI) — ComfyUI integration with deployment guides for Windows, WSL, and more.
+
 ## 🤗 Acknowledgements
 
 This project is heavily built upon [Trellis.2](https://github.com/microsoft/TRELLIS.2) and [Direct3D-S2](https://github.com/DreamTechAI/Direct3D-S2). We sincerely thank the authors for their outstanding work on scalable 3D generation , which serves as the foundation of our codebase and model architecture.
