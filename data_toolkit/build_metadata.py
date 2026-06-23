@@ -33,9 +33,13 @@ def update_metadata(path, opt):
             columns = df_parts[0].columns
             metadata = pd.DataFrame(columns=columns)
         metadata.set_index('sha256', inplace=True)
+        if metadata.index.duplicated().any():
+            metadata = metadata.groupby(level=0).first()
         for df_part in df_parts:
             if 'sha256' in df_part.columns:
                 df_part.set_index('sha256', inplace=True)
+                if df_part.index.duplicated().any():
+                    df_part = df_part.groupby(level=0).first()
                 metadata = df_part.combine_first(metadata)
         metadata.to_csv(os.path.join(path, 'metadata.csv'))
         for f in df_files:
@@ -300,10 +304,14 @@ if __name__ == '__main__':
         sub_metadata_list.append(pbr_latent_metadata.get(model))
     for model in pbr_latent_view_models:
         sub_metadata_list.append(pbr_latent_view_metadata.get(model))
+    if metadata.index.duplicated().any():
+        metadata = metadata.groupby(level=0).first()
     for sub in sub_metadata_list:
         if sub is not None:
             if 'sha256' in sub.columns:
                 sub = sub.set_index('sha256')
+            if sub.index.duplicated().any():
+                sub = sub.groupby(level=0).first()
             metadata = metadata.combine_first(sub)
     metadata = metadata.reset_index()
     metadata.to_csv(os.path.join(opt.root, 'metadata.csv'), index=False)
