@@ -193,7 +193,9 @@ def run_inference(
     image_preprocessed = pipeline.preprocess_image(img)
 
     # Save preprocessed image for MoGe
-    tmp_path = os.path.join(os.path.dirname(os.path.abspath(output_path)), f"_tmp_preprocessed_{int(time.time()*1000)}.png")
+    output_dir = os.path.dirname(os.path.abspath(output_path))
+    os.makedirs(output_dir, exist_ok=True)
+    tmp_path = os.path.join(output_dir, f"_tmp_preprocessed_{int(time.time()*1000)}.png")
     image_preprocessed.save(tmp_path)
 
     # Camera estimation
@@ -278,7 +280,6 @@ def run_inference(
     glb.apply_transform(rot)
 
     # Export
-    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     glb.export(output_path, extension_webp=True)
     print(f"[Done] GLB saved to: {output_path}")
 
