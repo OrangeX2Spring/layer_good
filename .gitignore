@@ -7,6 +7,78 @@ __pycache__/
 # Output files
 output.glb
 autotune_cache.json
+output/
+outputs/
+results/
+runs/
+logs/
+wandb/
+tensorboard/
+
+# Local agent instructions
+/AGENTS.md
+
+# External repositories and downloaded datasets
+third_party/
+data/
+datasets/
+
+# Model weights and machine-learning artifacts
+ckpt/
+checkpoints/
+weights/
+pretrained/
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.onnx
+*.engine
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.pkl
+*.pickle
+
+# Generated images, video, and audio
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.bmp
+*.tif
+*.tiff
+*.gif
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.wav
+*.mp3
+*.flac
+
+# Generated 3D assets
+*.glb
+*.gltf
+*.obj
+*.ply
+*.stl
+*.fbx
+*.usd
+*.usda
+*.usdc
+*.usdz
+
+# Downloaded archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
 
 # Virtual environment
 venv/

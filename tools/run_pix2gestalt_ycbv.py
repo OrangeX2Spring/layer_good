@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import gc
 import json
 import sys
 from pathlib import Path
@@ -26,6 +27,7 @@ def parse_args():
     parser.add_argument("--n-samples", type=int, default=4)
     parser.add_argument("--ddim-steps", type=int, default=100)
     parser.add_argument("--guidance-scale", type=float, default=2.0)
+    parser.add_argument("--precision", choices=("autocast", "fp32"), default="autocast")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--min-visible-fraction", type=float, default=0.25)
     parser.add_argument("--max-visible-fraction", type=float, default=0.75)
@@ -88,6 +90,25 @@ def square_crop_box(bbox, image_width, image_height, padding):
     return left, top, right, bottom
 
 
+def load_model_cpu_first(config_path, checkpoint, device):
+    from ldm.util import instantiate_from_config
+
+    print(f"Loading model from {checkpoint} on CPU")
+    checkpoint_data = torch.load(str(checkpoint), map_location="cpu")
+    if "global_step" in checkpoint_data:
+        print(f"Global Step: {checkpoint_data['global_step']}")
+    state_dict = checkpoint_data["state_dict"]
+    model = instantiate_from_config(OmegaConf.load(config_path).model)
+    model.load_state_dict(state_dict, strict=False)
+    del state_dict, checkpoint_data
+    gc.collect()
+    if device.startswith("cuda"):
+        torch.cuda.empty_cache()
+    model.to(device)
+    model.eval()
+    return model
+
+
 def main():
     args = parse_args()
     torch.manual_seed(args.seed)
@@ -124,11 +145,11 @@ def main():
     Image.fromarray(np.dstack((rgb_256, visible_256))).save(output_dir / "visible_object.png")
 
     sys.path.insert(0, str(args.pix2gestalt_dir.resolve()))
-    from inference import load_model_from_config, run_pix2gestalt
+    from inference import run_pix2gestalt
 
     config_path = args.pix2gestalt_dir / "configs" / "sd-finetune-pix2gestalt-c_concat-256.yaml"
     checkpoint = args.checkpoint or args.pix2gestalt_dir / "ckpt" / "epoch=000005.ckpt"
-    model = load_model_from_config(OmegaConf.load(config_path), str(checkpoint), args.device)
+    model = load_model_cpu_first(config_path, checkpoint, args.device)
     predictions = run_pix2gestalt(
         model,
         args.device,
@@ -137,6 +158,7 @@ def main():
         scale=args.guidance_scale,
         n_samples=args.n_samples,
         ddim_steps=args.ddim_steps,
+        precision=args.precision,
     )
 
     for index, prediction in enumerate(predictions):
