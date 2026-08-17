@@ -11,6 +11,10 @@ Three numbers, in decreasing robustness:
   chamfer_norm        Symmetric Chamfer after similarity alignment, as a
                       fraction of the GT mesh's longest extent. Overall shape
                       error once scale and pose are factored out.
+  roughness_inflation Out-of-plane spread of the dominant face, generated over
+                      ground truth. Also alignment-free. Measures printed
+                      graphics being extruded into geometry -- embossed letters
+                      on a flat cardboard panel.
   sensor_residual_mm  Median distance from the visible depth points to the
                       aligned reconstruction. Whether the result actually
                       explains what the camera saw, as opposed to being a
@@ -71,6 +75,20 @@ def robust_extents(points):
     return np.sort(high - low)[::-1]
 
 
+def face_roughness(points_pca, extents):
+    """Out-of-plane spread of the dominant face, as a fraction of the longest extent.
+
+    Catches printed graphics being extruded into geometry: on a cracker box the
+    large faces are flat, so any bump in this number over the ground truth is
+    albedo that leaked into shape.
+    """
+    normal = points_pca[:, 2]
+    front = points_pca[normal > 0.8 * normal.max()]
+    if front.shape[0] < 100:
+        return float("nan")
+    return float(front[:, 2].std() / extents[0])
+
+
 def signed_permutations():
     for perm in itertools.permutations(range(3)):
         for signs in itertools.product((1.0, -1.0), repeat=3):
@@ -129,6 +147,8 @@ def main():
     gt_extents, gen_extents = robust_extents(gt_pca), robust_extents(gen_pca)
     gt_flatness = float(gt_extents[2] / gt_extents[0])
     gen_flatness = float(gen_extents[2] / gen_extents[0])
+    gt_roughness = face_roughness(gt_pca, gt_extents)
+    gen_roughness = face_roughness(gen_pca, gen_extents)
 
     gt_scale = float(gt_extents[0])
     error, (scale, R, t) = align(gen_pca / gt_scale, gt_pca / gt_scale, args.icp_iterations)
@@ -152,6 +172,9 @@ def main():
         "gt_flatness": gt_flatness,
         "gen_flatness": gen_flatness,
         "flatness_inflation": gen_flatness / gt_flatness,
+        "gt_face_roughness": gt_roughness,
+        "gen_face_roughness": gen_roughness,
+        "roughness_inflation": gen_roughness / gt_roughness,
         "chamfer_norm": error,
         "chamfer_mm": error * gt_scale / MM_TO_M,
         "sensor_residual_mm": float(np.median(residual)) / MM_TO_M,
