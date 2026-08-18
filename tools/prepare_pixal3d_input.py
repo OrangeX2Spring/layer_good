@@ -101,6 +101,15 @@ def main():
     else:
         color, alpha = rgb_rect, amodal_rect
 
+    # Pixal3D's preprocess_image re-crops to the alpha bbox times 1.1 and throws
+    # our framing away, so the FOV of the crop we write is NOT the FOV the model
+    # reconstructs in. Compute the one that survives preprocessing: same focal,
+    # but a field spanning only the object's bbox plus 10%.
+    alpha_rows, alpha_cols = np.nonzero(alpha)
+    bbox_side = max(alpha_cols.max() - alpha_cols.min(), alpha_rows.max() - alpha_rows.min())
+    f_rect = K_new[0, 0]
+    fov_effective = float(2.0 * np.arctan(1.1 * bbox_side / (2.0 * f_rect)))
+
     color = cv2.resize(color, (args.size, args.size), interpolation=cv2.INTER_LANCZOS4)
     alpha_resized = cv2.resize(
         alpha.astype(np.uint8) * 255, (args.size, args.size), interpolation=cv2.INTER_NEAREST
@@ -144,6 +153,9 @@ def main():
         "visib_fract": info["visib_fract"],
         "fov_x_rad": fov_x,
         "fov_x_deg": float(np.degrees(fov_x)),
+        "fov_effective_rad": fov_effective,
+        "fov_effective_deg": float(np.degrees(fov_effective)),
+        "alpha_bbox_side_px": int(bbox_side),
         "crop_center_uv": [center_u, center_v],
         "crop_side_px": side,
         "size": args.size,
@@ -159,7 +171,9 @@ def main():
         meta["completion"] = str(completion_path)
     (args.output_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
 
-    print(f"{args.output_dir}  fov={meta['fov_x_deg']:.2f}deg  points={meta['num_visible_points']}")
+    print(f"{args.output_dir}  crop_fov={meta['fov_x_deg']:.2f}deg  "
+          f"effective_fov={meta['fov_effective_deg']:.2f}deg  "
+          f"points={meta['num_visible_points']}")
 
 
 if __name__ == "__main__":
