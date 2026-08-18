@@ -49,6 +49,8 @@ def parse_args():
     parser.add_argument("--size", type=int, default=1024)
     parser.add_argument("--depth-erosion", type=int, default=3,
                         help="Mask erosion in pixels before back-projecting depth")
+    parser.add_argument("--depth-percentile", type=float, default=2.0,
+                        help="Depth outlier rejection: percentile defining the trusted band")
     parser.add_argument("--output-dir", type=Path, required=True)
     return parser.parse_args()
 
@@ -111,6 +113,13 @@ def main():
     kernel = np.ones((2 * args.depth_erosion + 1,) * 2, np.uint8)
     trusted = cv2.erode(visible.astype(np.uint8), kernel) > 0
     points_cam = backproject(depth, depth_scale, K, trusted)
+    # Eroding the mask removes boundary flying pixels but not depth values that
+    # are simply wrong inside it; those project onto the silhouette and would
+    # carve holes straight through the object. Reject on depth directly.
+    near, far = np.percentile(points_cam[:, 2], [args.depth_percentile, 100.0 - args.depth_percentile])
+    span = far - near
+    keep = (points_cam[:, 2] >= near - span) & (points_cam[:, 2] <= far + span)
+    points_cam = points_cam[keep]
     # Two frames the evaluator needs: the rectified camera Pixal3D implicitly
     # renders from, and the object's own frame, where the GT mesh lives.
     np.save(args.output_dir / "visible_points_rect.npy", points_cam @ R_rect.T)
