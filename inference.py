@@ -1,7 +1,10 @@
 import os
 import argparse
+import json
 import math
 import time
+from pathlib import Path
+
 import torch
 import numpy as np
 import cv2
@@ -182,6 +185,7 @@ def run_inference(
     manual_fov: float = -1.0,
     low_vram: bool = False,
     resolution: int = -1,
+    depth_dir: str = None,
 ):
     # Load models
     pipeline = init_pipeline(model_path, low_vram=low_vram)
@@ -243,6 +247,17 @@ def run_inference(
         "guidance_rescale": tex_slat_guidance_rescale, "rescale_t": tex_slat_rescale_t,
     }
 
+    depth_observation = None
+    if depth_dir is not None:
+        depth_meta = json.loads((Path(depth_dir) / "meta.json").read_text())
+        depth_observation = {
+            'points_cam': np.load(Path(depth_dir) / "visible_points_rect.npy"),
+            'focal_real': 0.5 * (depth_meta["K"][0][0] + depth_meta["K"][1][1]),
+            'crop_side_px': depth_meta["crop_side_px"],
+        }
+        print(f"[Inference] Depth constraint from {depth_dir}: "
+              f"{depth_observation['points_cam'].shape[0]} points")
+
     pipeline_type = f"{resolution if resolution > 0 else (1024 if low_vram else 1536)}_cascade"
     print(f"[Inference] Using pipeline_type={pipeline_type}")
     mesh_list, (shape_slat, tex_slat, res) = pipeline.run(
@@ -256,6 +271,7 @@ def run_inference(
         return_latent=True,
         pipeline_type=pipeline_type,
         max_num_tokens=max_num_tokens,
+        depth_observation=depth_observation,
     )
 
     mesh = mesh_list[0]
@@ -299,6 +315,10 @@ if __name__ == "__main__":
                              "Reduces peak VRAM from ~18GB to ~10-12GB at the cost of slower inference.")
     parser.add_argument("--resolution", type=int, default=-1,
                         help="Pipeline resolution (1024 or 1536). Default: 1024 if --low_vram, else 1536.")
+    parser.add_argument("--depth_dir", type=str, default=None,
+                        help="Directory from tools/prepare_pixal3d_input.py. Constrains the "
+                             "sparse structure with the measured visible depth: voxels the "
+                             "sensor saw through are carved, measured surface voxels are forced.")
 
     args = parser.parse_args()
 
@@ -310,4 +330,5 @@ if __name__ == "__main__":
         model_path=args.model_path,
         low_vram=args.low_vram,
         resolution=args.resolution,
+        depth_dir=args.depth_dir,
     )

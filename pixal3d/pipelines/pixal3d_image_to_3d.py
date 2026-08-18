@@ -304,15 +304,18 @@ class Pixal3DImageTo3DPipeline(Pipeline):
         resolution: int,
         num_samples: int = 1,
         sampler_params: dict = {},
+        constraint: dict = None,
     ) -> torch.Tensor:
         """
         Sample sparse structures with the given conditioning.
-        
+
         Args:
             cond (dict): The conditioning information.
             resolution (int): The resolution of the sparse structure.
             num_samples (int): The number of samples to generate.
             sampler_params (dict): Additional parameters for the sampler.
+            constraint (dict): Optional observed-occupancy constraint carrying
+                'free' and 'occupied' voxel indices, from utils.depth_constraint.
         """
         # Sample sparse structure latent
         flow_model = self.models['sparse_structure_flow_model']
@@ -343,6 +346,15 @@ class Pixal3DImageTo3DPipeline(Pipeline):
         if resolution != decoded.shape[2]:
             ratio = decoded.shape[2] // resolution
             decoded = torch.nn.functional.max_pool3d(decoded.float(), ratio, ratio, 0) > 0.5
+        if constraint is not None:
+            decoded = decoded.clone()
+            free = torch.as_tensor(constraint['free'], device=decoded.device, dtype=torch.long)
+            occupied = torch.as_tensor(constraint['occupied'], device=decoded.device, dtype=torch.long)
+            decoded[:, 0, free[:, 0], free[:, 1], free[:, 2]] = False
+            decoded[:, 0, occupied[:, 0], occupied[:, 1], occupied[:, 2]] = True
+            print(f"[DepthConstraint] carved {free.shape[0]} free voxels, "
+                  f"forced {occupied.shape[0]} occupied voxels at res {resolution}")
+
         coords = torch.argwhere(decoded)[:, [0, 2, 3, 4]].int()
 
         return coords
@@ -619,6 +631,7 @@ class Pixal3DImageTo3DPipeline(Pipeline):
         return_latent: bool = False,
         pipeline_type: Optional[str] = None,
         max_num_tokens: int = 49152,
+        depth_observation: Optional[dict] = None,
     ) -> List[MeshWithVoxel]:
         """
         Run the Pixal3D pipeline (proj mode, cascade).
@@ -638,6 +651,10 @@ class Pixal3DImageTo3DPipeline(Pipeline):
             return_latent (bool): Whether to return the latent codes.
             pipeline_type (str): The type of the pipeline. Options: '1024_cascade', '1536_cascade'.
             max_num_tokens (int): The maximum number of tokens to use.
+            depth_observation (dict): Optional visible-depth observation with
+                'points_cam' [N, 3] in the rectified camera frame (metres),
+                'focal_real' and 'crop_side_px'. Constrains the sparse structure
+                to the geometry the depth camera actually measured.
         """
         # Check pipeline type
         pipeline_type = pipeline_type or self.default_pipeline_type
@@ -678,9 +695,21 @@ class Pixal3DImageTo3DPipeline(Pipeline):
             mesh_scale=mesh_scale,
         )
         ss_res = 32
+        constraint = None
+        if depth_observation is not None:
+            from ..utils.depth_constraint import voxel_constraint
+            constraint = voxel_constraint(
+                depth_observation['points_cam'],
+                depth_observation['focal_real'],
+                depth_observation['crop_side_px'],
+                fov_x=camera_angle_x,
+                grid_resolution=ss_res,
+                mesh_scale=mesh_scale,
+            )
         coords = self.sample_sparse_structure(
             cond_ss, ss_res,
-            num_samples, sparse_structure_sampler_params
+            num_samples, sparse_structure_sampler_params,
+            constraint=constraint,
         )
         del cond_ss
         torch.cuda.empty_cache()
