@@ -74,7 +74,7 @@ sampling idea would directly optimise.
 ```sh
 cd /path/to/3d_generative_reconstruction/tools
 YCBV=/mnt/4T/chunquan/datasets/ycbv
-RUNS=$HOME/runs/occlusion_experiment
+RUNS=/mnt/4T/chunquan/layer_good/outputs/occlusion_experiment   # all outputs stay under the repo
 ```
 
 **1. Pick the occluded instance** (already done by `run_pix2gestalt_ycbv.py`;
