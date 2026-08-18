@@ -125,6 +125,16 @@ def main():
     np.save(args.output_dir / "visible_points_rect.npy", points_cam @ R_rect.T)
     np.save(args.output_dir / "visible_points_obj.npy", (points_cam - t_m2c) @ R_m2c)
 
+    # The object's own surface cannot bound how far back it extends -- that comes
+    # from the table and background around it, whose depth proves there is no
+    # object material between the camera and them. The one region that must be
+    # excluded is where the target hides behind an occluder: there the nearest
+    # surface belongs to the occluder, and carving to it would eat the object.
+    hidden = amodal & ~visible
+    hidden = cv2.dilate(hidden.astype(np.uint8), kernel) > 0
+    scene_points = backproject(depth, depth_scale, K, ~hidden)
+    np.save(args.output_dir / "scene_points_rect.npy", scene_points @ R_rect.T)
+
     meta = {
         "scene_id": args.scene_id,
         "image_id": args.image_id,
@@ -143,6 +153,7 @@ def main():
         "cam_R_m2c": R_m2c.tolist(),
         "cam_t_m2c_m": t_m2c.tolist(),
         "num_visible_points": int(points_cam.shape[0]),
+        "num_scene_points": int(scene_points.shape[0]),
     }
     if args.mode == "completed":
         meta["completion"] = str(completion_path)

@@ -186,6 +186,7 @@ def run_inference(
     low_vram: bool = False,
     resolution: int = -1,
     depth_dir: str = None,
+    depth_force_surface: bool = False,
 ):
     # Load models
     pipeline = init_pipeline(model_path, low_vram=low_vram)
@@ -250,13 +251,19 @@ def run_inference(
     depth_observation = None
     if depth_dir is not None:
         depth_meta = json.loads((Path(depth_dir) / "meta.json").read_text())
+        scene_path = Path(depth_dir) / "scene_points_rect.npy"
         depth_observation = {
             'points_cam': np.load(Path(depth_dir) / "visible_points_rect.npy"),
+            'scene_points_cam': np.load(scene_path) if scene_path.exists() else None,
             'focal_real': 0.5 * (depth_meta["K"][0][0] + depth_meta["K"][1][1]),
             'crop_side_px': depth_meta["crop_side_px"],
+            'force_surface': depth_force_surface,
         }
+        scene = depth_observation['scene_points_cam']
         print(f"[Inference] Depth constraint from {depth_dir}: "
-              f"{depth_observation['points_cam'].shape[0]} points")
+              f"{depth_observation['points_cam'].shape[0]} object points, "
+              f"{0 if scene is None else scene.shape[0]} scene points, "
+              f"force_surface={depth_force_surface}")
 
     pipeline_type = f"{resolution if resolution > 0 else (1024 if low_vram else 1536)}_cascade"
     print(f"[Inference] Using pipeline_type={pipeline_type}")
@@ -317,8 +324,11 @@ if __name__ == "__main__":
                         help="Pipeline resolution (1024 or 1536). Default: 1024 if --low_vram, else 1536.")
     parser.add_argument("--depth_dir", type=str, default=None,
                         help="Directory from tools/prepare_pixal3d_input.py. Constrains the "
-                             "sparse structure with the measured visible depth: voxels the "
-                             "sensor saw through are carved, measured surface voxels are forced.")
+                             "sparse structure with the measured depth: voxels the sensor "
+                             "saw through are carved away.")
+    parser.add_argument("--depth_force_surface", action="store_true",
+                        help="Additionally pin measured surface voxels occupied. Off by default: "
+                             "at 32^3 the forced shell is coarse enough to damage the front face.")
 
     args = parser.parse_args()
 
@@ -331,4 +341,5 @@ if __name__ == "__main__":
         low_vram=args.low_vram,
         resolution=args.resolution,
         depth_dir=args.depth_dir,
+        depth_force_surface=args.depth_force_surface,
     )

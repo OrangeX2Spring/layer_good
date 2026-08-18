@@ -87,8 +87,10 @@ def main():
     voxels = world_to_voxel(points_world, args.grid_resolution)
     in_cube = np.all((voxels >= 0) & (voxels < args.grid_resolution), axis=1)
 
+    scene_path = args.input_dir / "scene_points_rect.npy"
     constraint = voxel_constraint(
         points_cam, focal_real, meta["crop_side_px"], fov_x, args.grid_resolution,
+        scene_points_cam=np.load(scene_path) if scene_path.exists() else None,
     )
     extent = (points_world.max(axis=0) - points_world.min(axis=0))
 

@@ -85,30 +85,45 @@ def voxel_constraint(
     crop_side_px,
     fov_x,
     grid_resolution,
+    scene_points_cam=None,
+    force_surface=False,
     mesh_scale=1.0,
     buffer_resolution=128,
     margin_voxels=1.5,
 ):
     """Split the voxel grid into observed-free and observed-surface sets.
 
-    Builds a z-buffer of the observed surface in Pixal3D's virtual camera, then
+    Builds a z-buffer of the observed scene in Pixal3D's virtual camera, then
     classifies every voxel by comparing its own depth against it:
 
       free      strictly in front of the observed surface -- the sensor saw
                 through this voxel, so nothing may be generated there
-      occupied  within a margin of the observed surface
+      occupied  within a margin of the object's own measured surface
 
-    Voxels whose pixel has no observed depth (the occluded region) are left
-    unconstrained, so the generative prior still owns everything the camera
-    could not see. Returns int arrays of (i, j, k) indices.
+    `scene_points_cam` should carry the table and background as well as the
+    object, minus the region where the object hides behind an occluder. This
+    matters: the object's own surface only bounds where its front is, never how
+    far back it extends. What limits the back of a box is the table behind it,
+    seen far away along rays that just clear the box's rear edge.
+
+    `force_surface` additionally pins measured surface voxels occupied. Off by
+    default -- at 32^3 that shell is coarse enough to fight the shape stage and
+    visibly damages the front face.
+
+    Voxels whose pixel has no observed depth are left unconstrained, so the
+    generative prior still owns everything the camera could not see. Returns
+    int arrays of (i, j, k) indices.
     """
     assert points_cam.ndim == 2 and points_cam.shape[1] == 3, points_cam.shape
     distance, f_pixels = pixal3d_camera(fov_x, buffer_resolution)
+    # Scale is set by the object, not the scene: it is the object that Pixal3D
+    # normalises into the cube.
     center_depth = float(np.median(points_cam[:, 2]))
     scale = metric_scale(focal_real, crop_side_px, center_depth)
 
-    surface_world = sensor_to_world(points_cam, scale, center_depth, distance)
-    pixels, surface_depth = project(surface_world, f_pixels, distance, buffer_resolution)
+    free_source = points_cam if scene_points_cam is None else scene_points_cam
+    free_world = sensor_to_world(free_source, scale, center_depth, distance)
+    pixels, surface_depth = project(free_world, f_pixels, distance, buffer_resolution)
     u = np.rint(pixels[:, 0]).astype(np.int64)
     v = np.rint(pixels[:, 1]).astype(np.int64)
     inside = (u >= 0) & (u < buffer_resolution) & (v >= 0) & (v < buffer_resolution)
@@ -128,9 +143,22 @@ def voxel_constraint(
 
     margin = margin_voxels / (mesh_scale * (grid_resolution - 1))
     free = known & (voxel_depth < observed - margin)
-    occupied = known & (np.abs(voxel_depth - observed) <= margin)
 
     index = np.argwhere(np.ones((grid_resolution,) * 3, dtype=bool))
+    if force_surface:
+        object_world = sensor_to_world(points_cam, scale, center_depth, distance)
+        object_pixels, object_depth = project(object_world, f_pixels, distance, buffer_resolution)
+        ou = np.rint(object_pixels[:, 0]).astype(np.int64)
+        ov = np.rint(object_pixels[:, 1]).astype(np.int64)
+        ok = (ou >= 0) & (ou < buffer_resolution) & (ov >= 0) & (ov < buffer_resolution)
+        object_buffer = np.full((buffer_resolution, buffer_resolution), np.inf)
+        np.minimum.at(object_buffer, (ov[ok], ou[ok]), object_depth[ok])
+        measured = np.full(centers.shape[0], np.inf)
+        measured[in_view] = object_buffer[vv[in_view], vu[in_view]]
+        occupied = np.isfinite(measured) & (np.abs(voxel_depth - measured) <= margin)
+    else:
+        occupied = np.zeros(centers.shape[0], dtype=bool)
+
     return {
         "free": index[free],
         "occupied": index[occupied],

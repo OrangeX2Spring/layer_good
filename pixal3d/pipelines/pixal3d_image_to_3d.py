@@ -704,6 +704,8 @@ class Pixal3DImageTo3DPipeline(Pipeline):
                 depth_observation['crop_side_px'],
                 fov_x=camera_angle_x,
                 grid_resolution=ss_res,
+                scene_points_cam=depth_observation.get('scene_points_cam'),
+                force_surface=depth_observation.get('force_surface', False),
                 mesh_scale=mesh_scale,
             )
         coords = self.sample_sparse_structure(
