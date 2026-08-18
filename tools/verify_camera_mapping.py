@@ -39,7 +39,26 @@ def parse_args():
                         help="Output of prepare_pixal3d_input.py")
     parser.add_argument("--grid-resolution", type=int, default=32,
                         help="Sparse-structure resolution the constraint targets")
+    parser.add_argument("--dump-voxels", action="store_true",
+                        help="Write the free/occupied voxel sets as a coloured PLY")
     return parser.parse_args()
+
+
+def write_voxel_ply(path, free, occupied):
+    """Red = carved free space, green = forced occupied. Viewable in Blender/MeshLab."""
+    points = np.concatenate([free, occupied]).astype(np.float32)
+    colors = np.concatenate([
+        np.tile([255, 0, 0], (free.shape[0], 1)),
+        np.tile([0, 255, 0], (occupied.shape[0], 1)),
+    ]).astype(np.uint8)
+    with open(path, "w") as f:
+        f.write("ply\nformat ascii 1.0\n")
+        f.write(f"element vertex {points.shape[0]}\n")
+        f.write("property float x\nproperty float y\nproperty float z\n")
+        f.write("property uchar red\nproperty uchar green\nproperty uchar blue\n")
+        f.write("end_header\n")
+        for (x, y, z), (r, g, b) in zip(points, colors):
+            f.write(f"{x} {y} {z} {r} {g} {b}\n")
 
 
 def main():
@@ -90,6 +109,11 @@ def main():
         "occupied_voxels": int(constraint["occupied"].shape[0]),
         "total_voxels": args.grid_resolution ** 3,
     }, indent=2))
+
+    if args.dump_voxels:
+        ply_path = args.input_dir / "constraint_voxels.ply"
+        write_voxel_ply(ply_path, constraint["free"], constraint["occupied"])
+        print(ply_path)
 
     overlay = np.array(Image.open(args.input_dir / "input.png").convert("RGB"))
     overlay[v[inside & hit], u[inside & hit]] = (0, 255, 0)
