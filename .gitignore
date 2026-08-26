@@ -19,7 +19,6 @@ tensorboard/
 /AGENTS.md
 
 # External repositories and downloaded datasets
-third_party/
 data/
 datasets/
 
@@ -96,3 +95,8 @@ env/
 Thumbs.db
 
 tmp
+
+# Local agent instructions and scratch notes
+/.agents/
+/.claude/
+tools/FINDINGS.md
