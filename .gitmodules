@@ -1,3 +1,6 @@
 [submodule "third_party/sam3"]
 	path = third_party/sam3
 	url = https://github.com/facebookresearch/sam3.git
+[submodule "kv_tracker"]
+	path = kv_tracker
+	url = git@github.com:OrangeX2Spring/kv_tracker.git
