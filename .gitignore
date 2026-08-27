@@ -15,8 +15,6 @@ logs/
 wandb/
 tensorboard/
 
-# Local agent instructions
-/AGENTS.md
 
 # External repositories and downloaded datasets
 data/
@@ -99,4 +97,16 @@ tmp
 # Local agent instructions and scratch notes
 /.agents/
 /.claude/
+/AGENTS.md
+/CLAUDE.md
+/docs/
 tools/FINDINGS.md
+
+# Experiment outputs and caches synced back from the cluster
+media/
+debug_dumps/
+rerun_dumps/
+traces/
+.hf_cache/
+cluster_results/
+*.sqsh
