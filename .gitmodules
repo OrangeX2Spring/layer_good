@@ -7,3 +7,6 @@
 [submodule "opt_pose"]
 	path = opt_pose
 	url = git@github.com:OrangeX2Spring/OPT-Pose.git
+[submodule "genrecon"]
+	path = genrecon
+	url = git@github.com:OrangeX2Spring/GenRecon.git
