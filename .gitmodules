@@ -10,3 +10,6 @@
 [submodule "genrecon"]
 	path = genrecon
 	url = git@github.com:OrangeX2Spring/GenRecon.git
+[submodule "sam3d"]
+	path = sam3d
+	url = git@github.com:OrangeX2Spring/sam-3d-objects.git
