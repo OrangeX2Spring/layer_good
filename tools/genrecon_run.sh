@@ -10,6 +10,19 @@
 # saved tar stale.
 #
 # Outputs go straight to /mnt, never /tmp, so they survive the allocation.
+#
+# Checkpoint paths are NOT where the download puts them. `load_train_config`
+# (genrecon/pipelines/setup_utils.py:322) derives the training config as
+# `dirname(dirname(ckpt))/config.json`, i.e. it expects a training *run* directory:
+#   genrecon_ckpt/<stage>/config.json  +  genrecon_ckpt/<stage>/ckpts/<name>.pt
+# Flat .pt files make it look for /mnt/projects/gr/3DRecon/config.json and die.
+# Neither README documents this. The config.json per stage is the repo's own
+# training config, which train.py:150 copies into the run dir:
+#   ss    <- configs/gen/ss_flow_img/genrecon.json
+#   shape <- configs/gen/slat_flow_img2shape/genrecon_512.json
+#   tex   <- configs/gen/slat_flow_imgshape2tex/genrecon_512.json
+# Each declares exactly one model, so find_model_cfg's name-based fallback resolves
+# regardless of the checkpoint filename.
 set -euxo pipefail
 
 SCENE="${1:?usage: genrecon_run.sh <scene_id>}"
@@ -25,9 +38,9 @@ python reconstruct_scene.py \
   --mode Scannet_colmap \
   --path "/tmp/data/scannetpp/data/$SCENE" \
   --output_path "$OUT" \
-  --ss_ckpt    "$ROOT/genrecon_ckpt/sparse_structure.pt" \
-  --shape_ckpt "$ROOT/genrecon_ckpt/shape_slat.pt" \
-  --tex_ckpt   "$ROOT/genrecon_ckpt/texture_slat.pt" \
+  --ss_ckpt    "$ROOT/genrecon_ckpt/ss/ckpts/sparse_structure.pt" \
+  --shape_ckpt "$ROOT/genrecon_ckpt/shape/ckpts/shape_slat.pt" \
+  --tex_ckpt   "$ROOT/genrecon_ckpt/tex/ckpts/texture_slat.pt" \
   --num_imgs_per_scene 32
 
 python chunked_to_glb.py \
