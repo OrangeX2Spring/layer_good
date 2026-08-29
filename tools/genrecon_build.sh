@@ -10,7 +10,11 @@
 #      the image's base environment and `podman save` the image instead.
 #   2. flash-attn comes from the GitHub release wheel, not `pip install flash-attn`.
 #      PyPI ships only an sdist, so the setup.sh form compiles from source for hours.
-#      The base image is Python 3.11, and a cu12/torch2.6/cp311/abiTRUE wheel exists.
+#      The base image is Python 3.11, so the cu12/torch2.6/cp311 wheel applies.
+#      Take the abiFALSE variant: torch 2.6.0+cu124 in this image is built with
+#      _GLIBCXX_USE_CXX11_ABI=0. The abiTRUE wheel installs and imports as
+#      `undefined symbol: ...c10::Error::Error(..., std::__cxx11::basic_string...)`
+#      - measured 2026-08-29, cost one build.
 #   3. pillow-simd dropped. Its last release predates Python 3.11 and it conflicts
 #      with the Pillow that torchvision and transformers already require. It is a
 #      decode-speed optimisation, not a dependency.
@@ -45,7 +49,7 @@ pip install --no-cache-dir \
 
 # ── flash-attn 2.7.3, prebuilt (see deviation 2) ──────────────────────────────
 pip install --no-cache-dir \
-  https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.3/flash_attn-2.7.3+cu12torch2.6cxx11abiTRUE-cp311-cp311-linux_x86_64.whl
+  https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.3/flash_attn-2.7.3+cu12torch2.6cxx11abiFALSE-cp311-cp311-linux_x86_64.whl
 
 # ── CUDA extensions ───────────────────────────────────────────────────────────
 export TORCH_CUDA_ARCH_LIST="8.6;8.9;9.0"
