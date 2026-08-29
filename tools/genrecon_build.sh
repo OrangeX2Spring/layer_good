@@ -43,7 +43,15 @@ rm -rf /var/lib/apt/lists/*
 pip install --no-cache-dir \
   imageio imageio-ffmpeg tqdm easydict opencv-python-headless ninja trimesh \
   transformers==4.57.3 gradio==6.0.1 tensorboard pandas lpips zstandard \
-  kornia timm plyfile
+  kornia timm plyfile \
+  matplotlib open3d
+# matplotlib and open3d are absent from setup.sh but imported by the inference path:
+# matplotlib at inference/get_chunks.py:8 (module scope, so it fails immediately),
+# open3d at inference/get_chunks.py:329 (inside _get_clean_points, so it fails only
+# after the checkpoints have loaded). Both measured 2026-08-29, one allocation each.
+# An AST scan of genrecon/ + inference/ finds no other uncovered third-party import:
+# spconv, torchsparse, xformers and flash_attn_interface are alternative-backend
+# imports not taken on flex_gemm + flash_attn.
 pip install --no-cache-dir \
   git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8
 
