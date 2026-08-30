@@ -119,8 +119,14 @@ git clone -b v0.4.0 https://github.com/NVlabs/nvdiffrast.git /tmp/extensions/nvd
 pip install --no-cache-dir /tmp/extensions/nvdiffrast --no-build-isolation
 
 # vox2seq is a TRELLIS extension with no PyPI release and no pin anywhere in this
-# repo (deviation 5). Shallow-clone TRELLIS purely to build that one subdirectory.
-git clone --depth 1 https://github.com/microsoft/TRELLIS.git /tmp/extensions/TRELLIS
+# repo (deviation 5), and it is worse than that: microsoft/TRELLIS DELETED the whole
+# extensions/ directory in e74d605 ("remove unused extensions"), while its own
+# setup.sh:238 still says `cp -r extensions/vox2seq`. A shallow clone of main
+# therefore yields nothing at all, and the source has to be recovered from history.
+# Measured 2026-08-30; cost one build to find. The clone is deliberately NOT
+# --depth 1 (~1.07 GiB) because we need to reach back past that deletion.
+git clone https://github.com/microsoft/TRELLIS.git /tmp/extensions/TRELLIS
+git -C /tmp/extensions/TRELLIS checkout e74d605^ -- extensions/vox2seq
 pip install --no-cache-dir /tmp/extensions/TRELLIS/extensions/vox2seq --no-build-isolation
 
 # ── The hydra patch, vendored rather than run ─────────────────────────────────
@@ -137,11 +143,16 @@ curl -fsSL -o "$HYDRA_DIR/core/utils.py" \
 # ── Verify ────────────────────────────────────────────────────────────────────
 pip list | grep -i -E 'torch|flash|kaolin|gsplat|nvdiffr|vox2seq|spconv|xformers|hydra|moge|utils3d'
 
+# LIDRA_SKIP_INIT is required, not optional: sam3d_objects/__init__.py imports
+# sam3d_objects.init unless it is set, and that module is internal Meta code that
+# was never shipped publicly. notebook/inference.py:6 sets it for the same reason,
+# so anything importing the package outside that entry point must set it too.
 cd "$REPO"
-python - <<'PY'
+LIDRA_SKIP_INIT=1 python - <<'PY'
 import torch, flash_attn, nvdiffrast.torch, vox2seq, kaolin, gsplat
 import pytorch3d, spconv, xformers, utils3d, moge, hydra
-from sam3d_objects.pipeline.inference_pipeline import *  # noqa: F401,F403
+# inference_pipeline_pointmap is the _target_ the released pipeline.yaml instantiates.
+import sam3d_objects.pipeline.inference_pipeline_pointmap  # noqa: F401
 print("torch", torch.__version__, "cuda_ok", torch.cuda.is_available())
 print("flash_attn", flash_attn.__version__, "hydra", hydra.__version__)
 print("all imports ok")

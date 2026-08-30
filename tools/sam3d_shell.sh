@@ -22,6 +22,16 @@ if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
   GPU_ARG=(--device=nvidia.com/gpu="$CUDA_VISIBLE_DEVICES")
 fi
 
+# Two runtime variables this image needs, both consequences of not using conda:
+#   CONDA_PREFIX - notebook/inference.py:5 does
+#     os.environ["CUDA_HOME"] = os.environ["CONDA_PREFIX"]
+#     and raises KeyError without it. Upstream got the CUDA toolkit from conda; here
+#     it is at /usr/local/cuda, which is what CUDA_HOME should point at anyway.
+#   HF_HOME - the pipeline fetches MoGe (Ruicheng/moge-vitl) at construction time.
+#     Pointing at the project cache avoids re-downloading 1.26 GB into the container,
+#     where it would die with the allocation.
 podman run -v /mnt:/mnt:rw -v /tmp:/tmp:rw -w "$REPO" \
   "${GPU_ARG[@]+"${GPU_ARG[@]}"}" \
+  -e CONDA_PREFIX=/usr/local/cuda \
+  -e HF_HOME="${HF_HOME:-/mnt/projects/gr/3DRecon/.hf_cache}" \
   --name=sam3d --network=host -it --replace "$IMAGE"
