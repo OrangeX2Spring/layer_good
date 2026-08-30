@@ -33,7 +33,8 @@ def parse_args():
 def main():
     args = parse_args()
     import sys
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pixal3d"))
+    # Pixal3D is a submodule since 2026-08-30; the package is one level deeper.
     from pixal3d.utils.depth_constraint import metric_scale
 
     meta = json.loads((args.input_dir / "meta.json").read_text())

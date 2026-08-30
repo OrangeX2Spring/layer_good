@@ -13,3 +13,6 @@
 [submodule "sam3d"]
 	path = sam3d
 	url = git@github.com:OrangeX2Spring/sam-3d-objects.git
+[submodule "pixal3d"]
+	path = pixal3d
+	url = git@github.com:OrangeX2Spring/Pixal3D.git

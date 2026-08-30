@@ -22,7 +22,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pixal3d"))
+# Pixal3D is a submodule since 2026-08-30; the package is one level deeper.
 from pixal3d.utils.depth_constraint import (  # noqa: E402
     metric_scale,
     pixal3d_camera,
