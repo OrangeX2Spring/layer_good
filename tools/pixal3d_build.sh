@@ -27,11 +27,7 @@ pip install --no-cache-dir \
 # The released flow checkpoints use bfloat16, so the Turing and older nodes are
 # not runtime targets.
 export TORCH_CUDA_ARCH_LIST="8.6;8.9;9.0"
-export NATTEN_CUDA_ARCH="8.6;8.9;9.0"
-export NATTEN_N_WORKERS=4
 export MAX_JOBS=4
-
-pip install --no-cache-dir natten==0.21.0 --no-build-isolation
 
 mkdir -p /tmp/extensions
 
@@ -53,17 +49,18 @@ pip install --no-cache-dir /tmp/extensions/nvdiffrec --no-build-isolation
 cd "$REPO"
 ATTN_BACKEND=sdpa SPARSE_ATTN_BACKEND=sdpa python - <<'PY'
 import torch
-import natten
 import cumesh
 import flex_gemm
 import nvdiffrast.torch
 import nvdiffrec_render
 import o_voxel
+from pixal3d.modules.attention import config as attention_config
+from pixal3d.modules.sparse import config as sparse_config
 from pixal3d.pipelines import Pixal3DImageTo3DPipeline
 
-assert natten.HAS_LIBNATTEN
+assert attention_config.BACKEND == "sdpa"
+assert sparse_config.ATTN == "sdpa"
 print("torch", torch.__version__, "cuda", torch.version.cuda)
-print("natten", natten.__version__, "libnatten", natten.HAS_LIBNATTEN)
 print("all imports ok")
 PY
 
