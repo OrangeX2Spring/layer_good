@@ -71,19 +71,43 @@ pip install --no-cache-dir \
 # ── CUDA extensions ───────────────────────────────────────────────────────────
 export TORCH_CUDA_ARCH_LIST="8.6;8.9;9.0"
 
-# Parallelism is bounded by host RAM, not by cores: the heavy translation units
-# (o-voxel's src/ext.cpp and src/hash/hash.cu, both Eigen-templated) peak at
-# several GB each, and nvcc forks a host compiler of its own on top of its ninja
-# slot. The one measurement available says 4 jobs did NOT fit in ~27 GB, so the
-# budget is 10 GB per job, capped at the core count. Override by exporting
-# MAX_JOBS before running.
-if [ -z "${MAX_JOBS:-}" ]; then
+# What bounds this build is the Slurm memory grant, NOT the node's free RAM and
+# NOT the core count. On this cluster `--mem*` is refused outright -
+#   slurm_job_submit: Memory requests (--mem*) are not allowed. Memory is
+#   allocated automatically based on the number of GPUs.
+# - so a GPU-free allocation gets a 4 GB grant regardless of the node. Slurm
+# sets RLIMIT_RSS from that grant, which makes `ulimit -m` the number that
+# matters; /proc/meminfo describes the node and is misleading here (61.8 GB
+# MemAvailable on `jena` while the job could use 4).
+#
+# Measured 2026-09-01: a `--partition=data` allocation with no GPU died as
+# "Detected 1 oom_kill event in StepId=21113.0" on ONE nvcc pass over CuMesh's
+# src/clean_up.cu at MAX_JOBS=2. MAX_JOBS=1 would have died too. Request a GPU
+# to get a workable grant, even where the GPU itself goes unused.
+rss_kb=$(ulimit -m)
+if [ "$rss_kb" = "unlimited" ]; then
   mem_gb=$(awk '/^MemAvailable:/ {print int($2 / 1048576)}' /proc/meminfo)
+else
+  mem_gb=$(( rss_kb / 1024 / 1024 ))
+fi
+
+# Fail here rather than 20 minutes into the compile. One nvcc pass over a single
+# .cu for three architectures needs well over 4 GB on its own.
+if [ "$mem_gb" -lt 8 ]; then
+  echo "FATAL: this allocation can use ${mem_gb} GB (ulimit -m = ${rss_kb})." >&2
+  echo "       Too little to compile. --mem is refused on this cluster; memory" >&2
+  echo "       is granted per GPU, so re-allocate with --gres=gpu:1." >&2
+  exit 1
+fi
+
+# Budget 10 GB per parallel job, capped at the core count.
+if [ -z "${MAX_JOBS:-}" ]; then
   MAX_JOBS=$(( mem_gb / 10 ))
   if [ "$MAX_JOBS" -lt 1 ]; then MAX_JOBS=1; fi
   if [ "$MAX_JOBS" -gt "$(nproc)" ]; then MAX_JOBS=$(nproc); fi
 fi
 export MAX_JOBS
+echo "mem_gb=${mem_gb} nproc=$(nproc) MAX_JOBS=${MAX_JOBS}"
 
 mkdir -p /tmp/extensions
 
