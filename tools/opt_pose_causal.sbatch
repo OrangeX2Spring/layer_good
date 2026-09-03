@@ -1,7 +1,8 @@
 #!/bin/bash
 # Batch job: Step 0 of the causal-readout experiment on OPT-Pose.
 #
-#   sbatch tools/opt_pose_causal.sbatch [num_ref] [num_seqs]     # defaults 3 10
+#   sbatch tools/opt_pose_causal.sbatch [num_ref] [num_seqs] [data_root] [query_gap] [start]
+#                                              # defaults: 3 10 /tmp/data/housecat6d 1 0
 #
 # Submit from head. Log:     /mnt/projects/gr/3DRecon/optpose_causal_slurm-<jobid>.log
 #      Results:              /mnt/projects/gr/3DRecon/optpose_causal_out/
@@ -33,7 +34,12 @@ NUM_REF="${1:-3}"
 NUM_SEQS="${2:-10}"
 ROOT=/mnt/projects/gr/3DRecon
 REPO="$ROOT/layer_good"
-DATA_ROOT="$ROOT/housecat6d"
+# Job-local by default, as everywhere else in this repo: the extraction is about
+# a minute and the annotation cache rebuilds in about a second, against a
+# 100,000-file quota on /mnt that one test scene dents by 8.5k.
+DATA_ROOT="${3:-/tmp/data/housecat6d}"
+QUERY_GAP="${4:-1}"
+START="${5:-0}"
 
 hostname
 nvidia-smi
@@ -55,6 +61,7 @@ podman load -i "$ROOT/optpose.tar"
 podman run --rm -v /mnt:/mnt:rw -v /tmp:/tmp:rw -w "$REPO" \
   --device=nvidia.com/gpu="$CUDA_VISIBLE_DEVICES" --network=host \
   -e HF_HOME -e HF_XET_HIGH_PERFORMANCE \
-  localhost/optpose bash tools/opt_pose_causal_run.sh "$NUM_REF" "$NUM_SEQS"
+  localhost/optpose bash tools/opt_pose_causal_run.sh \
+    "$NUM_REF" "$NUM_SEQS" "$DATA_ROOT" "$QUERY_GAP" "$START"
 
 echo "JOB OK"
