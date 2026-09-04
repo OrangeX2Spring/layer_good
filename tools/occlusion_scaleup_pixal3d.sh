@@ -8,6 +8,9 @@ COMPLETION_ROOT="${2:?usage: occlusion_scaleup_pixal3d.sh <ycbv_root> <completio
 OUTPUT_ROOT="${3:?usage: occlusion_scaleup_pixal3d.sh <ycbv_root> <completion_root> <output_root> <cases_tsv> [completion_index]}"
 CASES="${4:?usage: occlusion_scaleup_pixal3d.sh <ycbv_root> <completion_root> <output_root> <cases_tsv> [completion_index]}"
 COMPLETION_INDEX="${5:-3}"
+# Which conditions to run. "visible" alone needs no completions at all, which is
+# how the pipeline gets exercised before pix2gestalt has produced any.
+CONDITIONS="${6:-completed visible}"
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 INPUT_ROOT="$OUTPUT_ROOT/inputs"
@@ -22,9 +25,11 @@ while IFS=$'\t' read -r SCENE IMAGE GT_ID OBJ_ID SLUG; do
 
   COMPLETION_DIR=$(printf '%s/scene_%06d_image_%06d_gt_%06d' \
     "$COMPLETION_ROOT" "$SCENE" "$IMAGE" "$GT_ID")
-  test -s "$COMPLETION_DIR/completion_$(printf '%02d' "$COMPLETION_INDEX").png"
 
-  for CONDITION in completed visible; do
+  for CONDITION in $CONDITIONS; do
+    if [ "$CONDITION" = completed ]; then
+      test -s "$COMPLETION_DIR/completion_$(printf '%02d' "$COMPLETION_INDEX").png"
+    fi
     INPUT_DIR="$INPUT_ROOT/$SLUG/$CONDITION"
     mkdir -p "$INPUT_DIR" "$PIXAL_ROOT/$SLUG"
 

@@ -20,6 +20,9 @@ def parse_args():
     parser.add_argument("--input-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--conditions", nargs="+", default=["completed", "visible"],
+                        help="visible alone needs no completions, which is how the pipeline "
+                             "is exercised before pix2gestalt has produced any")
     return parser.parse_args()
 
 
@@ -44,7 +47,7 @@ def main():
         cases = list(csv.DictReader(handle, delimiter="\t"))
 
     for case in cases:
-        for condition in ("completed", "visible"):
+        for condition in args.conditions:
             input_path = args.input_root / case["slug"] / condition / "input.png"
             rgba = np.asarray(Image.open(input_path).convert("RGBA"), dtype=np.uint8)
             mask = rgba[..., 3] > 127
