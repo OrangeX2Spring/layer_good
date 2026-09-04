@@ -48,6 +48,11 @@ nvidia-smi
 # required here -- it only avoids the unauthenticated-download throttle if the
 # 434 MB sonata weights are not in the cache yet. Sourced if present, not demanded.
 export HF_HOME="$ROOT/.hf_cache"
+# sonata.load ignores HF_HOME and writes ~/.cache/sonata (414 MB), which inside
+# rootless podman is /root and therefore lost with the container. See
+# tools/opt_pose_shell.sh.
+SONATA_CACHE="$ROOT/.sonata_cache"
+mkdir -p "$SONATA_CACHE"
 export HF_XET_HIGH_PERFORMANCE=1
 if [ -f ~/.hf_env ]; then source ~/.hf_env; export HF_TOKEN; fi
 
@@ -61,6 +66,7 @@ podman load -i "$ROOT/optpose.tar"
 podman run --rm -v /mnt:/mnt:rw -v /tmp:/tmp:rw -w "$REPO" \
   --device=nvidia.com/gpu="$CUDA_VISIBLE_DEVICES" --network=host \
   -e HF_HOME -e HF_XET_HIGH_PERFORMANCE \
+  -v "$SONATA_CACHE":/root/.cache/sonata:rw \
   localhost/optpose bash tools/opt_pose_causal_run.sh \
     "$NUM_REF" "$NUM_SEQS" "$DATA_ROOT" "$QUERY_GAP" "$START"
 
