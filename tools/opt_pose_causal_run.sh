@@ -2,7 +2,7 @@
 # Inference half of the causal-readout Step 0. Runs INSIDE localhost/optpose.
 # Invoked by tools/opt_pose_causal.sbatch; not meant to be run by hand.
 #
-#   bash tools/opt_pose_causal_run.sh <num_ref> <num_seqs> [data_root] [query_gap] [start]
+#   bash tools/opt_pose_causal_run.sh <num_ref> <num_seqs> [data_root] [query_gap] [start] [dtype]
 #
 # The dataset is already extracted by the sbatch wrapper, on the node and not in
 # here. Results go straight to /mnt so they survive the allocation.
@@ -34,6 +34,7 @@ NUM_SEQS="${2:?usage: opt_pose_causal_run.sh <num_ref> <num_seqs> [data_root] [q
 DATA_ROOT="${3:-/tmp/data/housecat6d}"
 QUERY_GAP="${4:-1}"
 START="${5:-0}"
+DTYPE="${6:-fp32}"
 ROOT=/mnt/projects/gr/3DRecon
 OUT="$ROOT/optpose_causal_out"
 
@@ -46,6 +47,7 @@ python test_causal_housecat6d.py \
   --num_seqs   "$NUM_SEQS" \
   --query_gap  "$QUERY_GAP" \
   --start      "$START" \
-  --out        "$OUT/causal_ref${NUM_REF}_gap${QUERY_GAP}_start${START}_seqs${NUM_SEQS}.json"
+  --dtype      "$DTYPE" \
+  --out        "$OUT/causal_ref${NUM_REF}_gap${QUERY_GAP}_start${START}_seqs${NUM_SEQS}_${DTYPE}.json"
 
 echo "RUN OK"
