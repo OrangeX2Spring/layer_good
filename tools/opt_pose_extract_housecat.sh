@@ -21,9 +21,20 @@
 # that loses its -d extracts into the current directory on /mnt and burns the
 # quota (docs/opt-pose-cluster.md, gotcha 2).
 #
-# Re-running is a no-op once the go/no-go paths exist; delete them to force a
+# Re-running is a no-op once a PREVIOUS RUN FINISHED, which is recorded by the
+# .extract_ok stamp written at the very end. Checking for the directories instead
+# was wrong and cost a silent failure on 2026-09-04: unzip aborted partway, having
+# already created test/test_scene1/rgb with a single file in it, and the next run
+# reported "already extracted: EXTRACT OK" over a scene with 1 frame of 513. A
+# directory existing proves an extraction STARTED. Delete the stamp to force a
 # fresh extraction.
 set -euo pipefail
+
+# Newer unzip refuses this archive: "invalid zip file with overlapped components
+# (possible zip bomb)". Measured on muenchen 2026-09-04; passau's older unzip
+# extracts it without complaint, so this is node-dependent and silent until it
+# is not. The archive is a TUM dataset release, not a bomb.
+export UNZIP_DISABLE_ZIPBOMB_DETECTION=TRUE
 
 DEST="${1:-/mnt/projects/gr/3DRecon/housecat6d}"
 shift || true
@@ -31,9 +42,11 @@ SCENES=("${@:-test_scene1}")
 SRC=/mnt/datasets/housecat6d
 
 MODELS="$DEST/obj_models_small_size_final/objects.pkl"
+STAMP="$DEST/.extract_ok"
 
-if [ -f "$MODELS" ] && [ -d "$DEST/test/${SCENES[0]}/rgb" ]; then
+if [ -f "$STAMP" ] && [ -f "$MODELS" ]; then
   echo "already extracted: $DEST"
+  cat "$STAMP"
   echo "EXTRACT OK"
   exit 0
 fi
@@ -69,5 +82,13 @@ for SCENE in "${SCENES[@]}"; do
 done
 
 du -sh "$DEST"
+
+# Written last, and only if every check above passed. This is what a later run
+# trusts, so it records what was extracted and how much of it.
+: > "$STAMP"
+for SCENE in "${SCENES[@]}"; do
+  printf '%s: %s rgb frames\n' "$SCENE" "$(ls "$DEST/test/$SCENE/rgb" | wc -l)" >> "$STAMP"
+done
+
 echo "EXTRACT OK"
 echo "pass to test_causal_housecat6d.py:  --data_root $DEST"
