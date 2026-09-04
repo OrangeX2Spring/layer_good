@@ -1,7 +1,13 @@
 #!/bin/bash
 # Step 1a of the causal-readout line: the KV cache. Runs INSIDE localhost/optpose.
 #
-#   bash tools/opt_pose_kvcache.sh <num_ref> <num_seqs> [data_root] [query_gap] [start]
+#   bash tools/opt_pose_kvcache.sh <num_ref> <num_seqs> [data_root] [query_gap] [start] [cache_only]
+#
+# A non-empty sixth argument passes --cache_only: no readout baseline, no
+# fidelity, no controls, just what the cached path costs. That is the only way
+# the large-n cells run at all -- the baseline holds 24 intermediates of
+# [B, S, P, 2C], which is 2.4 GB at n=8 and 8.9 GB at n=32 on top of 5.4 GB of
+# weights, so it runs out of memory long before the cache does.
 #
 # Same shape as tools/opt_pose_causal_run.sh, and the same defaults: data_root
 # is job-local /tmp, query_gap 1, start 0.
@@ -23,11 +29,19 @@ NUM_SEQS="${2:?usage: opt_pose_kvcache.sh <num_ref> <num_seqs> [data_root] [quer
 DATA_ROOT="${3:-/tmp/data/housecat6d}"
 QUERY_GAP="${4:-1}"
 START="${5:-0}"
+CACHE_ONLY="${6:-}"
 ROOT=/mnt/projects/gr/3DRecon
 OUT="$ROOT/optpose_kvcache_out"
 
 mkdir -p "$OUT"
 cd "$(dirname "$0")/../opt_pose"
+
+SUFFIX=""
+EXTRA=()
+if [ -n "$CACHE_ONLY" ]; then
+  SUFFIX="_cacheonly"
+  EXTRA=(--cache_only)
+fi
 
 python test_kvcache_housecat6d.py \
   --data_root  "$DATA_ROOT" \
@@ -36,6 +50,7 @@ python test_kvcache_housecat6d.py \
   --num_seqs   "$NUM_SEQS" \
   --query_gap  "$QUERY_GAP" \
   --start      "$START" \
-  --out        "$OUT/kvcache_ref${NUM_REF}_gap${QUERY_GAP}_start${START}_seqs${NUM_SEQS}.json"
+  --out        "$OUT/kvcache_ref${NUM_REF}_gap${QUERY_GAP}_start${START}_seqs${NUM_SEQS}${SUFFIX}.json" \
+  "${EXTRA[@]}"
 
 echo "RUN OK"
