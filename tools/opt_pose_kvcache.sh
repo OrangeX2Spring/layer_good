@@ -1,7 +1,12 @@
 #!/bin/bash
 # Step 1a of the causal-readout line: the KV cache. Runs INSIDE localhost/optpose.
 #
-#   bash tools/opt_pose_kvcache.sh <num_ref> <num_seqs> [data_root] [query_gap] [start] [cache_only]
+#   bash tools/opt_pose_kvcache.sh <num_ref> <num_seqs> [data_root] [query_gap] [start] [cache_only] [dtype]
+#
+# dtype is fp32 (default), tf32 or bf16, and the last two need sm_80+ -- so 24g,
+# not the 12g Turing nodes, where bf16 is emulated and tf32 does not exist. bf16
+# halves the cache as well as the matmuls: 128.8 MiB per reference frame instead
+# of 257.6, which is what decides whether a 70-frame cache fits 24 GB.
 #
 # A non-empty sixth argument passes --cache_only: no readout baseline, no
 # fidelity, no controls, just what the cached path costs. That is the only way
@@ -30,17 +35,18 @@ DATA_ROOT="${3:-/tmp/data/housecat6d}"
 QUERY_GAP="${4:-1}"
 START="${5:-0}"
 CACHE_ONLY="${6:-}"
+DTYPE="${7:-fp32}"
 ROOT=/mnt/projects/gr/3DRecon
 OUT="$ROOT/optpose_kvcache_out"
 
 mkdir -p "$OUT"
 cd "$(dirname "$0")/../opt_pose"
 
-SUFFIX=""
-EXTRA=()
+SUFFIX="_$DTYPE"
+EXTRA=(--dtype "$DTYPE")
 if [ -n "$CACHE_ONLY" ]; then
-  SUFFIX="_cacheonly"
-  EXTRA=(--cache_only)
+  SUFFIX="${SUFFIX}_cacheonly"
+  EXTRA+=(--cache_only)
 fi
 
 python test_kvcache_housecat6d.py \
