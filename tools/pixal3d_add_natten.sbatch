@@ -14,17 +14,28 @@
 # shape_512, shape_1024 and tex_1024, and proj_channels is embed_dim*2 when it
 # is on, so NAF is part of the checkpoint's architecture rather than a toggle.
 #
-# A prebuilt wheel means no compiler runs here, so this is a five-minute change
-# to a 14.6 GB image rather than the three-hour rebuild tools/pixal3d_build.sh
-# does. The GPU is attached only for the memory grant (docs/camp-cluster-field-
-# notes.md: `--mem*` is refused and a GPU-free allocation gets 4 GB); jena's
-# sm_52 TITAN X is unusable with current CUDA wheels, so nothing is taken from
-# anyone. `data` also has no idle-GPU auto-stop rule, which 24g does.
+# A prebuilt wheel means no compiler runs here, so this is a twenty-minute
+# change to a 14.6 GB image rather than the three-hour rebuild
+# tools/pixal3d_build.sh does.
+#
+# This needs a REAL, SUPPORTED GPU, which is why it is not on `data`. Attempt 1
+# (job 21209) ran on jena with a GPU attached for the memory grant but no
+# --device passed into the container, and died on `import natten`:
+#
+#   natten/__init__.py:69 -> na1d -> experimental -> ops -> utils/testing.py:47
+#     -> get_device_cc() -> torch.cuda.get_device_capability()
+#   RuntimeError: Found no NVIDIA driver on your system.
+#
+# natten 0.17.5 queries the device at import time, unconditionally. So the
+# container must see a GPU, and jena's sm_52 TITAN X is not one this image's
+# cu124 wheels support. muenchen (A5000, sm_86) is the node the scale-up job
+# runs on anyway. The 24g idle-GPU rule (a) needs two GPU-free hours to fire and
+# this job is well under that.
 #
 # Log: /mnt/projects/gr/3DRecon/pixal3d_natten_slurm-<jobid>.log
 #SBATCH --job-name=pixal3d-natten
-#SBATCH --partition=data
-#SBATCH --nodelist=jena
+#SBATCH --partition=24g
+#SBATCH --nodelist=muenchen
 #SBATCH --gres=gpu:1
 #SBATCH --propagate=NONE
 #SBATCH --time=02:00:00
@@ -46,9 +57,14 @@ podman load -i "$TAR"
 
 # --replace rather than --rm: the container has to survive the run so that
 # podman commit has something to commit.
+nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader
+
+# --device is not optional here: natten touches torch.cuda at import, so a
+# container with no GPU cannot even load the module it just installed.
 podman run \
   -v /mnt:/mnt:rw -v /tmp:/tmp:rw \
   --name=pixal3d-natten --replace --network=host \
+  --device=nvidia.com/gpu="$CUDA_VISIBLE_DEVICES" \
   -e TORCH_HOME=/mnt/projects/gr/3DRecon/.torch_cache \
   localhost/pixal3d \
   bash -c "
@@ -61,6 +77,7 @@ podman run \
     python - <<'PY'
 import torch
 from natten.functional import na2d_av, na2d_qk
+print('natten import ok, device_cc', torch.cuda.get_device_capability())
 naf = torch.hub.load('valeoai/NAF', 'naf', pretrained=True, device='cpu', trust_repo=True)
 print('natten ok, NAF loaded:', type(naf).__name__)
 PY
