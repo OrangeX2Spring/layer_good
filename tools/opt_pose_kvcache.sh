@@ -34,7 +34,7 @@ NUM_SEQS="${2:?usage: opt_pose_kvcache.sh <num_ref> <num_seqs> [data_root] [quer
 DATA_ROOT="${3:-/tmp/data/housecat6d}"
 QUERY_GAP="${4:-1}"
 START="${5:-0}"
-CACHE_ONLY="${6:-}"
+CACHE_ONLY="${6:-}"   # "e2e" runs Step 1b end to end instead
 DTYPE="${7:-fp32}"
 ROOT=/mnt/projects/gr/3DRecon
 OUT="$ROOT/optpose_kvcache_out"
@@ -44,7 +44,10 @@ cd "$(dirname "$0")/../opt_pose"
 
 SUFFIX="_$DTYPE"
 EXTRA=(--dtype "$DTYPE")
-if [ -n "$CACHE_ONLY" ]; then
+if [ "$CACHE_ONLY" = e2e ]; then
+  SUFFIX="${SUFFIX}_e2e"
+  EXTRA+=(--end_to_end)
+elif [ -n "$CACHE_ONLY" ]; then
   SUFFIX="${SUFFIX}_cacheonly"
   EXTRA+=(--cache_only)
 fi
