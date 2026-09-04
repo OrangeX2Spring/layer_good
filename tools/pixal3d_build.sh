@@ -17,10 +17,13 @@
 # and pyproject to TRELLIS.2's. This script follows that proven order.
 #
 # Deviations from the README, each deliberate:
-#   1. natten dropped. README Step 3 installs it, but nothing under pixal3d/
-#      imports it - `grep -rn natten pixal3d/` hits only README.md and
-#      requirements-hfdemo.txt. It is a TRELLIS.2 leftover, and a long
-#      from-source CUDA build to carry for nothing.
+#   1. natten IS required, and a prebuilt wheel replaces the README's source
+#      build. This reverses the earlier decision to drop it, which was wrong and
+#      cost Slurm job 21203: `grep -rn natten pixal3d/` hits only README.md and
+#      requirements-hfdemo.txt, but natten does not arrive through this
+#      checkout at all. image_conditioned_proj.py:_load_naf does
+#      torch.hub.load("valeoai/NAF"), and NAF imports natten. A grep over the
+#      source cannot see a torch.hub dependency fetched at runtime.
 #   2. No flash-attn. Both pixal3d/modules/attention/config.py and
 #      pixal3d/modules/sparse/config.py accept 'sdpa', and the README documents
 #      the sdpa fallback. This avoids the flash-attn ABI trap that cost
@@ -67,6 +70,16 @@ rm -rf /var/lib/apt/lists/*
 pip install --no-cache-dir -r requirements.txt
 pip install --no-cache-dir \
   https://github.com/LDYang694/Storages/releases/download/20260430/utils3d-0.0.2-py3-none-any.whl
+
+# natten (README step 3), as a prebuilt wheel rather than the README's source
+# build. It is needed by valeoai/NAF, which _load_naf pulls through torch.hub -
+# see deviation 1 above. 0.17.5 is the newest natten built against torch 2.6.0;
+# 0.21.x, which the README names, exists only for newer torch. NAF tries
+# `from natten.functional import na2d_av, na2d_qk` before falling back to
+# `from natten import na2d`, and 0.17.5 provides that first path. Pinned by
+# direct URL for the same reason utils3d is: the wheel index moves.
+pip install --no-cache-dir \
+  https://github.com/SHI-Labs/NATTEN/releases/download/v0.17.5/natten-0.17.5%2Btorch260cu124-cp311-cp311-linux_x86_64.whl
 
 # ── CUDA extensions ───────────────────────────────────────────────────────────
 export TORCH_CUDA_ARCH_LIST="8.6;8.9;9.0"
@@ -139,7 +152,7 @@ pip install --no-cache-dir /tmp/extensions/TRELLIS.2/o-voxel \
   --no-build-isolation --no-deps
 
 # ── Verify ────────────────────────────────────────────────────────────────────
-pip list | grep -i -E 'nvdiffr|cumesh|flex|voxel|utils3d|moge|torch|transformers|diffusers'
+pip list | grep -i -E 'nvdiffr|cumesh|flex|voxel|utils3d|moge|natten|torch|transformers|diffusers'
 
 cd "$REPO"
 ATTN_BACKEND=sdpa SPARSE_ATTN_BACKEND=sdpa python - <<'PY'
@@ -150,6 +163,7 @@ import nvdiffrast.torch
 import nvdiffrec_render
 import o_voxel
 import utils3d
+from natten.functional import na2d_av, na2d_qk
 from moge.model.v2 import MoGeModel
 from pixal3d.modules.attention import config as attention_config
 from pixal3d.modules.sparse import config as sparse_config

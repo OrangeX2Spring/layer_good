@@ -6,6 +6,7 @@ import csv
 import json
 import sys
 import time
+import traceback
 from pathlib import Path
 
 import numpy as np
@@ -46,44 +47,75 @@ def main():
     with args.cases.open(newline="") as handle:
         cases = list(csv.DictReader(handle, delimiter="\t"))
 
+    done = 0
+    failures = []
+
     for case in cases:
         for condition in args.conditions:
+            label = f"{case['slug']}/{condition}"
             input_path = args.input_root / case["slug"] / condition / "input.png"
-            rgba = np.asarray(Image.open(input_path).convert("RGBA"), dtype=np.uint8)
-            mask = rgba[..., 3] > 127
-            assert mask.any(), input_path
 
-            output_dir = args.output_root / case["slug"] / condition
-            output_dir.mkdir(parents=True, exist_ok=True)
+            # A missing input means the Pixal3D stage did not get this far. It is
+            # that stage's failure to report, not this one's to crash on -- which
+            # is exactly how job 21203 lost five cases.
+            if not input_path.is_file():
+                print(f"SAM3D SKIP {label}: no {input_path}", flush=True)
+                failures.append(f"{label}:missing-input")
+                continue
 
-            torch.cuda.reset_peak_memory_stats()
-            start = time.perf_counter()
-            output = pipeline(rgba[..., :3], mask, seed=args.seed)
-            elapsed = time.perf_counter() - start
+            try:
+                rgba = np.asarray(Image.open(input_path).convert("RGBA"), dtype=np.uint8)
+                mask = rgba[..., 3] > 127
+                assert mask.any(), input_path
 
-            output["gs"].save_ply(str(output_dir / "splat.ply"))
-            assert output["glb"] is not None
-            output["glb"].export(str(output_dir / "model.glb"))
+                output_dir = args.output_root / case["slug"] / condition
+                output_dir.mkdir(parents=True, exist_ok=True)
 
-            metadata = {
-                "scene_id": int(case["scene_id"]),
-                "image_id": int(case["image_id"]),
-                "gt_id": int(case["gt_id"]),
-                "obj_id": int(case["obj_id"]),
-                "condition": condition,
-                "seed": args.seed,
-                "input": str(input_path),
-                "elapsed_seconds": elapsed,
-                "peak_cuda_gb": torch.cuda.max_memory_allocated() / 1024**3,
-            }
-            for key in ("rotation", "translation", "scale", "iou", "iou_before_optim", "optim_accepted"):
-                if key in output:
-                    metadata[key] = serialise(output[key])
-            (output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
+                torch.cuda.reset_peak_memory_stats()
+                start = time.perf_counter()
+                output = pipeline(rgba[..., :3], mask, seed=args.seed)
+                elapsed = time.perf_counter() - start
 
-            assert (output_dir / "splat.ply").stat().st_size > 0
-            assert (output_dir / "model.glb").stat().st_size > 0
-            print(f"{case['slug']} {condition}: {elapsed:.1f}s, {metadata['peak_cuda_gb']:.2f} GiB")
+                output["gs"].save_ply(str(output_dir / "splat.ply"))
+                assert output["glb"] is not None
+                output["glb"].export(str(output_dir / "model.glb"))
+
+                metadata = {
+                    "scene_id": int(case["scene_id"]),
+                    "image_id": int(case["image_id"]),
+                    "gt_id": int(case["gt_id"]),
+                    "obj_id": int(case["obj_id"]),
+                    "condition": condition,
+                    "seed": args.seed,
+                    "input": str(input_path),
+                    "elapsed_seconds": elapsed,
+                    "peak_cuda_gb": torch.cuda.max_memory_allocated() / 1024**3,
+                }
+                for key in ("rotation", "translation", "scale", "iou", "iou_before_optim", "optim_accepted"):
+                    if key in output:
+                        metadata[key] = serialise(output[key])
+                (output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
+
+                assert (output_dir / "splat.ply").stat().st_size > 0
+                assert (output_dir / "model.glb").stat().st_size > 0
+            except Exception:
+                # Deliberately broad, and deliberately not silent: this is an
+                # unattended runner over twelve independent cases, and the mesh
+                # export is untested at scale on a 24 GB card. The traceback is
+                # printed in full and the process still exits non-zero below.
+                traceback.print_exc()
+                print(f"SAM3D FAIL {label}", flush=True)
+                failures.append(f"{label}:error")
+                continue
+
+            done += 1
+            print(f"{label}: {elapsed:.1f}s, {metadata['peak_cuda_gb']:.2f} GiB", flush=True)
+
+    print(f"SAM3D SUMMARY reconstructions={done} failed={len(failures)}", flush=True)
+    if failures:
+        for failure in failures:
+            print(f"SAM3D FAILED {failure}", flush=True)
+        sys.exit(1)
 
     print("SAM3D RUN OK")
 
