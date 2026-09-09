@@ -28,7 +28,16 @@ def main():
                         help="Report only the viewpoint arc; needs labels/, not images")
     args = parser.parse_args()
     assert args.stride > 0 and args.top > 0
-    files = sorted((args.scene / "rgb").glob("*.png"))[::args.stride]
+    if args.arc_only:
+        # labels/ alone is enough, so a whole test split can be checked from a
+        # small unzip rather than a full scene extraction.
+        files = [p.with_name(p.name.replace("_label.pkl", ".png"))
+                 for p in sorted((args.scene / "labels").glob("*_label.pkl"))]
+    else:
+        files = sorted((args.scene / "rgb").glob("*.png"))
+    files = files[::args.stride]
+    if not files:
+        raise FileNotFoundError(f"No frames under {args.scene}")
     rows, directions = [], []
     for path in files:
         with (args.scene / "labels" / f"{path.stem}_label.pkl").open("rb") as handle:
