@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import pickle
 import os
 import subprocess
 import sys
@@ -13,6 +14,8 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "kv_tracker"))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "kvt_roi"))
+from scan_holes import viewing_direction
 from kv_tracker.sam_interface import SAMInterface
 import main as tracker
 
@@ -91,9 +94,11 @@ def main():
     parser.add_argument("--mask-mode", choices=["sam2", "annotation"], default="sam2")
     parser.add_argument("--keyframes-from", type=Path, help="Replay a completed baseline's keyframe schedule for a matched mask control")
     parser.add_argument("--keyframe-every", type=int, help="Force a keyframe every N frames instead of the tracker's own 10-degree view-change rule. Not the method; state it as a forced schedule")
+    parser.add_argument("--keyframe-arc", type=float, help="Force a keyframe once the view direction moves this many degrees from every existing one, by true angular distance, read from the annotations. This is check_if_keyframe's stated intent; its own test takes per-axis minima independently and saturates early")
     args = parser.parse_args()
-    if args.keyframe_every is not None and args.keyframes_from is not None:
-        raise ValueError("--keyframe-every and --keyframes-from both set the schedule")
+    schedules = [args.keyframe_every, args.keyframes_from, args.keyframe_arc]
+    if sum(s is not None for s in schedules) > 1:
+        raise ValueError("Only one of --keyframe-every, --keyframes-from, --keyframe-arc")
     manifest = json.loads(args.input.read_text())
     if len(manifest["frames"]) < 2:
         raise ValueError("At least two input frames are required")
@@ -105,6 +110,26 @@ def main():
                                      args.keyframe_every))
         print(f"FORCED SCHEDULE: {len(keyframe_indices) + 1} keyframes "
               f"every {args.keyframe_every} frames")
+    if args.keyframe_arc is not None:
+        assert 0 < args.keyframe_arc < 180
+        scene = Path(manifest["scene"])
+        directions = []
+        for frame in manifest["frames"]:
+            stem = frame["id"].replace("_rgb", "")
+            with (scene / "labels" / f"{stem}_label.pkl").open("rb") as handle:
+                directions.append(viewing_direction(pickle.load(handle),
+                                                    manifest["instance_id"]))
+        directions = np.array(directions)
+        limit = np.cos(np.radians(args.keyframe_arc))
+        chosen = [0]
+        for index in range(1, len(directions)):
+            # Angular distance to every keyframe, not per-axis minima taken
+            # independently: that is what lets the tracker's own rule saturate.
+            if (directions[chosen] @ directions[index]).max() < limit:
+                chosen.append(index)
+        keyframe_indices = set(chosen) - {0}
+        print(f"FORCED SCHEDULE: {len(chosen)} keyframes at "
+              f"{args.keyframe_arc:g} deg of true angular separation")
     if args.keyframes_from is not None:
         baseline = json.loads((args.keyframes_from / "manifest.json").read_text())
         if baseline["input"] != manifest or not (args.keyframes_from / "capture_complete.json").is_file():
