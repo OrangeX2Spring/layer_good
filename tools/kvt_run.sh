@@ -8,6 +8,9 @@ test "$(hostname)" != head
 test -n "${SLURM_JOB_ID:?Run inside a Slurm allocation}"
 ROOT=/mnt/projects/gr/3DRecon/layer_good
 STORE=/mnt/projects/gr/3DRecon
+# sam-2 and pi3 are editable installs pinned to the pre-2026-08-29 at3dcv root,
+# which no longer exists; PYTHONPATH supplies them instead of a 19 GB rebuild.
+THIRDPARTY="$ROOT/kv_tracker/thirdparty"
 MODE="${1:?Expected prepare, capture, artifacts, or check}"
 shift
 GPU_ARGS=()
@@ -29,6 +32,6 @@ fi
 podman run --rm --network=host \
   -v /mnt:/mnt:rw -v /tmp:/tmp:rw -w "$ROOT/kv_tracker" \
   "${GPU_ARGS[@]}" \
-  -e PYTHONPATH="$ROOT/kv_tracker/thirdparty/Pi3:$ROOT/kv_tracker" \
+  -e PYTHONPATH="$THIRDPARTY/Pi3:$THIRDPARTY/segment-anything-2-real-time:$ROOT/kv_tracker" \
   -e HF_HOME="$STORE/.hf_cache" -e HF_TOKEN -e HF_XET_HIGH_PERFORMANCE=1 \
   localhost/kvt python "$ROOT/tools/$SCRIPT" "$@"
