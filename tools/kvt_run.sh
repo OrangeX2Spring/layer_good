@@ -33,5 +33,6 @@ podman run --rm --network=host \
   -v /mnt:/mnt:rw -v /tmp:/tmp:rw -w "$ROOT/kv_tracker" \
   "${GPU_ARGS[@]}" \
   -e PYTHONPATH="$THIRDPARTY/Pi3:$THIRDPARTY/segment-anything-2-real-time:$ROOT/kv_tracker" \
+  -e PYTHONUNBUFFERED=1 \
   -e HF_HOME="$STORE/.hf_cache" -e HF_TOKEN -e HF_XET_HIGH_PERFORMANCE=1 \
   localhost/kvt python "$ROOT/tools/$SCRIPT" "$@"
