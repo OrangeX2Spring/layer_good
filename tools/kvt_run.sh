@@ -11,7 +11,7 @@ STORE=/mnt/projects/gr/3DRecon
 # sam-2 and pi3 are editable installs pinned to the pre-2026-08-29 at3dcv root,
 # which no longer exists; PYTHONPATH supplies them instead of a 19 GB rebuild.
 THIRDPARTY="$ROOT/kv_tracker/thirdparty"
-MODE="${1:?Expected prepare, roi, capture, artifacts, or check}"
+MODE="${1:?Expected prepare, scan, roi, capture, artifacts, or check}"
 shift
 GPU_ARGS=()
 case "$MODE" in
@@ -23,7 +23,8 @@ case "$MODE" in
     source "$HOME/.hf_env"
     ;;
   artifacts) SCRIPT=kvt_artifacts.py ;;
-  roi) SCRIPT=kvt_roi_cup_s75/derive_roi.py ;;
+  roi) SCRIPT=kvt_roi/derive_roi.py ;;
+  scan) SCRIPT=kvt_roi/scan_holes.py ;;
   check) SCRIPT=test_kvt_artifacts.py ;;
   *) echo "Unknown mode: $MODE" >&2; exit 2 ;;
 esac
