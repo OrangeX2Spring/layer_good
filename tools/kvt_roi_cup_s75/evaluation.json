@@ -1,0 +1,70 @@
+{
+  "reference": "reference.npz",
+  "anchor_mask": "anchor_mask.png",
+  "roi_to_reference": [
+    [
+      1.0,
+      0.0,
+      0.0,
+      -0.16417293697062468
+    ],
+    [
+      0.0,
+      1.0,
+      0.0,
+      -0.02852487494577784
+    ],
+    [
+      0.0,
+      0.0,
+      1.0,
+      0.47699999809265137
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "voxel_size_m": 0.002,
+  "max_alignment_rmse_m": 0.005,
+  "render_reference_to_view": [
+    [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      1.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "render_bounds_m": [
+    -0.3059586990985734,
+    -0.11495977066434798,
+    -0.13659142411791125,
+    0.054407504316314144
+  ],
+  "roi_extent_m": [
+    0.014,
+    0.014,
+    0.012
+  ],
+  "empty_region_evidence": "HouseCat6D test_scene1 instance 4 (cup-grey_handle), reference frame 000075. The annotation mask encloses a 231 px hole at the handle; the wooden table is directly visible through the loop in the reference RGB. GT depth is dense on the object (6407/6407 object pixels valid) and returns nothing inside the hole. The 1.4x1.4x1.2 cm box contains no GT point; the nearest valid GT point is 1.8 mm away. The scanned mesh was not consulted."
+}
