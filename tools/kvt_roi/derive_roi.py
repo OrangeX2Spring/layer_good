@@ -79,7 +79,16 @@ def main():
     hy, hx = np.nonzero(hole)
     hole_xyz = np.c_[np.c_[hx, hy, np.ones(hx.size)] @ coefficients, np.ones(hx.size)] * plane_depth
     centre = hole_xyz.mean(0)
-    footprint = float(min(np.ptp(hole_xyz[:, 0]), np.ptp(hole_xyz[:, 1])))
+    # Orient the box along the line of sight through the opening. An axis-aligned
+    # prism does not follow that ray for an off-axis hole: at greater depth the
+    # same metric x,y maps to pixels drifting inward, onto the object itself.
+    forward = centre / np.linalg.norm(centre)
+    right = np.cross(np.array([0.0, 1.0, 0.0]), forward)
+    right /= np.linalg.norm(right)
+    rotation = np.column_stack((right, np.cross(forward, right), forward))
+    assert np.allclose(rotation.T @ rotation, np.eye(3)) and np.linalg.det(rotation) > 0
+    local_hole = (hole_xyz - centre) @ rotation
+    footprint = float(min(np.ptp(local_hole[:, 0]), np.ptp(local_hole[:, 1])))
 
     # Reject silhouette edges and depth steps: anchors must be reliable surface.
     padded = np.where(known, depth, np.nan)
@@ -97,8 +106,9 @@ def main():
     write_png(args.out / "anchor_mask.png", image)
 
     roi_to_reference = np.eye(4)
+    roi_to_reference[:3, :3] = rotation
     roi_to_reference[:3, 3] = centre
-    cloud = xyz[known]
+    cloud = (xyz[known] - centre) @ rotation
     surface = xyz[mask & valid]
     span = max(np.ptp(surface[:, 0]), np.ptp(surface[:, 1])) * 1.6 / 2
     view_centre = surface[:, :2].mean(0)
@@ -113,19 +123,19 @@ def main():
             raise ValueError(f"{name}: opening spans only {side / args.voxel_size_m:.1f} voxels")
         # The free space through a handle is a tube, not a cube: how deep it runs
         # is set by whatever the sensor sees in front of and behind the opening.
-        column = cloud[(np.abs(cloud[:, :2] - centre[:2]) < side / 2).all(1), 2]
-        front, behind = column[column < plane_depth], column[column > plane_depth]
+        column = cloud[(np.abs(cloud[:, :2]) < side / 2).all(1), 2]
+        front, behind = column[column < 0], column[column > 0]
         limits = [side / 2]
         if front.size:
-            limits.append(plane_depth - front.max() - args.voxel_size_m)
+            limits.append(-front.max() - args.voxel_size_m)
         if behind.size:
-            limits.append(behind.min() - plane_depth - args.voxel_size_m)
+            limits.append(behind.min() - args.voxel_size_m)
         depth = np.floor(2 * min(limits) / args.voxel_size_m) * args.voxel_size_m
         if depth < 2 * args.voxel_size_m:
             raise ValueError(f"{name}: only {depth / args.voxel_size_m:.1f} voxels of free depth "
                              f"behind a {side * 100:.1f} cm opening")
         extent = np.array([side, side, depth])
-        low, high = centre - extent / 2, centre + extent / 2
+        low, high = -extent / 2, extent / 2
         inside = ((cloud >= low) & (cloud <= high)).all(1)
         gap = np.maximum(np.maximum(low - cloud[~inside], cloud[~inside] - high), 0)
         clearance = float(np.linalg.norm(gap, axis=1).min())
