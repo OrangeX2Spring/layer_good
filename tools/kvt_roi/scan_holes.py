@@ -21,12 +21,18 @@ def viewing_direction(label, instance_id):
 def main():
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument("--scene", type=Path, required=True)
-    parser.add_argument("--instance-id", type=int, required=True)
+    parser.add_argument("--instance-id", type=int)
     parser.add_argument("--stride", type=int, default=5)
     parser.add_argument("--top", type=int, default=12)
     parser.add_argument("--arc-only", action="store_true",
                         help="Report only the viewpoint arc; needs labels/, not images")
+    parser.add_argument("--all-instances", action="store_true",
+                        help="With --arc-only, report every instance in the scene")
     args = parser.parse_args()
+    if args.all_instances and not args.arc_only:
+        raise ValueError("--all-instances only makes sense with --arc-only")
+    if (args.instance_id is None) != bool(args.all_instances):
+        raise ValueError("Pass exactly one of --instance-id or --all-instances")
     assert args.stride > 0 and args.top > 0
     if args.arc_only:
         # labels/ alone is enough, so a whole test split can be checked from a
@@ -38,26 +44,38 @@ def main():
     files = files[::args.stride]
     if not files:
         raise FileNotFoundError(f"No frames under {args.scene}")
+    if args.all_instances:
+        with (args.scene / "labels" / files[0].name.replace(".png", "_label.pkl")).open("rb") as handle:
+            ids = list(pickle.load(handle)["instance_ids"])
+        for instance_id in ids:
+            print(f"instance {instance_id}: ", end="")
+            report(args, files, instance_id)
+        return
+    report(args, files, args.instance_id)
+
+
+def report(args, files, instance_id):
     rows, directions = [], []
     for path in files:
         with (args.scene / "labels" / f"{path.stem}_label.pkl").open("rb") as handle:
             label = pickle.load(handle)  # Trusted local HouseCat6D release only.
-        if args.instance_id not in list(label["instance_ids"]):
+        if instance_id not in list(label["instance_ids"]):
             continue
-        directions.append(viewing_direction(label, args.instance_id))
+        directions.append(viewing_direction(label, instance_id))
         if args.arc_only:
             continue
         instance = cv2.imread(str(args.scene / "instance" / path.name), cv2.IMREAD_UNCHANGED)
         if instance is None:
             raise FileNotFoundError(path)
-        mask = (instance[..., 2] if instance.ndim == 3 else instance) == args.instance_id
+        mask = (instance[..., 2] if instance.ndim == 3 else instance) == instance_id
         if not mask.any():
             continue
         ys, xs = np.nonzero(mask)
         extent = max(ys.max() - ys.min(), xs.max() - xs.min()) + 1
         rows.append((int(flood_holes(mask).sum()), path.stem, int(mask.sum()), int(extent)))
     if not directions:
-        raise ValueError(f"Instance {args.instance_id} appears in no scanned frame")
+        print(f"instance {instance_id} appears in no scanned frame")
+        return
     v = np.array(directions)
     elevation = np.degrees(np.arcsin(np.clip(v[:, 1], -1, 1)))
     azimuth = np.degrees(np.arctan2(v[:, 0], v[:, 2]))
@@ -65,13 +83,15 @@ def main():
     # The tracker adds a keyframe past 10 degrees of view change (main.py:115), so
     # the count of occupied 10-degree cells is what the schedule can actually reach.
     cells = len({(int(a // 10), int(e // 10)) for a, e in zip(azimuth, elevation)})
-    print(f"arc: azimuth span {np.ptp(azimuth):.0f} deg, elevation span "
-          f"{np.ptp(elevation):.0f} deg, max pairwise {arc:.0f} deg, "
-          f"{cells} occupied 10-deg cells -> ~{cells} keyframes")
+    model = "?"
+    with (args.scene / "labels" / files[0].name.replace(".png", "_label.pkl")).open("rb") as handle:
+        label = pickle.load(handle)
+        if instance_id in list(label["instance_ids"]):
+            model = str(label["model_list"][list(label["instance_ids"]).index(instance_id)])
+    print(f"arc {arc:5.0f} deg (az {np.ptp(azimuth):3.0f}, el {np.ptp(elevation):3.0f}), "
+          f"{cells:3d} ten-degree cells -> ~{cells} keyframes   {model}")
     if args.arc_only:
         return
-    if not rows:
-        raise ValueError(f"Instance {args.instance_id} appears in no scanned frame")
     enclosing = [r for r in rows if r[0] > 0]
     print(f"scanned {len(rows)} frames at stride {args.stride}; "
           f"{len(enclosing)} enclose an opening")
