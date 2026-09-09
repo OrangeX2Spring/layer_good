@@ -7,8 +7,10 @@ from pathlib import Path
 
 import numpy as np
 
-BOXES = (("evaluation.json", (0.014, 0.014, 0.012)),
-         ("evaluation_tight.json", (0.012, 0.012, 0.010)))
+# Fractions of the measured opening, not fixed sizes: the box has to scale with
+# the hole or it measures a patch of a large one. 0.65/0.55 reproduce the
+# 1.4 cm and 1.2 cm boxes hand-chosen for the cup's 2.1 cm opening.
+BOXES = (("evaluation.json", 0.65), ("evaluation_tight.json", 0.55))
 
 
 def flood_holes(mask):
@@ -77,6 +79,7 @@ def main():
     hy, hx = np.nonzero(hole)
     hole_xyz = np.c_[np.c_[hx, hy, np.ones(hx.size)] @ coefficients, np.ones(hx.size)] * plane_depth
     centre = hole_xyz.mean(0)
+    footprint = float(min(np.ptp(hole_xyz[:, 0]), np.ptp(hole_xyz[:, 1])))
 
     # Reject silhouette edges and depth steps: anchors must be reliable surface.
     padded = np.where(known, depth, np.nan)
@@ -103,15 +106,19 @@ def main():
           f"anchors {int(anchor.sum())} px, object depth valid "
           f"{int((mask & valid).sum())}/{int(mask.sum())}")
     print(f"roi centre {centre.round(4)}")
-    for name, extent in BOXES:
-        extent = np.asarray(extent)
+    print(f"hole footprint {footprint * 100:.1f} cm across at the handle plane")
+    for name, fraction in BOXES:
+        side = round(footprint * fraction / args.voxel_size_m) * args.voxel_size_m
+        if side < 2 * args.voxel_size_m:
+            raise ValueError(f"{name}: opening spans only {side / args.voxel_size_m:.1f} voxels")
+        extent = np.full(3, side)
         low, high = centre - extent / 2, centre + extent / 2
         inside = ((cloud >= low) & (cloud <= high)).all(1)
         gap = np.maximum(np.maximum(low - cloud[~inside], cloud[~inside] - high), 0)
         clearance = float(np.linalg.norm(gap, axis=1).min())
         if inside.any():
             raise ValueError(f"{name}: {int(inside.sum())} GT points inside the supposedly empty box")
-        label = "x".join(f"{v * 100:g}" for v in extent)
+        label = "x".join(f"{v * 100:g}" for v in extent.round(4))
         evidence = (
             f"Reference {args.reference.parent.name}. The annotation mask encloses a "
             f"{int(hole.sum())} px hole at the handle and the table is visible through the "
