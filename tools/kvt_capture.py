@@ -90,11 +90,21 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--mask-mode", choices=["sam2", "annotation"], default="sam2")
     parser.add_argument("--keyframes-from", type=Path, help="Replay a completed baseline's keyframe schedule for a matched mask control")
+    parser.add_argument("--keyframe-every", type=int, help="Force a keyframe every N frames instead of the tracker's own 10-degree view-change rule. Not the method; state it as a forced schedule")
     args = parser.parse_args()
+    if args.keyframe_every is not None and args.keyframes_from is not None:
+        raise ValueError("--keyframe-every and --keyframes-from both set the schedule")
     manifest = json.loads(args.input.read_text())
     if len(manifest["frames"]) < 2:
         raise ValueError("At least two input frames are required")
     keyframe_indices = None
+    if args.keyframe_every is not None:
+        assert args.keyframe_every > 0
+        # Frame 0 is the bootstrap keyframe and is never re-added.
+        keyframe_indices = set(range(args.keyframe_every, len(manifest["frames"]),
+                                     args.keyframe_every))
+        print(f"FORCED SCHEDULE: {len(keyframe_indices) + 1} keyframes "
+              f"every {args.keyframe_every} frames")
     if args.keyframes_from is not None:
         baseline = json.loads((args.keyframes_from / "manifest.json").read_text())
         if baseline["input"] != manifest or not (args.keyframes_from / "capture_complete.json").is_file():
