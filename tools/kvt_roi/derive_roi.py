@@ -7,10 +7,12 @@ from pathlib import Path
 
 import numpy as np
 
-# Fractions of the measured opening, not fixed sizes: the box has to scale with
-# the hole or it measures a patch of a large one. 0.65/0.55 reproduce the
-# 1.4 cm and 1.2 cm boxes hand-chosen for the cup's 2.1 cm opening.
-BOXES = (("evaluation.json", 0.65), ("evaluation_tight.json", 0.55))
+# The box scales with the opening, and which fraction is usable depends on what
+# sits behind it: on the teapot 0.65 lands 0.3 mm from a real surface while 0.55
+# clears comfortably. Search downward and keep the two largest that clear the
+# stated margin, rather than fixing fractions that happened to suit the cup.
+NAMES = ("evaluation.json", "evaluation_tight.json")
+FRACTIONS = (0.70, 0.65, 0.60, 0.55, 0.50, 0.45, 0.40)
 
 
 def flood_holes(mask):
@@ -58,6 +60,7 @@ def main():
     parser.add_argument("--voxel-size-m", type=float, default=0.002)
     parser.add_argument("--max-alignment-rmse-m", type=float, default=0.005)
     parser.add_argument("--anchor-clear-px", type=int, default=12)
+    parser.add_argument("--min-clearance-m", type=float, default=0.002)
     args = parser.parse_args()
     reference = np.load(args.reference)
     mask, xyz, valid = reference["object_mask"], reference["xyz"], reference["valid"]
@@ -117,10 +120,11 @@ def main():
           f"{int((mask & valid).sum())}/{int(mask.sum())}")
     print(f"roi centre {centre.round(4)}")
     print(f"hole footprint {footprint * 100:.1f} cm across at the handle plane")
-    for name, fraction in BOXES:
+    viable = []
+    for fraction in FRACTIONS:
         side = round(footprint * fraction / args.voxel_size_m) * args.voxel_size_m
         if side < 2 * args.voxel_size_m:
-            raise ValueError(f"{name}: opening spans only {side / args.voxel_size_m:.1f} voxels")
+            continue
         # The free space through a handle is a tube, not a cube: how deep it runs
         # is set by whatever the sensor sees in front of and behind the opening.
         column = cloud[(np.abs(cloud[:, :2]) < side / 2).all(1), 2]
@@ -132,15 +136,23 @@ def main():
             limits.append(behind.min() - args.voxel_size_m)
         depth = np.floor(2 * min(limits) / args.voxel_size_m) * args.voxel_size_m
         if depth < 2 * args.voxel_size_m:
-            raise ValueError(f"{name}: only {depth / args.voxel_size_m:.1f} voxels of free depth "
-                             f"behind a {side * 100:.1f} cm opening")
+            continue
         extent = np.array([side, side, depth])
-        low, high = -extent / 2, extent / 2
-        inside = ((cloud >= low) & (cloud <= high)).all(1)
-        gap = np.maximum(np.maximum(low - cloud[~inside], cloud[~inside] - high), 0)
-        clearance = float(np.linalg.norm(gap, axis=1).min())
+        inside = (np.abs(cloud) < extent / 2).all(1)
         if inside.any():
-            raise ValueError(f"{name}: {int(inside.sum())} GT points inside the supposedly empty box")
+            continue
+        gap = np.maximum(np.abs(cloud[~inside]) - extent / 2, 0)
+        clearance = float(np.linalg.norm(gap, axis=1).min())
+        if clearance < args.min_clearance_m:
+            continue
+        if viable and np.array_equal(viable[-1][0], extent):
+            continue  # neighbouring fractions round onto the same voxel grid
+        viable.append((extent, clearance))
+    if len(viable) < 2:
+        raise ValueError(f"Only {len(viable)} box sizes clear "
+                         f"{args.min_clearance_m * 1000:.1f} mm of real geometry; "
+                         f"this opening cannot be measured from this frame")
+    for name, (extent, clearance) in zip(NAMES, viable):
         label = "x".join(f"{v * 100:g}" for v in extent.round(4))
         evidence = (
             f"Reference {args.reference.parent.name}. The annotation mask encloses a "
