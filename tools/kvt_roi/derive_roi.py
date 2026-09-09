@@ -111,7 +111,20 @@ def main():
         side = round(footprint * fraction / args.voxel_size_m) * args.voxel_size_m
         if side < 2 * args.voxel_size_m:
             raise ValueError(f"{name}: opening spans only {side / args.voxel_size_m:.1f} voxels")
-        extent = np.full(3, side)
+        # The free space through a handle is a tube, not a cube: how deep it runs
+        # is set by whatever the sensor sees in front of and behind the opening.
+        column = cloud[(np.abs(cloud[:, :2] - centre[:2]) < side / 2).all(1), 2]
+        front, behind = column[column < plane_depth], column[column > plane_depth]
+        limits = [side / 2]
+        if front.size:
+            limits.append(plane_depth - front.max() - args.voxel_size_m)
+        if behind.size:
+            limits.append(behind.min() - plane_depth - args.voxel_size_m)
+        depth = np.floor(2 * min(limits) / args.voxel_size_m) * args.voxel_size_m
+        if depth < 2 * args.voxel_size_m:
+            raise ValueError(f"{name}: only {depth / args.voxel_size_m:.1f} voxels of free depth "
+                             f"behind a {side * 100:.1f} cm opening")
+        extent = np.array([side, side, depth])
         low, high = centre - extent / 2, centre + extent / 2
         inside = ((cloud >= low) & (cloud <= high)).all(1)
         gap = np.maximum(np.maximum(low - cloud[~inside], cloud[~inside] - high), 0)
