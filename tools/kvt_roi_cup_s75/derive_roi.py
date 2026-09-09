@@ -1,3 +1,5 @@
+"""Derive the handle ROI, alignment anchors and evaluation configs from a reference."""
+import argparse
 import json
 import struct
 import zlib
@@ -5,109 +7,130 @@ from pathlib import Path
 
 import numpy as np
 
-OUT = Path("tools/kvt_roi_cup_s75")
-d = np.load("cluster_results/kvt_starts/cup518_s75/reference.npz")
-om, xyz, valid = d["object_mask"], d["xyz"], d["valid"]
+BOXES = (("evaluation.json", (0.014, 0.014, 0.012)),
+         ("evaluation_tight.json", (0.012, 0.012, 0.010)))
 
 
 def flood_holes(mask):
+    """Complement pixels unreachable from the border: the enclosed handle opening."""
     comp = ~mask
     out = np.zeros_like(comp)
     out[0] |= comp[0]; out[-1] |= comp[-1]
     out[:, 0] |= comp[:, 0]; out[:, -1] |= comp[:, -1]
     while True:
-        g = out.copy()
-        g[1:] |= out[:-1]; g[:-1] |= out[1:]
-        g[:, 1:] |= out[:, :-1]; g[:, :-1] |= out[:, 1:]
-        g &= comp
-        if np.array_equal(g, out):
+        grown = out.copy()
+        grown[1:] |= out[:-1]; grown[:-1] |= out[1:]
+        grown[:, 1:] |= out[:, :-1]; grown[:, :-1] |= out[:, 1:]
+        grown &= comp
+        if np.array_equal(grown, out):
             return comp & ~out
-        out = g
+        out = grown
 
 
-def dilate(m, n=1):
-    for _ in range(n):
-        g = m.copy()
-        g[1:] |= m[:-1]; g[:-1] |= m[1:]
-        g[:, 1:] |= m[:, :-1]; g[:, :-1] |= m[:, 1:]
-        m = g
-    return m
+def dilate(mask, steps=1):
+    for _ in range(steps):
+        grown = mask.copy()
+        grown[1:] |= mask[:-1]; grown[:-1] |= mask[1:]
+        grown[:, 1:] |= mask[:, :-1]; grown[:, :-1] |= mask[:, 1:]
+        mask = grown
+    return mask
 
 
-def erode(m, n=1):
-    return ~dilate(~m, n)
-
-
-def write_png(path, arr):
-    raw = b"".join(b"\x00" + arr[i].tobytes() for i in range(arr.shape[0]))
+def write_png(path, image):
+    assert image.dtype == np.uint8 and image.ndim == 2
+    raw = b"".join(b"\x00" + image[i].tobytes() for i in range(image.shape[0]))
 
     def chunk(tag, payload):
         body = tag + payload
         return struct.pack(">I", len(payload)) + body + struct.pack(">I", zlib.crc32(body))
 
-    head = struct.pack(">IIBBBBB", arr.shape[1], arr.shape[0], 8, 0, 0, 0, 0)
-    path.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", head)
+    header = struct.pack(">IIBBBBB", image.shape[1], image.shape[0], 8, 0, 0, 0, 0)
+    path.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
                      + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
 
 
-hole = flood_holes(om)
-z = xyz[..., 2]
-ring = dilate(hole, 2) & om & valid
-z0 = float(np.median(z[ring]))
-ok = z > 0
-ray = np.zeros_like(xyz)
-ray[ok] = xyz[ok] / z[ok][:, None]
-vy, vx = np.nonzero(ok)
-coef, *_ = np.linalg.lstsq(np.c_[vx, vy, np.ones(vx.size)], ray[ok][:, :2], rcond=None)
-hy, hx = np.nonzero(hole)
-centre = (np.c_[np.c_[hx, hy, np.ones(hx.size)] @ coef, np.ones(hx.size)] * z0).mean(0)
+def main():
+    parser = argparse.ArgumentParser(__doc__)
+    parser.add_argument("--reference", type=Path, required=True)
+    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--voxel-size-m", type=float, default=0.002)
+    parser.add_argument("--max-alignment-rmse-m", type=float, default=0.005)
+    parser.add_argument("--anchor-clear-px", type=int, default=12)
+    args = parser.parse_args()
+    reference = np.load(args.reference)
+    mask, xyz, valid = reference["object_mask"], reference["xyz"], reference["valid"]
+    depth = xyz[..., 2]
 
-# local depth range over a 3x3 window: reject discontinuities
-pad = np.where(ok, z, np.nan)
-stack = np.stack([np.roll(np.roll(pad, i, 0), j, 1) for i in (-1, 0, 1) for j in (-1, 0, 1)])
-with np.errstate(invalid="ignore"):
-    spread = np.nanmax(stack, 0) - np.nanmin(stack, 0)
-smooth = np.nan_to_num(spread, nan=1.0) < 0.003
+    hole = flood_holes(mask)
+    if not hole.any():
+        raise ValueError("The object mask encloses no opening in this reference frame")
+    ring = dilate(hole, 2) & mask & valid
+    plane_depth = float(np.median(depth[ring]))
 
-anchor = erode(om & valid, 3) & smooth & ~dilate(hole, 12)
-img = np.zeros(om.shape, np.uint8)
-img[anchor] = 255
-OUT.mkdir(exist_ok=True)
-write_png(OUT / "anchor_mask.png", img)
+    # Per-pixel rays are affine in (u, v); fit them where depth exists so the
+    # empty hole pixels, which carry no depth return, can still be unprojected.
+    known = depth > 0
+    rays = np.zeros_like(xyz)
+    rays[known] = xyz[known] / depth[known][:, None]
+    vy, vx = np.nonzero(known)
+    coefficients, *_ = np.linalg.lstsq(np.c_[vx, vy, np.ones(vx.size)], rays[known][:, :2], rcond=None)
+    hy, hx = np.nonzero(hole)
+    hole_xyz = np.c_[np.c_[hx, hy, np.ones(hx.size)] @ coefficients, np.ones(hx.size)] * plane_depth
+    centre = hole_xyz.mean(0)
 
-roi_to_reference = np.eye(4)
-roi_to_reference[:3, 3] = centre
-p = xyz[om & valid]
-cx, cy = p[:, 0].mean(), p[:, 1].mean()
-span = max(np.ptp(p[:, 0]), np.ptp(p[:, 1])) * 1.6 / 2
-EVIDENCE = (
-    "HouseCat6D test_scene1 instance 4 (cup-grey_handle), reference frame 000075. "
-    "The annotation mask encloses a 231 px hole at the handle; the wooden table is "
-    "directly visible through the loop in the reference RGB. GT depth is dense on the "
-    "object (6407/6407 object pixels valid) and returns nothing inside the hole. "
-    "The {0} cm box contains no GT point; the nearest valid GT point is {1} mm away. "
-    "The scanned mesh was not consulted."
-)
+    # Reject silhouette edges and depth steps: anchors must be reliable surface.
+    padded = np.where(known, depth, np.nan)
+    neighbourhood = np.stack([np.roll(np.roll(padded, i, 0), j, 1)
+                              for i in (-1, 0, 1) for j in (-1, 0, 1)])
+    spread = np.nanmax(neighbourhood, 0) - np.nanmin(neighbourhood, 0)
+    anchor = (~dilate(~(mask & valid), 3)) & (np.nan_to_num(spread, nan=1.0) < 0.003) \
+        & ~dilate(hole, args.anchor_clear_px)
+    if anchor.sum() < 20:
+        raise ValueError(f"Only {anchor.sum()} anchor pixels survived")
 
-base = {"reference": "reference.npz", "anchor_mask": "anchor_mask.png",
-        "roi_to_reference": roi_to_reference.tolist(),
-        "voxel_size_m": 0.002, "max_alignment_rmse_m": 0.005,
-        "render_reference_to_view": np.eye(4).tolist(),
-        "render_bounds_m": [float(cx - span), float(cx + span),
-                            float(cy - span), float(cy + span)]}
-for name, extent, label, gap in (("evaluation.json", [0.014, 0.014, 0.012], "1.4x1.4x1.2", "1.8"),
-                                 ("evaluation_tight.json", [0.012, 0.012, 0.010], "1.2x1.2x1.0", "2.9")):
-    cfg = dict(base, roi_extent_m=extent, empty_region_evidence=EVIDENCE.format(label, gap))
-    (OUT / name).write_text(json.dumps(cfg, indent=2) + "\n")
+    args.out.mkdir(parents=True, exist_ok=True)
+    image = np.zeros(mask.shape, np.uint8)
+    image[anchor] = 255
+    write_png(args.out / "anchor_mask.png", image)
 
-# report
-ref_to_roi = np.linalg.inv(roi_to_reference)
-a = xyz[anchor] @ ref_to_roi[:3, :3].T + ref_to_roi[:3, 3]
-print("anchor pixels:", int(anchor.sum()))
-print("anchors inside ROI (must be 0):",
-      int((np.abs(a) < np.array([0.014, 0.014, 0.012]) / 2).all(1).sum()))
-print("anchor rank:", np.linalg.matrix_rank(xyz[anchor] - xyz[anchor].mean(0)))
-print("roi centre:", centre.round(4))
-print("render bounds:", np.round(base["render_bounds_m"], 4))
-print("grid 1.4cm:", np.ceil(np.array([.014, .014, .012]) / .002).astype(int),
-      "= ", int(np.prod(np.ceil(np.array([.014, .014, .012]) / .002))), "voxels")
+    roi_to_reference = np.eye(4)
+    roi_to_reference[:3, 3] = centre
+    cloud = xyz[known]
+    surface = xyz[mask & valid]
+    span = max(np.ptp(surface[:, 0]), np.ptp(surface[:, 1])) * 1.6 / 2
+    view_centre = surface[:, :2].mean(0)
+    print(f"hole {int(hole.sum())} px, ring depth {plane_depth:.4f} m, "
+          f"anchors {int(anchor.sum())} px, object depth valid "
+          f"{int((mask & valid).sum())}/{int(mask.sum())}")
+    print(f"roi centre {centre.round(4)}")
+    for name, extent in BOXES:
+        extent = np.asarray(extent)
+        low, high = centre - extent / 2, centre + extent / 2
+        inside = ((cloud >= low) & (cloud <= high)).all(1)
+        gap = np.maximum(np.maximum(low - cloud[~inside], cloud[~inside] - high), 0)
+        clearance = float(np.linalg.norm(gap, axis=1).min())
+        if inside.any():
+            raise ValueError(f"{name}: {int(inside.sum())} GT points inside the supposedly empty box")
+        label = "x".join(f"{v * 100:g}" for v in extent)
+        evidence = (
+            f"Reference {args.reference.parent.name}. The annotation mask encloses a "
+            f"{int(hole.sum())} px hole at the handle and the table is visible through the "
+            f"loop in the reference RGB. GT depth is dense on the object "
+            f"({int((mask & valid).sum())}/{int(mask.sum())} pixels valid) and returns nothing "
+            f"inside the hole. The {label} cm box contains no GT point; the nearest valid GT "
+            f"point is {clearance * 1000:.1f} mm away. The scanned mesh was not consulted.")
+        cfg = {"reference": args.reference.name, "anchor_mask": "anchor_mask.png",
+               "roi_to_reference": roi_to_reference.tolist(),
+               "roi_extent_m": extent.tolist(), "voxel_size_m": args.voxel_size_m,
+               "max_alignment_rmse_m": args.max_alignment_rmse_m,
+               "empty_region_evidence": evidence,
+               "render_reference_to_view": np.eye(4).tolist(),
+               "render_bounds_m": [float(view_centre[0] - span), float(view_centre[0] + span),
+                                   float(view_centre[1] - span), float(view_centre[1] + span)]}
+        (args.out / name).write_text(json.dumps(cfg, indent=2) + "\n")
+        voxels = int(np.prod(np.ceil(extent / args.voxel_size_m)))
+        print(f"  {name}: {label} cm, {voxels} voxels, clearance {clearance * 1000:.1f} mm")
+
+
+if __name__ == "__main__":
+    main()

@@ -23,6 +23,9 @@ def main():
     parser.add_argument("--stride", type=int, default=1)
     parser.add_argument("--resize-dim", type=int, default=308)
     parser.add_argument("--depth-units-per-metre", type=float, required=True)
+    parser.add_argument("--crop-margin", type=float,
+                        help="Crop a square window this many times the largest "
+                             "object extent, centred on the object each frame")
     args = parser.parse_args()
     assert args.stride > 0 and 0 <= args.start < args.stop
     assert args.depth_units_per_metre > 0 and args.resize_dim >= 14
@@ -33,6 +36,33 @@ def main():
     if len(files) < 2:
         raise ValueError("Select at least two frames")
     args.out.mkdir(parents=True, exist_ok=False)
+    side, windows = None, None
+    if args.crop_margin is not None:
+        assert args.crop_margin >= 1.0
+        boxes = []
+        for path in files:
+            instance = cv2.imread(str(args.scene / "instance" / path.name), cv2.IMREAD_UNCHANGED)
+            if instance is None:
+                raise FileNotFoundError(path)
+            m = (instance[..., 2] if instance.ndim == 3 else instance) == args.instance_id
+            if not m.any():
+                raise ValueError(f"Empty instance mask at {path}")
+            ys, xs = np.nonzero(m)
+            boxes.append((ys.min(), ys.max(), xs.min(), xs.max()))
+        boxes = np.array(boxes)
+        extent = int(max((boxes[:, 1] - boxes[:, 0]).max(), (boxes[:, 3] - boxes[:, 2]).max()) + 1)
+        height, width = instance.shape[:2]
+        # One window size for the whole clip: the focal length stays fixed and only
+        # the principal point moves, so per-frame zoom cannot confound the geometry.
+        side = int(min(round(extent * args.crop_margin), height, width))
+        y0 = np.clip((boxes[:, 0] + boxes[:, 1]) // 2 - side // 2, 0, height - side)
+        x0 = np.clip((boxes[:, 2] + boxes[:, 3]) // 2 - side // 2, 0, width - side)
+        assert ((boxes[:, 0] >= y0) & (boxes[:, 1] < y0 + side)
+                & (boxes[:, 2] >= x0) & (boxes[:, 3] < x0 + side)).all(), \
+            f"crop margin {args.crop_margin} cannot contain a {extent} px object in every frame"
+        windows = list(zip(y0.tolist(), x0.tolist()))
+        (args.out / "frames").mkdir()
+        print(f"CROP {side}x{side} px window; largest object extent {extent} px")
     frames, thumbnails = [], []
     for index, path in enumerate(files):
         with (args.scene / "labels" / f"{path.stem}_label.pkl").open("rb") as handle:
@@ -44,6 +74,17 @@ def main():
         if model != model_name:
             raise ValueError(f"Instance identity changed at {path}")
         mask_path = args.scene / "instance" / path.name
+        if windows is not None:
+            y0, x0 = windows[index]
+            full_rgb = cv2.imread(str(path))
+            full_mask = cv2.imread(str(mask_path), cv2.IMREAD_UNCHANGED)
+            if full_rgb is None or full_mask is None:
+                raise FileNotFoundError(path)
+            cropped_rgb = args.out / "frames" / f"{path.stem}_rgb.png"
+            cropped_mask = args.out / "frames" / f"{path.stem}_instance.png"
+            assert cv2.imwrite(str(cropped_rgb), full_rgb[y0:y0 + side, x0:x0 + side])
+            assert cv2.imwrite(str(cropped_mask), full_mask[y0:y0 + side, x0:x0 + side])
+            path, mask_path = cropped_rgb, cropped_mask
         frames.append({"id": path.stem, "rgb": str(path.resolve()),
                        "instance": str(mask_path.resolve())})
         if index in np.linspace(0, len(files) - 1, min(12, len(files)), dtype=int):
@@ -63,7 +104,7 @@ def main():
     for i, tile in enumerate(thumbnails):
         sheet[i // 4 * 240:(i // 4 + 1) * 240, i % 4 * 320:(i % 4 + 1) * 320] = tile
     assert cv2.imwrite(str(args.out / "contact_sheet.jpg"), sheet)
-    rgb = cv2.imread(str(files[0]))
+    rgb = cv2.imread(frames[0]["rgb"])
     instance = cv2.imread(frames[0]["instance"], cv2.IMREAD_UNCHANGED)
     if rgb is None or instance is None:
         raise FileNotFoundError(files[0])
@@ -81,9 +122,18 @@ def main():
         depth = depth[..., 1].astype(np.uint16) * 256 + depth[..., 2].astype(np.uint16)
         depth[depth == 32001] = 0
     assert depth.ndim == 2 and depth.dtype == np.uint16
+    intrinsics = np.loadtxt(args.scene / "intrinsics.txt")
+    if windows is not None:
+        # Crop at source resolution, before the resize, so the window coordinates
+        # and the principal-point shift are in the same pixel units.
+        y0, x0 = windows[0]
+        depth = depth[y0:y0 + side, x0:x0 + side]
+        intrinsics = intrinsics.copy()
+        intrinsics[0, 2] -= x0
+        intrinsics[1, 2] -= y0
+    assert depth.shape == rgb.shape[:2]
     depth = cv2.resize(depth.astype(np.float32), (w, h), interpolation=cv2.INTER_NEAREST)
     depth /= args.depth_units_per_metre
-    intrinsics = np.loadtxt(args.scene / "intrinsics.txt")
     # OpenCV resize pixel-centre convention; same grid as the point maps.
     yy, xx = np.indices((h, w))
     u = (xx + 0.5) * rgb.shape[1] / w - 0.5
@@ -100,6 +150,7 @@ def main():
                 "instance_id": args.instance_id, "resize_dim": args.resize_dim,
                 "initial_mask": str((args.out / "initial_mask.png").resolve()),
                 "depth_units_per_metre": args.depth_units_per_metre,
+                "crop_side_px": side,
                 "frames": frames}
     (args.out / "input.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"PREPARED {len(frames)} frames of {model_name}; inspect contact_sheet.jpg")
