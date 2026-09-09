@@ -1,7 +1,10 @@
 # KV-Tracker reconstruction history and handle occupancy
 
-Status: implemented and locally syntax-checked; no remote execution yet. A specific
-HouseCat6D object/clip and empty handle region have not been selected or verified.
+Status: **executed on CAMP 2026-09-09/10**. `SYNTHETIC CHECK OK` passed remotely,
+five captures and one matched control ran, and the object, clip and empty region
+were selected and verified. Results and every number are in `tools/FINDINGS.md`
+(last section); cluster-specific traps are in `docs/kv-tracker-cluster.md`. This
+file is the workflow only — do not restate results here.
 
 The scripts run on Linux, with inference on an allocated CAMP GPU. Do not run
 preparation, inference, evaluation, or Blender generation on the local Mac.
@@ -49,10 +52,9 @@ On head, inspect `sinfo -N -o "%.10N %.6P %.9T %.15G"` and
 compatible GPU and current account/QoS; the existing baseline used a 24g RTX 3090.
 Do not use `--mem*`, `--cpus-per-task` or `--exclude`. Do not pull on head.
 
-Commit/push the `kv_tracker` submodule change first, then commit/push its parent
-pin and these tools. Both are required for the callback interface to reach CAMP.
-Inside an allocation, pull the parent and submodules as documented in the cluster
-notes. GPU-free preparation/evaluation can run on `data`; inference requires a GPU.
+The `kv_tracker` callback commit (`c444af7`) and its parent pin are pushed. Inside
+an allocation, pull the parent and submodules as documented in the cluster notes.
+`prepare`, `scan`, `roi` and `artifacts` are GPU-free; `capture` needs a GPU.
 
 ```bash
 cd /mnt/projects/gr/3DRecon/layer_good
@@ -63,8 +65,9 @@ bash tools/kvt_run.sh check
 The check exercises a known rotated/scaled/translated synthetic cloud, bootstrap
 deduplication, a single intrusion into an empty ROI, separation of old/new views,
 PLY exports, and decoding every generated MP4 frame. Expected final line:
-`SYNTHETIC CHECK OK`. This must pass remotely before treating the pipeline as
-runtime-verified. No packages are installed by the wrapper. An encoder failure is
+`SYNTHETIC CHECK OK`, preceded by `ARTIFACTS OK: 2 snapshots, 96 video frames;
+2 valid alignments`. It passed remotely for the first time 2026-09-09; run it again
+after any change to `kvt_artifacts.py`. No packages are installed by the wrapper. An encoder failure is
 reported rather than silently omitting the video.
 
 ## Select and prepare a clip
@@ -73,15 +76,23 @@ Extract selected HouseCat6D scenes into allocation-local `/tmp`. The existing
 `tools/opt_pose_extract_housecat.sh /tmp/data/housecat6d test_scene1` can prepare a
 candidate, but its extraction stamp is shared across scene selections: use a fresh
 destination when changing the selected scene set. Inspect the labels for actual
-instance IDs and model names. Do not assume any example scene contains a suitable
-handle. The preparation command requires explicit frame selection, instance ID,
+instance IDs and model names, then run `scan` — it reports, per frame, how many
+pixels the mask *encloses* without covering, which is the opening. Do not assume any
+example scene contains a suitable handle, and do not pick a reference frame by eye:
+an object's handle can hide behind its body for stretches of a clip, and the frame
+with the largest opening is rarely the one you would guess.
+
+```bash
+bash tools/kvt_run.sh scan --scene $SCENE --instance-id ID --stride 5
+``` The preparation command requires explicit frame selection, instance ID,
 and verified depth units; no object or metric depth scale is guessed.
 
 ```bash
 bash tools/kvt_run.sh prepare \
   --scene /tmp/data/housecat6d/test/SELECTED_SCENE \
   --instance-id SELECTED_ID --start START_INDEX --stop EXCLUSIVE_STOP \
-  --stride 1 --resize-dim 308 --depth-units-per-metre VERIFIED_SCALE \
+  --stride 1 --resize-dim 518 --depth-units-per-metre VERIFIED_SCALE \
+  --crop-margin 1.8 \
   --out /mnt/projects/gr/3DRecon/kvt_out/prepared
 ```
 
@@ -100,6 +111,15 @@ only a visible surface, **not proof that the entire handle volume is empty**:
 verify the region using the scanned mesh and multiple RGB views. Persist that
 evidence with the experiment. Paths in `input.json` must remain accessible; after
 an allocation ends, re-extract to the same `/tmp` path before capture or control.
+
+`--crop-margin` cuts a square window that follows the object, sized once from its
+largest extent over the whole clip so the focal length is fixed and only the
+principal point moves, taken at source resolution before the resize. Without it the
+object arrives as a small island in an otherwise black frame and the reconstruction
+suffers badly for it. It writes two files per frame under `--out`, so put `--out` on
+job-local `/tmp` and `tar` the directory to `/mnt` before the allocation ends — one
+file against the quota instead of hundreds. `capture` must then run in the same
+allocation, since `input.json` points into `/tmp`.
 
 ## Capture
 
@@ -120,29 +140,36 @@ the measured footprint permits it.
 
 ## Define evaluation inputs and produce artifacts
 
-Paint an `anchor_mask.png` on the exact `reference_rgb.png` grid: nonzero pixels
-must be reliable object surfaces away from the opening, depth discontinuities,
-and occlusion boundaries. The same pixels align every snapshot using Sim(3);
-anchors are not reselected based on confidence or fitted to the empty ROI.
-This separates geometry error from the model's arbitrary scale and coordinate
-system but can still be affected by first-view depth error. Inspect fit residuals.
+`roi` derives the evaluation inputs from the reference and writes them beside it:
 
-Create `evaluation.json` beside `reference.npz`, with the following fields. Values
-below marked `null` require object-specific choices and are deliberately not defaults:
-
-```json
-{
-  "reference": "reference.npz",
-  "anchor_mask": "anchor_mask.png",
-  "roi_to_reference": null,
-  "roi_extent_m": null,
-  "voxel_size_m": null,
-  "max_alignment_rmse_m": null,
-  "empty_region_evidence": "",
-  "render_reference_to_view": null,
-  "render_bounds_m": null
-}
+```bash
+bash tools/kvt_run.sh roi --reference $PREPARED/reference.npz --out $PREPARED
 ```
+
+It must run after `prepare` and before `artifacts`: the ROI lives in the first
+camera's frame and the anchor mask is indexed on that reference's pixel grid, both
+of which change when the crop changes. It produces `anchor_mask.png`,
+`evaluation.json` and `evaluation_tight.json`, and refuses rather than guessing
+when the reference cannot support a measurement.
+
+**Anchors** are the eroded, depth-continuous object surface, held clear of the
+opening. The same pixels align every snapshot by Sim(3); they are never reselected
+on confidence or fitted to the empty region. This separates geometry error from the
+model's arbitrary scale and pose, but remains subject to first-view depth error, so
+inspect the residuals.
+
+**The box** is centred on the opening's centroid at the surrounding surface's median
+depth, and oriented along the **line of sight through the opening** — not axis-aligned
+in camera coordinates, which for an off-axis hole leaves the opening with depth and
+runs into the object. Its lateral size is a fraction of the measured opening and its
+depth is the free run between the nearest sensed surface in front of and behind it,
+less one voxel: the space through a handle is a tube, not a cube. Of the candidate
+fractions, the two largest distinct voxel-rounded sizes whose nearest GT point is at
+least `--min-clearance-m` away are emitted, so the pair is a robustness check —
+though when they land one voxel apart, that check is weak and should be reported as
+such.
+
+The fields it writes, and what they mean:
 
 - `roi_to_reference`: rigid 4x4 transform from the box centre/axes into first-camera
   coordinates. `roi_extent_m`: full box widths `[x,y,z]`. Leave clearance from all
@@ -150,10 +177,13 @@ below marked `null` require object-specific choices and are deliberately not def
 - `voxel_size_m`: fixed grid cell size. Occupancy is occupied cells divided by
   `prod(ceil(extent / voxel_size))`; boundary cells can be smaller. Choose extents
   divisible by the voxel size for equal-volume cells.
-- `max_alignment_rmse_m`: preselected acceptable anchor fit error. Rows above it
-  are retained and explicitly flagged invalid, not counted as reliable evidence.
-- `empty_region_evidence`: actual mesh identity, inspection result and supporting
-  frame IDs. The script requires a note but cannot verify the geometric claim.
+- `max_alignment_rmse_m`: preselected acceptable anchor fit error, default 5 mm.
+  Rows above it are retained and explicitly flagged invalid, not counted as reliable
+  evidence. **Choose it before the run and do not move it afterwards.**
+- `empty_region_evidence`: written for you from what was measured — hole size, the
+  density of GT depth on the object, and the clearance to the nearest GT point.
+  A missing depth return inside the opening is **not** proof of free space, so
+  confirm visually that you can see through the loop before trusting it.
 - `render_reference_to_view`: fixed rigid 4x4 display transform. Identity views
   along first-camera +Z, with +Y downward. `render_bounds_m`: `[xmin,xmax,ymin,ymax]`
   for the orthographic view; use equal X/Y spans to preserve aspect and include the

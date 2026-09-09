@@ -1,5 +1,13 @@
 # Experiment: is the geometry failure Pixal3D's prior, or our crop camera?
 
+**Status: concluded. Neither — the depth extent is wrong by convention, not by bug**
+(`tools/FINDINGS.md` §1-13, and `docs/pixal3d-cluster.md`). The C1 camera hypothesis
+was refuted by measurement; `preprocess_image` re-crops silently at alpha-bbox x1.1,
+so any externally computed FOV is wrong unless it accounts for that. **This file is
+kept for its design and its tooling notes, not as pending work** — do not re-run it
+expecting an open question. Every number it produced came from the AnyDesk machine;
+Pixal3D's first CAMP execution is Slurm job 21203.
+
 ## Question
 
 Occluded tabletop objects reconstruct badly (a thin box comes out as a thick
