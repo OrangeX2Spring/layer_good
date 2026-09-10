@@ -6,6 +6,14 @@ The user runs all cluster commands and transfers. The CAMP skill, local
 `docs/camp-cluster-field-notes.md` and `docs/opt-pose-cluster.md` remain operational
 references; this tracked document reaches the cluster.
 
+The first five-query attempt on `muenchen` (2026-09-10) stopped before Python
+inference: `git: command not found` inside `localhost/optpose`. The host launcher
+now captures both commits and working patches into a job-local provenance
+directory, passes it into the container, and supplies the model commit to Python.
+The container requires no Git installation. Always enter through the `.sbatch`
+wrapper on the allocated host; direct container invocation needs the provenance
+directory it creates. This fix is statically checked; the smoke rerun is pending.
+
 ## Why revise Step 1b?
 
 The lost log cannot be identified uniquely. The 2026-09-04 local, gitignored record in

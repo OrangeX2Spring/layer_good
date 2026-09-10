@@ -22,24 +22,23 @@ trap 'STATUS=$?
   printf "Artifact: %s\n" "$ROOT/optpose_tracking_out/$NAME.tar"
   exit "$STATUS"' EXIT
 cd "$REPO"
+cp -r "${OPT_TRACKING_PROVENANCE:?Run tools/opt_pose_tracking.sbatch outside the container}" "$WORK/provenance"
 {
   hostname
   date -u
   ulimit -m
   nvidia-smi
-  git rev-parse HEAD
-  git -C opt_pose rev-parse HEAD
+  cat "$WORK/provenance/superrepo_commit.txt" "$WORK/provenance/opt_commit.txt"
 } > "$WORK/environment.txt"
-git diff --binary -- tools/opt_pose_tracking.sh tools/opt_pose_tracking_report.py > "$WORK/superrepo.patch"
-git -C opt_pose diff --binary > "$WORK/opt_pose.patch"
 tar -czf "$WORK/source.tar.gz" \
-  tools/opt_pose_tracking.sh tools/opt_pose_tracking_report.py tools/OPT_TRACKING.md \
+  tools/opt_pose_tracking.sh tools/opt_pose_tracking.sbatch tools/opt_pose_tracking_report.py tools/OPT_TRACKING.md \
   opt_pose/opt opt_pose/test_tracking_housecat6d.py opt_pose/test_kvcache_housecat6d.py \
   opt_pose/test_causal_housecat6d.py opt_pose/test_abs_housecat6d.py \
   opt_pose/training/config opt_pose/training/data/datasets/housecat.py
 cd "$REPO/opt_pose"
 COMMON=(--run "$RUN" --mode "$MODE" --queries "$QUERIES" --num_seqs "$SEQUENCES"
-        --num_ref 3 --data_root "$DATA_ROOT" --dtype "$DTYPE")
+        --num_ref 3 --data_root "$DATA_ROOT" --dtype "$DTYPE"
+        --opt_commit "$(cat "$WORK/provenance/opt_commit.txt")")
 for METHOD in prepare verify cached original readout; do
   python -u test_tracking_housecat6d.py --method "$METHOD" "${COMMON[@]}" \
     2>&1 | tee "$WORK/$METHOD.log"

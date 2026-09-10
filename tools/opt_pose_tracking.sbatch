@@ -12,6 +12,12 @@ REPO="$ROOT/layer_good"
 MODE="${1:-camera}"
 QUERIES="${2:-50}"
 SEQUENCES="${3:-1}"
+export OPT_TRACKING_PROVENANCE
+OPT_TRACKING_PROVENANCE=$(mktemp -d /tmp/optpose_tracking_provenance.XXXXXX)
+git -C "$REPO" rev-parse HEAD > "$OPT_TRACKING_PROVENANCE/superrepo_commit.txt"
+git -C "$REPO/opt_pose" rev-parse HEAD > "$OPT_TRACKING_PROVENANCE/opt_commit.txt"
+git -C "$REPO" diff --binary -- tools/opt_pose_tracking.sh tools/opt_pose_tracking.sbatch tools/opt_pose_tracking_report.py tools/OPT_TRACKING.md > "$OPT_TRACKING_PROVENANCE/superrepo.patch"
+git -C "$REPO/opt_pose" diff --binary > "$OPT_TRACKING_PROVENANCE/opt_pose.patch"
 hostname
 nvidia-smi
 ulimit -m
@@ -22,7 +28,7 @@ mkdir -p "$ROOT/.sonata_cache"
 podman load -i "$ROOT/optpose.tar"
 podman run --rm -v /mnt:/mnt:rw -v /tmp:/tmp:rw -w "$REPO" \
   --device=nvidia.com/gpu="$CUDA_VISIBLE_DEVICES" --network=host \
-  -e HF_HOME -e HF_XET_HIGH_PERFORMANCE -e SLURM_JOB_ID \
+  -e HF_HOME -e HF_XET_HIGH_PERFORMANCE -e SLURM_JOB_ID -e OPT_TRACKING_PROVENANCE \
   -v "$ROOT/.sonata_cache":/root/.cache/sonata:rw \
   localhost/optpose bash tools/opt_pose_tracking.sh \
     "$MODE" "$QUERIES" "$SEQUENCES" /tmp/data/housecat6d bf16
