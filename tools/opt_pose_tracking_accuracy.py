@@ -28,24 +28,61 @@ def align_centers(pred, gt):
     return scale, rotation, translation, singular
 
 
+def align_orientations(pred_r, gt_r):
+    """One rotation minimising orientation disagreement, fitted on the rotations.
+
+    The centre-fitted Sim(3) is the correct gauge for translation, but it is only
+    as well determined as the spread of the camera centres. On a thin trajectory
+    it is nearly free in two directions, and carrying it over to the orientations
+    reports that freedom as rotation error. This gauge is fitted on the
+    orientations themselves and is therefore independent of the centre spread.
+    """
+    assert pred_r.shape == gt_r.shape and pred_r.shape[1:] == (3, 3)
+    u, singular, vt = np.linalg.svd(np.einsum("nij,nkj->ik", gt_r, pred_r))
+    assert singular[1] > singular[0] * 1e-6, f"Degenerate orientations: {singular}"
+    sign = np.ones(3)
+    sign[-1] = np.linalg.det(u @ vt)
+    return (u * sign) @ vt, singular
+
+
+def angles_between(a, b):
+    return np.degrees(Rotation.from_matrix(np.swapaxes(a, -1, -2) @ b).magnitude())
+
+
+def residual(errors_deg):
+    """Frobenius objective the orientation gauge minimises; monotone in the angles."""
+    return float(np.sum(1 - np.cos(np.radians(errors_deg))))
+
+
 def evaluate(pred_r, pred_c, gt_r, gt_c):
     scale, rotation, translation, singular = align_centers(pred_c, gt_c)
     centers = scale * pred_c @ rotation.T + translation
-    orientations = rotation @ pred_r
     position_error = np.linalg.norm(centers - gt_c, axis=1)
-    rotation_error = np.degrees(Rotation.from_matrix(
-        np.swapaxes(gt_r, -1, -2) @ orientations).magnitude())
+    # Rotation carried through the centre-fitted gauge. Kept for the record and as
+    # the diagnostic that exposed the thin-arc failure; NOT the headline metric.
+    center_gauge_error = angles_between(gt_r, rotation @ pred_r)
+    orientation_gauge, orientation_singular = align_orientations(pred_r, gt_r)
+    rotation_error = angles_between(gt_r, orientation_gauge @ pred_r)
     # Consecutive relative rotation is independent of constant world alignment.
     pred_delta = np.swapaxes(pred_r[:-1], -1, -2) @ pred_r[1:]
     gt_delta = np.swapaxes(gt_r[:-1], -1, -2) @ gt_r[1:]
     relative_rotation_error = np.degrees(Rotation.from_matrix(
         np.swapaxes(gt_delta, -1, -2) @ pred_delta).magnitude())
-    return centers, position_error, rotation_error, relative_rotation_error, {
+    spread = np.linalg.svd(gt_c - gt_c.mean(0), compute_uv=False) / np.sqrt(len(gt_c))
+    return centers, position_error, rotation_error, center_gauge_error, relative_rotation_error, {
         "scale": scale, "rotation": rotation.tolist(), "translation": translation.tolist(),
         "covariance_singular_values": singular.tolist(),
+        # Principal spread of the annotated centres: how well the centre gauge is
+        # determined at all. A large first/second ratio invalidates any rotation
+        # metric carried through that gauge.
+        "gt_center_principal_std_m": spread.tolist(),
         "ate_rmse_m": float(np.sqrt(np.mean(position_error ** 2))),
         "rotation_median_deg": float(np.median(rotation_error)),
         "rotation_p95_deg": float(np.percentile(rotation_error, 95)),
+        "orientation_gauge_singular_values": orientation_singular.tolist(),
+        "center_gauge_rotation_median_deg": float(np.median(center_gauge_error)),
+        "center_gauge_rotation_p95_deg": float(np.percentile(center_gauge_error, 95)),
+        "center_gauge_offset_deg": float(angles_between(rotation[None], orientation_gauge[None])[0]),
         "relative_rotation_median_deg": float(np.median(relative_rotation_error)),
     }
 
@@ -60,12 +97,20 @@ def main():
         poses = Rotation.from_euler("xyz", [[0, 0, 0], [10, 5, 2], [0, 20, 0], [5, 10, 30]], degrees=True).as_matrix()
         r = Rotation.from_euler("xyz", [25, -17, 40], degrees=True).as_matrix()
         gt = 2.3 * centers @ r.T + [3, -2, 1]
-        _, pe, re, rre, _ = evaluate(poses, centers, r @ poses, gt)
-        assert max(pe) < 1e-10 and max(re) < 1e-8 and max(rre) < 1e-8
+        _, pe, re, ce, rre, _ = evaluate(poses, centers, r @ poses, gt)
+        assert max(pe) < 1e-10 and max(ce) < 1e-8 and max(rre) < 1e-8
+        assert max(re) < 1e-8
+        assert residual(re) <= residual(ce) + 1e-12
         wrong = poses.copy()
         wrong[-1] = wrong[-1] @ Rotation.from_euler("x", 10, degrees=True).as_matrix()
-        _, _, re, rre, _ = evaluate(wrong, centers, r @ poses, gt)
-        assert abs(re[-1] - 10) < 1e-8 and abs(rre[-1] - 10) < 1e-8
+        _, _, re, ce, rre, _ = evaluate(wrong, centers, r @ poses, gt)
+        # The centre gauge is fitted on unperturbed centres, so it is unmoved by a
+        # rotation-only perturbation and still isolates it exactly.
+        assert abs(ce[-1] - 10) < 1e-8 and abs(rre[-1] - 10) < 1e-8
+        # The orientation gauge is fitted on the perturbed rotations, so it spreads
+        # the perturbation instead of isolating it, but stays optimal by construction.
+        assert re[-1] < 10 and max(re[:-1]) > 1e-8
+        assert residual(re) <= residual(ce) + 1e-12
         print("ACCURACY SELF CHECK OK")
         return
     assert args.run is not None
@@ -114,19 +159,20 @@ def main():
                 assert np.all(np.linalg.norm(enc[:, 3:7], axis=1) > 0)
                 pred_r = np.swapaxes(Rotation.from_quat(enc[:, 3:7]).as_matrix(), -1, -2)
                 pred_c = -(pred_r @ enc[:, :3, None])[..., 0]
-                centers, pe, re, rre, summary = evaluate(pred_r, pred_c, gt_r, gt_c)
+                centers, pe, re, ce, rre, summary = evaluate(pred_r, pred_c, gt_r, gt_c)
                 summaries.append({"sequence": seq["name"], "target": target, "method": method, **summary})
                 ids = [entry["ids"][0] for entry in entries]
                 for i, frame in enumerate(ids):
                     rows.append({"method": method, "frame": frame, "aligned_position_error_m": float(pe[i]),
                                  "aligned_rotation_error_deg": float(re[i]),
+                                 "center_gauge_rotation_error_deg": float(ce[i]),
                                  "previous_query_rotation_error_deg": float(rre[i-1]) if i else None})
                 ax.plot(*centers.T, label=method)
                 posax.plot(ids, pe * 1000, label=method)
                 rotax.plot(ids, re, label=method)
             ax.set(xlabel="x (m)", ylabel="y (m)", zlabel="z (m)", title="Query trajectories; per-method Sim(3)")
             posax.set(xlabel="Frame", ylabel="Position error (mm)")
-            rotax.set(xlabel="Frame", ylabel="Rotation error (degrees)")
+            rotax.set(xlabel="Frame", ylabel="Rotation error, orientation gauge (degrees)")
             for axis in (ax, posax, rotax):
                 axis.legend()
             fig.suptitle(f"{seq['name']} | {target} annotations | alignment fitted on evaluated queries")
@@ -143,7 +189,7 @@ def main():
         "script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
         "input_sha256": hashes,
-        "protocol": "Virtual crop cameras; xyzw world-to-camera predictions inverted. One Sim(3) fitted on ALL evaluated query centers separately for each method and target. No metric-scale recovery claim. GT fp16 rotations projected to SO(3). Physical and per-frame symmetry-adjusted targets reported separately; no confidence filtering.",
+        "protocol": "Virtual crop cameras; xyzw world-to-camera predictions inverted. One Sim(3) fitted on ALL evaluated query centers separately for each method and target, used for translation only. Rotation is reported under a SEPARATE gauge fitted to the orientations, because the centre-fitted gauge is only as determined as the centre spread (see gt_center_principal_std_m) and on a thin trajectory reports its own freedom as rotation error; the centre-gauge rotation is retained as center_gauge_rotation_*_deg and their disagreement as center_gauge_offset_deg. No metric-scale recovery claim. GT fp16 rotations projected to SO(3). Physical and per-frame symmetry-adjusted targets reported separately; no confidence filtering.",
     }, indent=2))
     print(json.dumps(summaries, indent=2))
     print("ACCURACY OK")

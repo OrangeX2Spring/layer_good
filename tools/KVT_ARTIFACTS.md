@@ -308,3 +308,70 @@ use raw PLY and one-pixel MP4 alongside Blender when judging geometry.
 Blender is not assumed to exist in `kvt.tar`; no installation is attempted. PLY,
 NPZ and MP4 generation use the existing numerical/OpenCV stack. Copy finished
 artifacts back with rsync; outputs remain outside the repository on CAMP.
+
+## Confidence visualization videos
+
+Implemented in `tools/kvt_confidence_videos.py` (`35373da`), rendered and watched
+by the user on 2026-09-10. Outputs, previews and manifest are synced to
+`cluster_results/kvt_final/confidence_videos/`. Results and the decision not to
+investigate six residual cavity points are in the object-reconstruction section
+of `tools/FINDINGS.md` §13. This is separate from the unrun Blender workflow.
+
+The three files are `01_filtered.mp4` (confidence >= 0.7, original RGB),
+`02_confidence.mp4` (Turbo confidence colors, opacity = confidence), and
+`03_removal_overlay.mp4` (cavity red, removed non-cavity points green, remaining
+object original RGB; red takes precedence). They all start from points retained
+by the native threshold; the confidence video does not resurrect discarded points.
+Confidence is Pi3's sigmoid-transformed `results["conf"]`, not segmentation
+confidence or a calibrated correctness probability.
+
+Each video is 1280x800, 180 frames at 12 FPS, with one-pixel points, whole-object
+and 75 mm cavity-close-up panels, and the same +/-35 degree camera sweep. Geometry
+is frozen at the final 24-keyframe snapshot. Transparency uses depth-sorted alpha
+compositing; multiple translucent points at one pixel accumulate opacity. No
+point enlargement or always-visible red/green overlay bypasses depth ordering.
+
+The script checks the measured teapot counts (653,005 native points, 139 cavity,
+6 cavity survivors), enforces the saved alignment gate, and decodes all frames
+of each output. It saves preview frames 0, 45 and 135 per variant, plus a manifest
+with counts, evaluation settings and SHA-256 hashes of inputs and script. The
+manifest is written only after video verification succeeds. This script is
+specific to this measured reconstruction, not a general dataset renderer.
+
+**All commands below are for the user to execute**, per the security preference
+recorded on 2026-09-10. No GPU, new inference, dependencies or dataset extraction
+are required. On CAMP, request a CPU allocation:
+
+```bash
+srun --partition=data --propagate=NONE --pty bash -l
+```
+
+Inside the allocation, after the locally edited script has been committed/pushed:
+
+```bash
+cd /mnt/projects/gr/3DRecon/layer_good
+git pull --recurse-submodules
+podman load -i /mnt/projects/gr/3DRecon/kvt.tar
+podman run --rm \
+  -v /mnt:/mnt:rw \
+  -e PYTHONUNBUFFERED=1 \
+  localhost/kvt \
+  python /mnt/projects/gr/3DRecon/layer_good/tools/kvt_confidence_videos.py \
+  --keyframes /mnt/projects/gr/3DRecon/kvt_out/cap_t280_a6/keyframes/000023.npz \
+  --alignment /mnt/projects/gr/3DRecon/kvt_out/art_t280_a6/snapshots/000023_alignment.npz \
+  --evaluation /mnt/projects/gr/3DRecon/kvt_out/art_t280_a6/evaluation.json \
+  --out /mnt/projects/gr/3DRecon/kvt_out/confidence_videos
+```
+
+The output directory must not already exist; choose a fresh name for reruns.
+Success is three `VERIFIED` lines and final `CONFIDENCE VIDEOS OK`. On the Mac:
+
+```bash
+rsync -avz \
+  chunquancheng@131.159.11.60:/mnt/projects/gr/3DRecon/kvt_out/confidence_videos/ \
+  cluster_results/kvt_final/confidence_videos/
+```
+
+The local input counterpart is `cluster_results/kvt_final/a6_kf23.npz`, with
+alignment and evaluation under `art_t280_a6/`; the prepared clip remains archived
+as `teapot280_prepared.tar.gz`. Preserve these alongside the videos and manifest.

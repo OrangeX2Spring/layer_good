@@ -3,8 +3,10 @@
 Updated 2026-09-11. **Five-query camera smoke and both 50-query camera/geometry
 runs passed on remote Linux.** User-supplied stdout from job 25463 confirms all
 gates and JOB OK. Camera: 8.08 FPS, 2.83x steady speedup; geometry: 5.51 FPS,
-3.29x. Artifacts are synced; CSVs and endpoint PNGs have been inspected (record below). Ground-truth pose
-accuracy and adaptive tracking remain unverified.
+3.29x. Artifacts are synced; CSVs and endpoint PNGs have been inspected. Headline
+numbers are under "Measured outcome" below; the full result record is in
+`tools/FINDINGS.md`. Ground-truth pose accuracy and adaptive tracking remain
+unverified.
 The user runs all cluster commands and transfers. The CAMP skill, local
 `docs/camp-cluster-field-notes.md` and `docs/opt-pose-cluster.md` remain operational
 references; this tracked document reaches the cluster.
@@ -311,108 +313,31 @@ silently mixing old figures with new results.
 
 ## Verification record
 
-Locally: AST parsing of modified/new Python source (no project imports), `bash -n`
-on the launch scripts, and `git diff --check` in the superproject and model
-submodule. Functional gates and model-memory measurements passed in the user-run smoke
-and 50-query comparisons below. Rendered-figure visual QA remains pending. Historical Step 0/0.5/1a results stay
-historical; they do not verify this revision.
+Local AST parsing, shell syntax, and whitespace checks passed. Remote functional
+gates and model-memory measurements passed in the smoke and 50-query comparisons
+below. Endpoint PNGs were inspected after syncing; full MP4 playback and
+ground-truth pose accuracy remain pending. Historical Step 0/0.5/1a results stay
+separate from the revised pipeline.
 
-## First successful camera smoke test — reported 2026-09-11
+## Measured outcome — job 25463, 2026-09-11
 
-User-executed job 25463, muenchen RTX A5000, parent b3d7986 / model
-345110a; three fixed references, five queries, bottle-v8_small, bf16.
-Evidence is the pasted remote stdout; artifact contents and visual layout have
-not yet been inspected locally. All stages through JOB OK passed.
+Camera smoke (5 queries) and both 50-query camera/geometry comparisons passed
+every gate through `JOB OK` on `muenchen` (RTX A5000, bf16, `bottle-v8_small`,
+three fixed references), parent `b3d7986` / model `345110a`. Headline: camera
+123.772 ms cached against 349.902 ms original (2.83x steady, 8.09 FPS); geometry
+181.428 ms against 598.363 ms (3.29x, 5.51 FPS); cache payload 607,838,208 bytes;
+break-even at query 2 and query 1 respectively. Both archives are synced to
+`cluster_results/optpose_tracking/` and their reports read row by row.
 
-- First-query retention, cached/readout fidelity, and independent rebuild
-  differences were exactly zero for pose_enc. Zeroed-cache max error was 0.322411.
-- Cached median/p95: 122.689 / 123.173 ms; original: 350.258 / 350.382 ms.
-- Steady speedup: 2.8534x; readout comparison: 2.8639x.
-- Warm cache build: 274.254 ms. Including build, 1.9716x speedup and
-  0.862259 seconds saved over five queries; observed break-even at query two.
-- Cache payload: 607,838,208 bytes. Cached/original CUDA peak allocated:
-  7,990,388,736 / 7,476,852,736 bytes; reserved:
-  8,252,293,120 / 7,581,204,480 bytes. These are torch peaks, not total device use.
-- Median original/cached rotation discrepancy: 0.06853 degrees. This is not
-  ground-truth pose error. Five adjacent queries do not establish long-clip stability.
-- REPORT OK confirms video decoding and dimensions, not visual quality.
+**The full result record — every metric, the negative controls, the per-query
+discrepancies and the caveats — is in `tools/FINDINGS.md`, "OPT-Pose frozen-cache
+tracking, revised Step 1b". It is not repeated here.** Artifacts:
 
-Artifact (not yet synced):
-`/mnt/projects/gr/3DRecon/optpose_tracking_out/optpose_tracking_25463_camera_20260910T215745Z_1.tar`.
+- `/mnt/projects/gr/3DRecon/optpose_tracking_out/optpose_tracking_25463_camera_20260910T220925Z_1.tar`
+- `/mnt/projects/gr/3DRecon/optpose_tracking_out/optpose_tracking_25463_geometry_20260910T221647Z_1.tar`
 
-The subsequent 50-query camera and geometry runs passed; see below.
-
-## Fifty-query comparison — reported 2026-09-11
-
-Same job 25463, muenchen RTX A5000, bf16, bottle-v8_small, three frozen
-references. Evidence: pasted user stdout, not independently inspected archives.
-Both runs passed PREPARE, VERIFY, CACHED, ORIGINAL, READOUT, REPORT and JOB OK.
-
-| Metric | Camera | Geometry |
-|---|---:|---:|
-| Queries | 50 | 50 |
-| Cache build ms | 273.517 | 273.283 |
-| Cached median / p95 ms | 123.772 / 124.555 | 181.428 / 183.113 |
-| Original median / p95 ms | 349.902 / 351.798 | 598.363 / 602.583 |
-| Readout median ms | 353.355 | 607.028 |
-| Cached throughput FPS | 8.085 | 5.507 |
-| Original throughput FPS | 2.857 | 1.677 |
-| Steady speedup | 2.82975x | 3.28503x |
-| Speedup vs readout | 2.85896x | 3.34259x |
-| Speedup including build | 2.70990x | 3.18904x |
-| Seconds saved including build | 11.0422 | 20.4716 |
-| Percent time saved including build | 63.0982 | 68.6426 |
-| First observed break-even query | 2 | 1 |
-| Cache payload bytes | 607838208 | 607838208 |
-| Cached peak allocated bytes | 7990388736 | 8542521344 |
-| Original peak allocated bytes | 7476852736 | 8858876928 |
-| Cached peak reserved bytes | 8252293120 | 9128902656 |
-| Original peak reserved bytes | 7581204480 | 11863588864 |
-| Median rotation discrepancy degrees | 0.155761 | 0.155761 |
-
-First-query geometry retention and independent rebuild errors were zero for every
-output. Cached/readout maximum relative differences ranged from zero (pose) to
-5.20e-6 (point confidence); all negative controls passed. REPORT OK checks every
-query against the recorded precision-based fidelity floors; it does not imply
-that all 50 queries have the first query's near-zero discrepancy. Video decoding
-passed, but visual quality has not been inspected.
-
-Camera-only saves about 57.7 ms/query versus geometry mode in these separate
-runs. It still takes about 124 ms, so skipping dense heads alone does not achieve
-real-time tracking. These are model timings, not complete video-pipeline FPS.
-The 0.156-degree discrepancy is against bidirectional predictions, not ground
-truth, and can include coordinate-gauge differences. One object and 50 adjacent
-queries do not establish generalization or long-trajectory accuracy.
-
-Artifacts under `/mnt/projects/gr/3DRecon/optpose_tracking_out/`:
-- `optpose_tracking_25463_camera_20260910T220925Z_1.tar`
-- `optpose_tracking_25463_geometry_20260910T221647Z_1.tar`
-
-Next: sync exact inputs, predictions, reports and logs; inspect videos and
-per-query discrepancies before choosing accuracy evaluation or latency profiling.
-
-## Synced artifact inspection — 2026-09-11
-
-Both 50-query archives were synced and extracted under
-`cluster_results/optpose_tracking/`. Exit status is zero in each; saved provenance
-confirms parent b3d7986 and model 345110a. The saved summaries match user stdout.
-Exact input/prediction archives, source snapshot, manifests and reports are present;
-no model inference or report generation was run locally.
-
-Read all 50 rows of each saved report. Camera cached-versus-readout discrepancy
-is zero throughout. Geometry maximum reported cached/readout relative discrepancy
-is 1.02715e-5 (frame 50), well below even 1e-4, not merely the looser precision
-floors. Original/cached rotation discrepancy peaks at 0.30652 degrees (frame 26).
-Frame 47 has the largest translation discrepancy (0.0157000 model units) and
-masked depth MAE (0.00619836 model units); this is a localized disagreement,
-not evidence of metric tracking error or a faulty cache.
-
-First and last PNGs in both reports were visually inspected. Layout is readable;
-original/cached depth appearances are similar at those endpoints. First-frame
-line plots have no visible single-point marker. Full MP4 playback has not been
-independently inspected. These are diagnostic plots, not trajectory overlays or
-ground-truth accuracy visualizations. Next scientific gap is pose accuracy against
-annotations, with coordinate/scale conventions established, before keyframe changes.
+These are model timings against bidirectional predictions, not video-pipeline FPS
+and not ground-truth pose error. Ground-truth accuracy is the next gate, below.
 
 ## Ground-truth evaluation prepared — 2026-09-11
 
@@ -461,3 +386,27 @@ bash tools/opt_pose_tracking_accuracy.sh \
 
 Expect `ACCURACY SELF CHECK OK` and `ACCURACY OK`; inspect the printed table
 (JSON) and sync the printed artifact for PNG inspection before interpreting it.
+
+## Ground-truth evaluation ran — 2026-09-11
+
+`optpose_accuracy_20260910T224912Z_3736972`, `data` allocation, CPU only, exit 0,
+both gates passed. The cache is validated: `cached` and `readout` agree to
+0.000e+00 on every per-frame metric, and the causal path matches the bidirectional
+original. Numbers and interpretation are in `tools/FINDINGS.md`, "revised Step 1b"
+§5; they are not repeated here.
+
+**Known defect in this evaluator, found from its own output.** `align_centers`
+fits the Sim(3) on camera **centres only** and then applies that rotation to the
+orientations, so `rotation_median_deg` reports the gauge misalignment rather than
+the model's rotation accuracy whenever the query centres are not well spread. On
+`bottle-v8_small` they are a thin arc (principal std 62 / 11 / 3.4 mm over 21 cm),
+and the reported 175-179 deg reproduces the angle between the centre-fitted and
+orientation-optimal alignment rotations to within 0.3 deg. Refit to orientations,
+absolute agreement is 1.2-2.3 deg, matching the alignment-free
+`relative_rotation_median_deg` of 0.28-0.91 deg already in the output.
+
+Fix before the next run: keep the centre-fitted gauge for translation, fit a
+separate orientation-optimal rotation for the rotation metric, and report both
+alongside `covariance_singular_values` so a weak gauge is visible in the summary.
+Do not loosen the degeneracy assert — it passed here; the arc is thin, not
+degenerate.
