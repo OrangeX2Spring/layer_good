@@ -119,6 +119,13 @@ identity remains the same. The loader follows the existing HouseCat6D code's
 OpenCV instance channel **2** and encoded-depth channel convention. Confirm these
 against the displayed masks and known object scale before inference.
 
+**A null control needs verified free space, not merely unobserved space.** Judging a
+control box empty because it contains no GT point is wrong: GT covers only the visible
+surface, so boxes buried inside the object's unobserved body pass the test. That
+mistake produced a null with a 978-point outlier and the opposite conclusion. Require
+instead that every surface observed within the box's own cone lies *behind* it. Same
+principle as the caveat below about missing depth returns.
+
 `reference.npz` is first-frame GT depth unprojected to camera coordinates in metres,
 resized to the model grid with nearest-neighbour depth and pixel-centre-aware
 intrinsics. No GT depth enters KV-Tracker. `reference_object.ply` and
@@ -240,7 +247,21 @@ bash tools/kvt_run.sh artifacts \
 Metrics include retained/ROI point counts and fraction, voxel occupancy, mean
 confidence inside the ROI, alignment error, old/new-view ROI counts, and displacement
 of corresponding old-view pixels. The raw confidence maps remain available for
-histograms. The video shows occupancy values and a fixed `[0,1]` occupancy plot;
+histograms.
+
+**Read the confidence column before concluding anything about geometry.** The
+threshold is `pts3d_conf_thresh = batch_conf[0] * 0.6 * 1.15` (`main.py:325-326`) —
+69% of the *first keyframe's* mean object confidence, a heuristic anchored on one
+frame and never calibrated. On the teapot it retained points at a median confidence
+of 0.545 inside the empty cavity against 0.854 for retained points generally, and
+raising the cut to 0.7 removed 96% of the phantom geometry for 14.5% of the object
+(`tools/FINDINGS.md` §12). A "the model hallucinates" result can be a thresholding
+result; separate them first.
+
+`tools/kvt_roi/attribute_cavity.py` does that separation offline, from a capture's
+keyframe NPZ plus the stored Sim(3): it attributes every ROI point to the view and
+pixel that produced it and reports depth into the mask, distance to the opening,
+per-view spread and confidence. No GPU, no re-capture. The video shows occupancy values and a fixed `[0,1]` occupancy plot;
 invalid-alignment samples are red. Measurements are computed for the same saved
 snapshots used for playback; they do not need a separate inference run. Evaluation
 follows capture rather than running in a competing GPU process.
