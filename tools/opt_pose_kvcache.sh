@@ -5,8 +5,8 @@
 #
 # dtype is fp32 (default), tf32 or bf16, and the last two need sm_80+ -- so 24g,
 # not the 12g Turing nodes, where bf16 is emulated and tf32 does not exist. bf16
-# halves the cache as well as the matmuls: 128.8 MiB per reference frame instead
-# of 257.6, which is what decides whether a 70-frame cache fits 24 GB.
+# reduces measured cache storage to 193.2 MiB per reference frame (K remains
+# fp32 after normalization; V is bf16), from 257.6 MiB in fp32.
 #
 # A non-empty sixth argument passes --cache_only: no readout baseline, no
 # fidelity, no controls, just what the cached path costs. That is the only way
@@ -34,8 +34,13 @@ NUM_SEQS="${2:?usage: opt_pose_kvcache.sh <num_ref> <num_seqs> [data_root] [quer
 DATA_ROOT="${3:-/tmp/data/housecat6d}"
 QUERY_GAP="${4:-1}"
 START="${5:-0}"
-CACHE_ONLY="${6:-}"   # "e2e" runs Step 1b end to end instead
+CACHE_ONLY="${6:-}"   # The old "e2e" harness is retired below.
 DTYPE="${7:-fp32}"
+if [ "$CACHE_ONLY" = e2e ]; then
+  echo "Use bash tools/opt_pose_tracking.sh geometry 50 $NUM_SEQS $DATA_ROOT $DTYPE" >&2
+  echo "The old e2e benchmark is retired; see tools/OPT_TRACKING.md." >&2
+  exit 2
+fi
 ROOT=/mnt/projects/gr/3DRecon
 OUT="$ROOT/optpose_kvcache_out"
 
@@ -44,10 +49,7 @@ cd "$(dirname "$0")/../opt_pose"
 
 SUFFIX="_$DTYPE"
 EXTRA=(--dtype "$DTYPE")
-if [ "$CACHE_ONLY" = e2e ]; then
-  SUFFIX="${SUFFIX}_e2e"
-  EXTRA+=(--end_to_end)
-elif [ -n "$CACHE_ONLY" ]; then
+if [ -n "$CACHE_ONLY" ]; then
   SUFFIX="${SUFFIX}_cacheonly"
   EXTRA+=(--cache_only)
 fi
