@@ -84,7 +84,23 @@ with the largest opening is rarely the one you would guess.
 
 ```bash
 bash tools/kvt_run.sh scan --scene $SCENE --instance-id ID --stride 5
-``` The preparation command requires explicit frame selection, instance ID,
+```
+
+**Check the viewpoint arc first, before anything else.** `--arc-only` reads the
+camera's position in the object's frame (`-R.T @ t`) straight from the annotations,
+so it needs only `labels/` — no images, no capture, no GPU, and a whole test split
+unzips in 12 MB. `--all-instances` reports every object in one pass.
+
+```bash
+bash tools/kvt_run.sh scan --scene $SCENE --all-instances --arc-only --stride 5
+```
+
+The number that matters is the **max pairwise angle**, which caps how many separated
+keyframes any clip of that scene can ever yield. Ignore the azimuth span when the
+path straddles +/-180 (it reads ~358 deg inside a 70 deg arc), and do not read the
+10-degree cell count as a viewpoint count — a wandering trajectory lights many bins
+while staying close to itself. HouseCat6D's whole test split spans 48-91 deg;
+nothing in it orbits an object. The preparation command requires explicit frame selection, instance ID,
 and verified depth units; no object or metric depth scale is guessed.
 
 ```bash
@@ -128,6 +144,31 @@ bash tools/kvt_run.sh capture \
   --input /mnt/projects/gr/3DRecon/kvt_out/prepared/input.json \
   --out /mnt/projects/gr/3DRecon/kvt_out/baseline
 ```
+
+### Keyframe schedule
+
+The tracker's own rule is defective and will not use the arc that exists.
+`check_if_keyframe` (`main.py:136-141`) takes the minimum elevation difference and
+the minimum azimuth difference over keyframes **independently**, so a keyframe fires
+only when the view is >10 deg from *every* keyframe in one axis alone, and the two
+minima may come from different keyframes. It saturates after ~5 keyframes however
+much arc remains.
+
+```bash
+--keyframe-arc 10     # the same 10-degree intent, by true angular distance
+--keyframe-arc 6      # deliberate over-sampling; say so when reporting
+--keyframe-every 8    # a frame counter; arbitrary, prefer --keyframe-arc
+```
+
+Both compute a schedule offline and inject it through the override `main.py:480`
+already supports for `--keyframes-from`. `--keyframe-arc` reads the annotations, so
+its schedule is identical whatever `--mask-mode` is used: the segmentation control
+is matched by construction and needs no `--keyframes-from`. Any of these is a
+**forced schedule, not the method** — report which was used and why.
+
+Cost grows with the square of the keyframe count, since `main.py:490` re-runs
+`pi3_inference` over every keyframe each time one is added. 24 keyframes of 518x518
+fit in 24 GB; step upward rather than jumping if you go further.
 
 Use a fresh output directory each run. SAM 2 receives only the initial instance
 mask, then propagates on the selected RGB sequence. `--stride 1` preserves all
