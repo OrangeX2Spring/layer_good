@@ -217,7 +217,7 @@ def main():
         axis.set_ylim(frame["image"].shape[0], 0)
         axis.axis("off")
         gt_pixels, _ = annotated_box_pixels(frame, box_world)
-        draw_box(axis, gt_pixels, "#000000", "Annotation", width=2.6)
+        draw_box(axis, gt_pixels, "#ff7f0e", "Annotation (ground truth)", width=2.6)
         record = {"frame": entry["ids"][0]}
         for method, color, label in METHODS:
             pixels, _ = box_pixels(frame, box_world, predictions[method], index)
@@ -227,7 +227,7 @@ def main():
         axis.legend(loc="upper right", framealpha=0.85, fontsize=11)
 
         side = figure.add_axes([0.68, 0.55, 0.30, 0.36], projection="3d")
-        side.plot(*centers.T, color="black", linewidth=1.4, label="Annotation")
+        side.plot(*centers.T, color="#ff7f0e", linewidth=1.4, label="Annotation")
         for method, color, _ in METHODS:
             side.plot(*predictions[method]["aligned_center"].T, color=color, linewidth=1.2)
         side.scatter(*centers[index], color="red", s=28)
@@ -275,7 +275,7 @@ def main():
         ax.imshow(pixels[60:660, 40:760])
         ax.set_title(f"frame {frame_id}", fontsize=9)
         ax.axis("off")
-    figure.suptitle(f"{sequence['name']} | annotation (black) vs original (blue) vs frozen cache (green)",
+    figure.suptitle(f"{sequence['name']} | annotation (orange) vs original (blue) vs frozen cache (green)",
                     fontsize=11)
     figure.tight_layout()
     figure.savefig(out / f"{sequence['directory']}_filmstrip.png")
