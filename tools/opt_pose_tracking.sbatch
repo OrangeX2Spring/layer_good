@@ -12,6 +12,13 @@ REPO="$ROOT/layer_good"
 MODE="${1:-camera}"
 QUERIES="${2:-50}"
 SEQUENCES="${3:-1}"
+# Viewpoint controls, forwarded into the container. Defaults reproduce the old
+# behaviour; set them deliberately -- see the header of opt_pose_tracking.sh.
+export OPT_SEQ_NAMES="${OPT_SEQ_NAMES:-}"
+export OPT_REF_STRIDE="${OPT_REF_STRIDE:-1}"
+export OPT_STRIDE="${OPT_STRIDE:-1}"
+export OPT_START="${OPT_START:-0}"
+export OPT_NUM_REF="${OPT_NUM_REF:-3}"
 export OPT_TRACKING_PROVENANCE
 OPT_TRACKING_PROVENANCE=$(mktemp -d /tmp/optpose_tracking_provenance.XXXXXX)
 git -C "$REPO" rev-parse HEAD > "$OPT_TRACKING_PROVENANCE/superrepo_commit.txt"
@@ -29,6 +36,7 @@ podman load -i "$ROOT/optpose.tar"
 podman run --rm -v /mnt:/mnt:rw -v /tmp:/tmp:rw -w "$REPO" \
   --device=nvidia.com/gpu="$CUDA_VISIBLE_DEVICES" --network=host \
   -e HF_HOME -e HF_XET_HIGH_PERFORMANCE -e SLURM_JOB_ID -e OPT_TRACKING_PROVENANCE \
+  -e OPT_SEQ_NAMES -e OPT_REF_STRIDE -e OPT_STRIDE -e OPT_START -e OPT_NUM_REF \
   -v "$ROOT/.sonata_cache":/root/.cache/sonata:rw \
   localhost/optpose bash tools/opt_pose_tracking.sh \
     "$MODE" "$QUERIES" "$SEQUENCES" /tmp/data/housecat6d bf16

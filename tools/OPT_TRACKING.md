@@ -395,7 +395,8 @@ both gates passed. The cache is validated: `cached` and `readout` agree to
 original. Numbers and interpretation are in `tools/FINDINGS.md`, "revised Step 1b"
 §5; they are not repeated here.
 
-**Known defect in this evaluator, found from its own output.** `align_centers`
+**Defect found from this run's own output, fixed and re-archived the same day**
+(`optpose_accuracy_20260910T230743Z_3737432`, both gates, exit 0). `align_centers`
 fits the Sim(3) on camera **centres only** and then applies that rotation to the
 orientations, so `rotation_median_deg` reports the gauge misalignment rather than
 the model's rotation accuracy whenever the query centres are not well spread. On
@@ -405,8 +406,14 @@ orientation-optimal alignment rotations to within 0.3 deg. Refit to orientations
 absolute agreement is 1.2-2.3 deg, matching the alignment-free
 `relative_rotation_median_deg` of 0.28-0.91 deg already in the output.
 
-Fix before the next run: keep the centre-fitted gauge for translation, fit a
-separate orientation-optimal rotation for the rotation metric, and report both
-alongside `covariance_singular_values` so a weak gauge is visible in the summary.
-Do not loosen the degeneracy assert — it passed here; the arc is thin, not
-degenerate.
+`align_orientations` now fits that second gauge. Translation keeps the
+centre-fitted Sim(3); `rotation_median_deg`/`rotation_p95_deg` come from the
+orientation gauge; the old figures survive as `center_gauge_rotation_*_deg` with
+`center_gauge_offset_deg` recording their disagreement; `gt_center_principal_std_m`
+puts the trajectory spread in the summary so a weak gauge is visible without
+digging. No assert was loosened — the degeneracy check passed here (the arc is
+thin, not degenerate), the centre gauge keeps its exact-10-degree self-check gate,
+and the new gauge adds its own degeneracy assert plus a Frobenius-optimality
+invariant. Corrected agreement is 2.262 deg (physical) and 1.268 deg (symmetry)
+for the cached path, with `cached` and `readout` still identical at 0.000e+00.
+Numbers in `tools/FINDINGS.md`, "revised Step 1b" §5, run 2.
