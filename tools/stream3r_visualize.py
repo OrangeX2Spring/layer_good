@@ -30,6 +30,7 @@ trained to answer it.
 import argparse
 import json
 import os
+import shutil
 import numpy as np
 import torch
 
@@ -98,6 +99,17 @@ def main():
         idx = np.linspace(0, len(names) - 1, args.max_frames).round().astype(int)
         names = [names[i] for i in idx]
     print(f"{len(names)} frames from {args.images}", flush=True)
+
+    # Stage the exact frames next to the outputs, here rather than in the caller:
+    # this is the code that selected them, and it keeps the caller's only
+    # post-inference action a single `tar`. Job 25559 lost its point clouds to a
+    # relative path in an external staging step that ran with the job's cwd
+    # (the submit directory) instead of the repo's.
+    frames_dir = os.path.join(args.out, "input_frames")
+    os.makedirs(frames_dir, exist_ok=True)
+    for p in names:
+        shutil.copy2(p, os.path.join(frames_dir, os.path.basename(p)))
+    print(f"staged {len(names)} input frames to {frames_dir}", flush=True)
 
     images = load_and_preprocess_images(names).to(device)
     assert images.ndim == 4 and images.shape[1] == 3, images.shape

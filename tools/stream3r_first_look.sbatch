@@ -52,6 +52,8 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT="$WORK/out"
 ARCHIVE="$ROOT/stream3r_first_look_${STAMP}_${SLURM_JOB_ID}.tar"
 
+cd "$REPO"
+
 hostname
 echo "mem_grant_kb=$(ulimit -m) nproc=$(nproc)"
 nvidia-smi --query-gpu=name,compute_cap,memory.total --format=csv,noheader
@@ -106,20 +108,10 @@ podman run \
       --modes causal full --max-frames 16
   "
 
-# The frames that produced the pictures travel with the pictures. Job-local /tmp
-# is erased when the allocation ends; a single tar keeps the 100,000-file quota
-# intact while preserving the record.
-cp -r stream3r/examples/static_room "$OUT/static_room/input_frames"
-mkdir -p "$OUT/nrgbd/input_frames"
-python3 - "$SCENE_DIR" "$OUT/nrgbd" <<'PY'
-import json, shutil, sys, os
-scene_dir, out = sys.argv[1], sys.argv[2]
-used = json.load(open(os.path.join(out, "manifest.json")))["images"]
-for p in used:
-    shutil.copy2(p, os.path.join(out, "input_frames", os.path.basename(p)))
-print(f"staged {len(used)} input frames")
-PY
-
+# stream3r_visualize.py has already staged the exact input frames alongside each
+# set of outputs, so the only thing left is to archive them. Nothing between the
+# inference and this line can fail - job 25559 lost its point clouds that way,
+# because job-local /tmp is erased when the allocation ends.
 tar -cf "$ARCHIVE" -C "$WORK" out
 ls -la "$ARCHIVE"
 getusage "$ROOT"
