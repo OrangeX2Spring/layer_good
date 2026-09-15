@@ -11,28 +11,15 @@
 # headline NRGBD table, and nyu-v2 (0.93 GB) is the cheapest end-to-end check
 # that model, checkpoint and data layout agree.
 #
-# Why this is a GPU job for a download. Two attempts died first. wget crawled at
-# 0.6 MB/s because it pulls one TCP stream from a Xet-backed repo; hf_xet does
-# chunked parallel transfer instead, but its workers were OOM-killed in 21
-# seconds on a GPU-free `data` allocation:
+# The job shape - GPU attached purely for the memory grant, 12g rather than
+# data, hf_xet rather than wget - is explained once in tools/hf_download.sbatch,
+# which is the generic version of this job. Prefer it for new downloads:
 #
-#   error: Detected 1 oom_kill event in StepId=25547.0.
+#   sbatch tools/hf_download.sbatch yslan/pointmap_regression_evalsets dataset \
+#       /mnt/projects/gr/3DRecon/stream3r_data neural_rgbd.tar.gz nyu-v2.tar.gz
 #
-# That is the 4 GB grant, not the node - memory on this cluster is granted per
-# GPU and --mem* is refused. So a card is attached purely for the grant. It is
-# never touched: jena's sm_52 TITAN X is unusable with current CUDA wheels,
-# which is exactly why borrowing it costs nobody anything. Note the partition is
-# 12g, not data: `data` carries no GRES, and every working GPU recipe in tools/
-# goes through 12g or 24g with an explicit --nodelist.
-#
-# The tarballs stay packed on /mnt permanently. They unpack to tens of thousands
-# of small frames, and the 100,000-file quota is the binding limit, not the
-# 250 GB - extraction belongs in job-local /tmp inside whichever allocation runs
-# the eval.
-#
-# huggingface_hub is not installed on the bare node, and does not belong on
-# quota'd storage for a one-off. The venv goes in job-local /tmp and dies with
-# the job; rebuilding it next time costs 30 seconds.
+# This file is kept because it records which eval sets matter and why. Ran as
+# job 25555: 16.5 GB in 2m57s, DOWNLOAD OK.
 #
 # Log: /mnt/projects/gr/3DRecon/stream3r_dl_slurm-<jobid>.log
 #SBATCH --job-name=stream3r-dl
@@ -75,7 +62,7 @@ python3 -m venv /tmp/hfdl
   --repo-type dataset \
   --local-dir "$DEST"
 
-# 15575329963 and 933473431 bytes. Trust the byte count, not a progress bar.
+# 15575329963 and 931121601 bytes (both verified, job 25555). Trust the byte count, not a progress bar.
 ls -l "$DEST"
 getusage "$ROOT"
 
