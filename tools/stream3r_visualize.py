@@ -36,6 +36,7 @@ import torch
 
 from stream3r.models.stream3r import STream3R
 from stream3r.models.components.utils.load_fn import load_and_preprocess_images
+from stream3r.models.components.utils.pose_enc import pose_encoding_to_extri_intri
 
 IMAGE_EXT = (".png", ".jpg", ".jpeg", ".PNG", ".JPG")
 
@@ -169,6 +170,23 @@ def main():
                       (rgb[keep].clip(0, 1) * 255).round(), dtype=np.uint8))
         print(f"wrote {ply}", flush=True)
 
+        # Save what a metric needs, so depth and trajectory error can be recomputed
+        # without a GPU or a rerun. Extrinsics are decoded here, inside the
+        # container, so the metrics script stays pure numpy and runs anywhere.
+        h, w = images.shape[-2:]
+        extr, _ = pose_encoding_to_extri_intri(
+            pred["pose_enc"], (h, w), build_intrinsics=False
+        )
+        npz = os.path.join(args.out, f"{mode}_pred.npz")
+        np.savez_compressed(
+            npz,
+            depth=pred["depth"][0, ..., 0].float().cpu().numpy().astype(np.float32),
+            depth_conf=pred["depth_conf"][0].float().cpu().numpy().astype(np.float16),
+            extrinsics=extr[0].float().cpu().numpy().astype(np.float32),
+            pose_enc=pred["pose_enc"][0].float().cpu().numpy().astype(np.float32),
+        )
+        print(f"wrote {npz}", flush=True)
+
         manifest["modes"][mode] = {
             "points_total": int(len(keep)),
             "points_kept": int(keep.sum()),
@@ -177,6 +195,7 @@ def main():
             "conf_max": float(conf.max()),
             "conf_percentiles": {str(p): v for p, v in zip((1, 25, 50, 75, 99), pct)},
             "ply": os.path.basename(ply),
+            "pred_npz": os.path.basename(npz),
         }
 
     with open(os.path.join(args.out, "manifest.json"), "w") as f:
