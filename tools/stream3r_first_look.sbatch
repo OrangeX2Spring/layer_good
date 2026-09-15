@@ -106,6 +106,23 @@ podman run \
       --images '$SCENE_DIR' \
       --ckpt '$CKPT' --out '$OUT/nrgbd' \
       --modes causal full --max-frames 16
+
+    # Same frames, no confidence cut. The 50th-percentile pass above thresholds
+    # each mode against its OWN distribution, and those distributions differ
+    # sharply (NRGBD: causal IQR 5.3-8.7 max 28.8; full IQR 11.7-20.7 max 45.4).
+    # Cutting at a per-mode median therefore discards a different half in each,
+    # which can make `full` look hole-ier than `causal` for reasons that have
+    # nothing to do with geometry. These two keep every point, so the only
+    # remaining difference between the modes is the reconstruction itself.
+    python tools/stream3r_visualize.py \
+      --images stream3r/examples/static_room \
+      --ckpt '$CKPT' --out '$OUT/static_room_all' \
+      --modes causal full --max-frames 10 --conf-percentile 0
+
+    python tools/stream3r_visualize.py \
+      --images '$SCENE_DIR' \
+      --ckpt '$CKPT' --out '$OUT/nrgbd_all' \
+      --modes causal full --max-frames 16 --conf-percentile 0
   "
 
 # stream3r_visualize.py has already staged the exact input frames alongside each
