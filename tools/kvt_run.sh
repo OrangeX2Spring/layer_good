@@ -13,7 +13,7 @@ STORE=/mnt/projects/gr/3DRecon
 # sam-2 and pi3 are editable installs pinned to the pre-2026-08-29 at3dcv root,
 # which no longer exists; PYTHONPATH supplies them instead of a 19 GB rebuild.
 THIRDPARTY="$ROOT/kv_tracker/thirdparty"
-MODE="${1:?Expected prepare, scan, roi, capture, artifacts, check, arctic-mask, or arctic-run}"
+MODE="${1:?Expected prepare, scan, roi, capture, artifacts, check, arctic-mask, arctic-run, or arctic-viz}"
 shift
 GPU_ARGS=()
 case "$MODE" in
@@ -34,6 +34,7 @@ case "$MODE" in
     test -f "$HOME/.hf_env"
     source "$HOME/.hf_env"
     ;;
+  arctic-viz) SCRIPT=kvt_arctic_viz.py ;;
   artifacts) SCRIPT=kvt_artifacts.py ;;
   roi) SCRIPT=kvt_roi/derive_roi.py ;;
   scan) SCRIPT=kvt_roi/scan_holes.py ;;

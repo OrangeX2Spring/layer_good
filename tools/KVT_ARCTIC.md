@@ -11,7 +11,7 @@ tracking result or metric exists.
 |---|---|---|---|
 | 1. Prepare | `tools/arctic_prepare_subset.py` | `data`, system `python3` | 3x `ALIGNED`, `PREPARE OK` |
 | 2. Initial masks | `kvt_run.sh arctic-mask` | `24g`, one GPU | 3x `MASK`, `MASK OK`, then **you** review the overlays |
-| 3. Track + evaluate | `kvt_run.sh arctic-run` | `24g`, one GPU | 3x `TRACKED`, finite ATE for all three, `ARCHIVED`, `ARCTIC RUN OK` |
+| 3. Track, evaluate, visualise | `kvt_run.sh arctic-run` | `24g`, one GPU | 3x `TRACKED`, finite ATE for all three, 3x `VIZ`, `ARCHIVED`, `ARCTIC RUN OK` |
 
 ## Protocol
 
@@ -68,7 +68,7 @@ Then on the Mac:
 
 ```bash
 mkdir -p cluster_results/kvt_arctic
-rsync -av camp:/mnt/projects/gr/3DRecon/kvt_arctic_out/initial_frames/ \
+rsync -av chunquancheng@131.159.11.60:/mnt/projects/gr/3DRecon/kvt_arctic_out/initial_frames/ \
   cluster_results/kvt_arctic/initial_frames/
 ```
 
@@ -103,7 +103,7 @@ markers) and `prompt.json`. They live on `/mnt`, so leaving the allocation to
 review them costs nothing. Re-running with different prompts overwrites them.
 
 ```bash
-rsync -av camp:/mnt/projects/gr/3DRecon/kvt_arctic_out/masks/ \
+rsync -av chunquancheng@131.159.11.60:/mnt/projects/gr/3DRecon/kvt_arctic_out/masks/ \
   cluster_results/kvt_arctic/masks/
 ```
 
@@ -130,15 +130,47 @@ Every number is checked before it is reported: `traj.npy` must have exactly
 `gt_count - 2` rows, one recorded mask per tracked frame, and GT and estimate
 shapes must match before `align_pair` sees them.
 
+### What it renders
+
+Per sequence, into `<results>/viz/`:
+
+- `segmentation.mp4` — every frame the tracker saw with the mask actually used on
+  it, the object's frame fraction printed per frame. This is the mask-quality
+  evidence; watch for the mask jumping to the hand once the grasp starts.
+- `trajectory.png` — three panels: the Sim(3)-aligned estimate against GT in 3D,
+  the per-frame translation error with our ATE and the paper's Table 4 value drawn
+  as lines and keyframes marked, and x/y/z against frame. The per-frame curve is
+  recomputed from the aligned poses and **asserted equal to evo's ATE** to 1e-6,
+  so the picture and the number cannot drift apart.
+- `object.ply` + `object_turntable.mp4` + `object_views.png` — the object points
+  from the last keyframe reconstruction, kept where `mask & confidence > threshold`,
+  the same rule the HouseCat experiment used.
+
+Plus one `summary.png` at the archive root: our ATE against Table 4, per sequence.
+
+`kvt_run.sh arctic-viz --results pilot --scenes <...> --metrics <metrics.json>`
+re-renders all of it from results still in `/tmp`, so a figure can be reworked
+without re-tracking.
+
+### The articulation readout
+
+The run prints `ARTICULATION <scene>: <range> deg` before tracking — the GT column
+`load_gt_arctic` throws away. ARCTIC objects are articulated (box lid, ketchup cap,
+espresso lever) and KV-Tracker tracks the masked region as **rigid**, so a large
+range would mean one whole-object mask is the wrong initialization and the base
+part should be masked alone. `grab` sequences are expected to be near-rigid; this
+is the check, not the assumption.
+
 The archive `/mnt/.../kvt_arctic_out/arctic_pilot_<UTC>.tar` holds, per sequence,
-the results (`traj.npy`, `kf_poses.npy`, `kf_idx.npy`, `pcd.npy`), **every
-per-frame SAM mask**, the initial frame, mask, overlay and prompt; plus
-`metrics.json` and a manifest with both git revisions, the `kv_tracker` diff,
+the results (`traj.npy`, `kf_poses.npy`, `kf_idx.npy`, `pcd.npy`,
+`keyframes.npz`), **every per-frame SAM mask**, everything under `viz/`, and the
+initial frame, mask, overlay and prompt; plus `summary.png`, `metrics.json` and a
+manifest with both git revisions, the `kv_tracker` diff,
 torch and GPU, the tracker arguments and the preparation manifest. The raw input
 pixels stay reconstructible from `prepared.tar`, which is already on `/mnt`.
 
 ```bash
-rsync -av camp:'/mnt/projects/gr/3DRecon/kvt_arctic_out/arctic_pilot_*.tar' \
+rsync -av chunquancheng@131.159.11.60:'/mnt/projects/gr/3DRecon/kvt_arctic_out/arctic_pilot_*.tar' \
   cluster_results/kvt_arctic/
 ```
 

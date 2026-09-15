@@ -33,6 +33,7 @@ from kv_tracker.dataloaders.arctic_loader import arcticLoader
 from kv_tracker.eval_tools.evo_utils import align_pair
 import eval as kvt_eval
 import main as tracker
+import kvt_arctic_viz
 
 SCENES = ("box_grab_01", "ketchup_grab_01", "espressomachine_grab_01")
 # Paper Table 4, translation ATE RMSE in metres, for these three sequences only.
@@ -69,6 +70,42 @@ class ArcticFrames(arcticLoader):
             frame = self.get_frame(index)
             frame["idx"] = index
             yield frame
+
+
+class LatestKeyframes:
+    """Keep only the newest keyframe reconstruction, which is the object cloud.
+
+    Uncompressed: this is overwritten on every keyframe addition, and zlib on
+    float32 pointmaps costs seconds for almost no saving.
+    """
+
+    def __init__(self, path):
+        self.path = path
+        self.count = 0
+
+    def __call__(self, kind, frame_ids, xyz, poses, confidence, rgb, masks,
+                 threshold, latest_rgb):
+        if kind != "keyframes":
+            return
+        xyz = xyz[0].detach().float().cpu().numpy()
+        confidence = confidence[0, ..., 0].detach().float().cpu().numpy()
+        assert xyz.shape == rgb.shape and confidence.shape == masks.shape == xyz.shape[:-1]
+        assert len(frame_ids) == len(xyz)
+        np.savez(self.path, xyz=xyz, poses=poses[0].detach().float().cpu().numpy(),
+                 confidence=confidence, rgb=rgb, masks=masks,
+                 frame_ids=np.asarray(frame_ids), threshold=float(threshold))
+        self.count += 1
+
+
+def articulation_degrees(scene):
+    """The GT column `load_gt_arctic` drops. A grab sequence should be near-rigid,
+    which is what makes one whole-object mask the right initialization."""
+    angles = np.rad2deg(np.load(
+        f"datasets/arctic_data/data/raw_seqs/s01/{scene}.object.npy",
+        allow_pickle=True)[:, 0])
+    return {"min_deg": float(angles.min()), "max_deg": float(angles.max()),
+            "range_deg": float(angles.max() - angles.min()),
+            "std_deg": float(angles.std())}
 
 
 def staged_images(scene):
@@ -117,11 +154,13 @@ def track(scene, manifest, results_name, resize_dim):
     expected = manifest["scenes"][scene]["tracking_frames"]
     assert source.length == expected, (scene, source.length, expected)
 
+    recorder = LatestKeyframes(results_dir / "keyframes.npz")
     started = time.perf_counter()
     tracker.run_track3r(cfg={"results_path": str(results_dir), "que_size": 1},
                         args=["--obj_mode", "--resize_dim", str(resize_dim)],
-                        frame_source=source)
+                        frame_source=source, snapshot_callback=recorder)
     elapsed = time.perf_counter() - started
+    assert recorder.count, f"{scene}: no keyframe reconstruction was recorded"
 
     traj = np.load(results_dir / "traj.npy")
     assert traj.shape == (expected, 4, 4), (scene, traj.shape, expected)
@@ -157,7 +196,7 @@ def evaluate(scenes, results_name):
     return rows
 
 
-def archive(scenes, results_name, provenance, metrics):
+def archive(scenes, results_name, provenance, metrics, summary):
     archive_path = OUT / f"arctic_{results_name}_{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.tar"
     staging = Path("/tmp") / archive_path.stem
     staging.mkdir(parents=True, exist_ok=True)
@@ -167,6 +206,7 @@ def archive(scenes, results_name, provenance, metrics):
     with tarfile.open(archive_path, "w") as bundle:
         bundle.add(staging / "manifest.json", arcname="manifest.json")
         bundle.add(staging / "metrics.json", arcname="metrics.json")
+        bundle.add(summary, arcname="summary.png")
         for scene in scenes:
             bundle.add(DATASET_DIR / scene / results_name, arcname=f"{scene}/results")
             bundle.add(OUT / "masks" / scene, arcname=f"{scene}/initial")
@@ -198,13 +238,22 @@ def main():
     os.chdir(CHECKOUT)  # The SAM checkpoint and eval.py's GT paths are relative to it.
     stage_dataset(manifest)
 
+    articulation = {scene: articulation_degrees(scene) for scene in args.scenes}
+    for scene, stats in articulation.items():
+        print(f"ARTICULATION {scene}: {stats['range_deg']:.2f} deg range, "
+              f"std {stats['std_deg']:.2f} deg", flush=True)
+
     timings = {}
     for scene in args.scenes:
         if args.only_eval:
             assert (DATASET_DIR / scene / args.results / "traj.npy").is_file(), scene
         else:
             timings[scene] = track(scene, manifest, args.results, args.resize_dim)
-    metrics = {"rows": evaluate(args.scenes, args.results), "timings": timings}
+    metrics = {"rows": evaluate(args.scenes, args.results), "timings": timings,
+               "articulation_degrees": articulation}
+
+    summary = Path("/tmp") / f"arctic_{args.results}_summary.png"
+    kvt_arctic_viz.visualize(args.scenes, args.results, metrics, summary)
 
     provenance = {
         "scenes": args.scenes,
@@ -212,6 +261,7 @@ def main():
         "resize_dim": args.resize_dim,
         "tracker_args": ["--obj_mode", "--resize_dim", str(args.resize_dim)],
         "offset": 2,
+        "articulation_degrees": articulation,
         "prepare_manifest": manifest,
         "initial_masks": {scene: json.loads((OUT / "masks" / scene / "prompt.json").read_text())
                           for scene in args.scenes},
@@ -226,7 +276,7 @@ def main():
                           for path in sorted((ROOT / "tools").glob("*arctic*.py"))},
         "note": "Synchronous frame source; timing is not a throughput benchmark",
     }
-    archive(args.scenes, args.results, provenance, metrics)
+    archive(args.scenes, args.results, provenance, metrics, summary)
     print("ARCTIC RUN OK")
 
 
