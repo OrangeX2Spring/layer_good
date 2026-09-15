@@ -16,3 +16,6 @@
 [submodule "pixal3d"]
 	path = pixal3d
 	url = git@github.com:OrangeX2Spring/Pixal3D.git
+[submodule "stream3r"]
+	path = stream3r
+	url = git@github.com:OrangeX2Spring/STream3R.git
