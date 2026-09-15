@@ -31,10 +31,15 @@
 #
 # Sampling is a contiguous stride, NOT the even spread used for NRGBD. The target
 # here is tracking, so temporal continuity is the thing the causal cache exploits;
-# spanning the whole clip would destroy exactly what is being measured. 32 frames
-# at stride 5 covers 160 frames of video and sits near 11 GB in causal mode,
-# inside passau's 16 GB (the paper's own table: 20 frames 9.02 GB, 40 frames
-# 12.92 GB).
+# spanning the whole clip would destroy exactly what is being measured.
+#
+# 32 frames at stride 5 covers 160 frames of video and needs a 24 GB card. Job 25580
+# died at exactly this on passau's 16 GB, because the first version of this script
+# sized the run from the paper's VRAM table - and that table (20 frames 9.02 GB,
+# 40 frames 12.92 GB) describes StreamSession, which processes ONE FRAME AT A TIME
+# with a KV cache. A single model(images, mode=...) call materialises every frame's
+# activations at once and is far larger. Verified interactively on muenchen: 32
+# frames fit on 24 GB, 32 frames do not fit on 16 GB, 16 frames do.
 #
 # Defaults to the six scenes tools/occlusion_scaleup_extract_ycbv.sh is verified
 # on. Pass the full list as an argument once this is known to work - the
@@ -44,8 +49,8 @@
 #
 # Log: /mnt/projects/gr/3DRecon/stream3r_ycbv_slurm-<jobid>.log
 #SBATCH --job-name=stream3r-ycbv
-#SBATCH --partition=12g
-#SBATCH --nodelist=passau
+#SBATCH --partition=24g
+#SBATCH --nodelist=muenchen
 #SBATCH --gres=gpu:1
 #SBATCH --propagate=NONE
 #SBATCH --time=06:00:00
