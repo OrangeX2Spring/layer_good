@@ -196,7 +196,7 @@ def evaluate(scenes, results_name):
     return rows
 
 
-def archive(scenes, results_name, provenance, metrics, summary):
+def archive(scenes, results_name, provenance, metrics):
     archive_path = OUT / f"arctic_{results_name}_{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.tar"
     staging = Path("/tmp") / archive_path.stem
     staging.mkdir(parents=True, exist_ok=True)
@@ -206,7 +206,6 @@ def archive(scenes, results_name, provenance, metrics, summary):
     with tarfile.open(archive_path, "w") as bundle:
         bundle.add(staging / "manifest.json", arcname="manifest.json")
         bundle.add(staging / "metrics.json", arcname="metrics.json")
-        bundle.add(summary, arcname="summary.png")
         for scene in scenes:
             bundle.add(DATASET_DIR / scene / results_name, arcname=f"{scene}/results")
             bundle.add(OUT / "masks" / scene, arcname=f"{scene}/initial")
@@ -252,8 +251,7 @@ def main():
     metrics = {"rows": evaluate(args.scenes, args.results), "timings": timings,
                "articulation_degrees": articulation}
 
-    summary = Path("/tmp") / f"arctic_{args.results}_summary.png"
-    kvt_arctic_viz.visualize(args.scenes, args.results, metrics, summary)
+    kvt_arctic_viz.visualize(args.scenes, args.results, metrics)
 
     provenance = {
         "scenes": args.scenes,
@@ -276,7 +274,7 @@ def main():
                           for path in sorted((ROOT / "tools").glob("*arctic*.py"))},
         "note": "Synchronous frame source; timing is not a throughput benchmark",
     }
-    archive(args.scenes, args.results, provenance, metrics, summary)
+    archive(args.scenes, args.results, provenance, metrics)
     print("ARCTIC RUN OK")
 
 

@@ -99,8 +99,13 @@ hand, e.g. `box_grab_01:point:410,300 box_grab_01:point:360,430:0`.
 
 Results are written to `/mnt/.../kvt_arctic_out/masks/<scene>/` — `init_mask.png`
 (what the loader reads), `init_overlay.png` (green object, blue contour, prompt
-markers) and `prompt.json`. They live on `/mnt`, so leaving the allocation to
-review them costs nothing. Re-running with different prompts overwrites them.
+markers) and `prompt.json`. Re-running with different prompts overwrites them.
+
+**Keep the allocation open while you review.** The podman store is job-local
+(`/tmp/.local/share/containers/storage`), so the first `kvt_run.sh` in an
+allocation pays a silent ~10-12 minute `podman load` of the 19 GB `kvt.tar`, and
+leaving costs that again. Review from the Mac in a second terminal and run stage 3
+in the same shell; the outputs themselves are on `/mnt` and survive either way.
 
 ```bash
 rsync -av chunquancheng@131.159.11.60:/mnt/projects/gr/3DRecon/kvt_arctic_out/masks/ \
@@ -132,25 +137,27 @@ shapes must match before `align_pair` sees them.
 
 ### What it renders
 
-Per sequence, into `<results>/viz/`:
+The HouseCat6D layout, from `kvt_artifacts.py`'s `actual_history.mp4`, which is
+also what the project page shows: one `viz/tracking.mp4` per sequence, 1280x800.
 
-- `segmentation.mp4` — every frame the tracker saw with the mask actually used on
-  it, the object's frame fraction printed per frame. This is the mask-quality
-  evidence; watch for the mask jumping to the hand once the grasp starts.
-- `trajectory.png` — three panels: the Sim(3)-aligned estimate against GT in 3D,
-  the per-frame translation error with our ATE and the paper's Table 4 value drawn
-  as lines and keyframes marked, and x/y/z against frame. The per-frame curve is
-  recomputed from the aligned poses and **asserted equal to evo's ATE** to 1e-6,
-  so the picture and the number cannot drift apart.
-- `object.ply` + `object_turntable.mp4` + `object_views.png` — the object points
-  from the last keyframe reconstruction, kept where `mask & confidence > threshold`,
-  the same rule the HouseCat experiment used.
+- **Left panel** — the frame the tracker saw with the mask it actually used on it,
+  so segmentation quality is visible in the same video. Watch for the mask
+  jumping to the hand once the grasp starts.
+- **Right panel** — the reconstructed object as one-pixel depth-sorted points,
+  with the ground-truth camera trail in green and the tracked one in red, growing
+  frame by frame. Both trails and the cloud are carried into the GT metric frame
+  by **one** Sim(3), and that transform is asserted to be the one evo used on the
+  poses, so the gap you see between the trails is the error that is reported.
+- **Text strip** — frame, object fraction, per-frame error, ATE RMSE and the paper
+  Table 4 value.
+- **Tail** — a 360-degree orbit of the frozen final cloud, labelled as such so it
+  is not mistaken for tracking.
 
-Plus one `summary.png` at the archive root: our ATE against Table 4, per sequence.
+Plus `viz/object.ply` per sequence for MeshLab. No plots: the numbers are the
+printed table and `metrics.json`.
 
 `kvt_run.sh arctic-viz --results pilot --scenes <...> --metrics <metrics.json>`
-re-renders all of it from results still in `/tmp`, so a figure can be reworked
-without re-tracking.
+re-renders from results still in `/tmp`, without re-tracking.
 
 ### The articulation readout
 
