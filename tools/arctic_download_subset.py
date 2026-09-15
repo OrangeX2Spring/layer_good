@@ -6,6 +6,7 @@ library. Prompts for ARCTIC credentials; never saves them. Archives remain packe
 
 import getpass
 import hashlib
+import http.cookiejar
 import json
 import os
 from pathlib import Path
@@ -42,9 +43,13 @@ for key in keys:
 (dest / "manifest.json").write_text(json.dumps(selected, indent=2) + "\n")
 
 credentials = urllib.parse.urlencode({
-    "username": getpass.getpass("ARCTIC email (hidden): "),
+    "username": getpass.getpass("ARCTIC email (hidden): ").strip(),
     "password": getpass.getpass("ARCTIC password: "),
 }).encode()
+# Preserve session cookies across the download server's login redirects.
+opener = urllib.request.build_opener(
+    urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+)
 total = 0
 for key, url, expected in selected:
     name = Path(key).name
@@ -61,17 +66,27 @@ for key, url, expected in selected:
     temporary = stage / (name + ".part")
     digest = hashlib.sha256()
     size = 0
-    with urllib.request.urlopen(request, timeout=120) as response, temporary.open("wb") as target:
-        print("DOWNLOADING", name, "bytes=", response.headers.get("Content-Length", "unknown"), flush=True)
-        while chunk := response.read(1024 * 1024):
-            total += len(chunk)
-            size += len(chunk)
-            if total > 10 * 1024**3:
-                raise SystemExit("Pilot transfer exceeded 10 GiB; review archive sizes before continuing.")
-            digest.update(chunk)
-            target.write(chunk)
-            if size % (32 * 1024**2) == 0:
-                print(name, size // 1024**2, "MiB received", flush=True)
+    with opener.open(request, timeout=120) as response:
+        endpoint = urllib.parse.urlsplit(response.url)
+        content_type = response.headers.get_content_type()
+        print("HTTP", response.status, content_type,
+              endpoint.hostname, endpoint.path, flush=True)
+        if content_type in ("text/html", "application/xhtml+xml"):
+            raise SystemExit(
+                "Server returned a web page instead of the ZIP. "
+                "Download authentication/access is unresolved; no archive was saved."
+            )
+        with temporary.open("wb") as target:
+            print("DOWNLOADING", name, "bytes=", response.headers.get("Content-Length", "unknown"), flush=True)
+            while chunk := response.read(1024 * 1024):
+                total += len(chunk)
+                size += len(chunk)
+                if total > 10 * 1024**3:
+                    raise SystemExit("Pilot transfer exceeded 10 GiB; review archive sizes before continuing.")
+                digest.update(chunk)
+                target.write(chunk)
+                if size % (32 * 1024**2) == 0:
+                    print(name, size // 1024**2, "MiB received", flush=True)
     assert digest.hexdigest() == expected, f"Download checksum mismatch: {name}"
     persistent_partial = dest / (name + ".part")
     shutil.copyfile(temporary, persistent_partial)
