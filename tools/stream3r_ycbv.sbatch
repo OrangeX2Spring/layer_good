@@ -109,6 +109,14 @@ podman run \
         --scene-dir \"\$D\" \
         --manifest \"\$O/manifest.json\" \
         --out \"\$O/tokens.json\"
+
+      # Ground-truth metrics, read back from the .npz the run above saved:
+      # no model, no GPU. Depth error is split object vs background, which is
+      # the split the semantic-cache proposal turns on.
+      python tools/stream3r_ycbv_metrics.py \
+        --scene-dir \"\$D\" \
+        --pred-dir \"\$O\" \
+        --out \"\$O/metrics.json\"
     done
   "
 

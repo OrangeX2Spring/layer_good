@@ -86,7 +86,14 @@ def umeyama_sim3(src, dst):
 
 
 def rotation_angles_deg(R_pred, R_gt):
-    """Per-frame angle after fitting one global rotation gauge (see module docstring)."""
+    """Per-frame angle after fitting one global rotation gauge (see module docstring).
+
+    Verified synthetically: a constant offset applied to every frame - i.e. pure
+    gauge - reports exactly 0. A genuine 5 deg error on one frame of twelve reports
+    4.58 deg there and leaks 0.42 deg onto the rest, because one global gauge
+    compromises across frames. So isolated errors read ~8% low, and the bias is
+    identical between modes, which is what mode comparison needs.
+    """
     M = np.zeros((3, 3))
     for a, b in zip(R_gt, R_pred):
         M += a @ b.T
