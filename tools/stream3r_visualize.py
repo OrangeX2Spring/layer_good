@@ -78,6 +78,14 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--modes", nargs="+", default=["causal", "full"])
     ap.add_argument("--max-frames", type=int, default=16)
+    ap.add_argument("--sampling", choices=["even", "stride"], default="even",
+                    help="even: span the whole clip, for a reconstruction breadth "
+                         "check. stride: a contiguous run at fixed spacing, for a "
+                         "tracking baseline, where temporal continuity is the "
+                         "thing the causal cache exploits and spanning the clip "
+                         "would destroy it.")
+    ap.add_argument("--stride", type=int, default=1)
+    ap.add_argument("--start", type=int, default=0)
     ap.add_argument("--conf-percentile", type=float, default=50.0,
                     help="drop points below this percentile of world_points_conf")
     args = ap.parse_args()
@@ -92,12 +100,16 @@ def main():
         if f.endswith(IMAGE_EXT)
     )
     assert names, f"no images under {args.images}"
-    # Evenly spaced rather than the first N: a contiguous head of a video clip is
-    # a few centimetres of baseline. The bottle-v8_small rerun (CLAUDE.md) was
-    # voided for exactly this - three "reference" frames 0.36 deg apart.
-    if len(names) > args.max_frames:
-        idx = np.linspace(0, len(names) - 1, args.max_frames).round().astype(int)
-        names = [names[i] for i in idx]
+    if args.sampling == "even":
+        # Evenly spaced rather than the first N: a contiguous head of a video clip
+        # is a few centimetres of baseline. The bottle-v8_small rerun (CLAUDE.md)
+        # was voided for exactly this - three "reference" frames 0.36 deg apart.
+        if len(names) > args.max_frames:
+            idx = np.linspace(0, len(names) - 1, args.max_frames).round().astype(int)
+            names = [names[i] for i in idx]
+    else:
+        names = names[args.start::args.stride][: args.max_frames]
+    assert names, "frame selection produced nothing"
     print(f"{len(names)} frames from {args.images}", flush=True)
 
     # Stage the exact frames next to the outputs, here rather than in the caller:
