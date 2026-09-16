@@ -29,6 +29,12 @@ UNPACKED=/tmp/kf_baseline_run
 hostname
 nvidia-smi
 ulimit -m
+
+# The pull belongs here, not on head: head's memory cgroup kills a real fetch with a
+# misleading "corrupt pack", and a separate pull job would contend for the one GPU
+# students_normal allows. docs/camp-cluster-field-notes.md, "`git pull` belongs
+# inside the allocation". Submodules are pinned and not needed by this job.
+git -C "$REPO" -c fetch.recurseSubmodules=false pull --ff-only
 git -C "$REPO" rev-parse HEAD
 
 # The sets are derived from the baseline run's own traj/kf_idx/keyframes, so the
