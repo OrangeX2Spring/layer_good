@@ -2,16 +2,22 @@
 
 ## Status
 
-The five official archives are downloaded and checksum-verified on CAMP
-(`docs/kv-tracker-cluster.md`). The whole local tool chain is written and
-statically checked; **nothing has been run on the cluster yet**, so no ARCTIC
-tracking result or metric exists.
+**Run end to end 2026-09-15 on `muenchen`, at both 308 and 518.** At the settled
+518: box **0.183**, ketchup **0.294**, espresso **0.150** against paper Table 4's
+0.200 / 0.249 / 0.151. Numbers, the starved-geometry diagnosis and the resolution
+decision: `tools/FINDINGS.md`, "KV-Tracker on ARCTIC". Archives on `/mnt` under
+`kvt_arctic_out/`: `arctic_pilot_20260915T151239Z.tar` (308, 265 MB) and
+`arctic_r518_20260915T152911Z.tar` (518, 646 MB). The five official source archives
+are downloaded and checksum-verified (`docs/kv-tracker-cluster.md`).
+
+Re-running any stage is the same three commands below; stages 1 and 2 are already
+done and their outputs persist on `/mnt`.
 
 | Stage | Tool | Where | Gate |
 |---|---|---|---|
 | 1. Prepare | `tools/arctic_prepare_subset.py` | `data`, system `python3` | 3x `ALIGNED`, `PREPARE OK` |
 | 2. Initial masks | `kvt_run.sh arctic-mask` | `24g`, one GPU | 3x `MASK`, `MASK OK`, then **you** review the overlays |
-| 3. Track, evaluate, visualise | `kvt_run.sh arctic-run` | `24g`, one GPU | 3x `TRACKED`, finite ATE for all three, 3x `VIZ`, `ARCHIVED`, `ARCTIC RUN OK` |
+| 3. Track, evaluate, visualise | `kvt_run.sh arctic-run` | `24g`, one GPU | 3x `ARTICULATION`, 3x `TRACKED`, finite ATE for all three, 3x `VIZ`, `VIZ OK`, `ARCHIVED`, `ARCTIC RUN OK` |
 
 ## Protocol
 
@@ -20,7 +26,7 @@ tracking result or metric exists.
 - Preserve the upstream loader's `offset=2`: SAM 2 is initialized on the **third**
   sorted image, and `eval.py` drops the matching two GT rows.
 - Existing SAM 2.1 small and Pi3 from `kvt.tar`; upstream object-mode masking, the
-  original 10-degree keyframe rule, `--resize_dim 308`. The HouseCat crop and the
+  original 10-degree keyframe rule, `--resize_dim 518`. The HouseCat crop and the
   confidence-threshold experiment are deliberately **not** carried into this run.
 - Evaluation uses the upstream GT transformation (`eval.load_gt_arctic`, which
   composes the egocentric extrinsics with the object pose into `T_obj2c`) and the
@@ -36,12 +42,15 @@ tracking result or metric exists.
   every per-frame mask recorded. **The printed frames/s is not the paper's FPS
   benchmark** — mask export is synchronous.
 
-### The one open protocol question
+### Resolution: settled 2026-09-15, report 518
 
-The paper does not state the ARCTIC input resolution and `config/arctic.yaml`
-carries none, so `--resize-dim` defaults to **308**, the resolution at which the
-TUM baseline reproduced Table 1 exactly. If the ATE lands far from Table 4, 518
-(`main.py`'s own default) is the first thing to vary, not the last.
+Both resolutions were run on all three sequences. **518 is the protocol** —
+`main.py`'s own default, and the README's `--resize_dim 308` appears only in its
+camera-level TUM and 7-Scenes examples. At 308 the box fails badly (0.321 against
+the paper's 0.200) because a texture-poor object brought up to the camera starves
+Pi3 of confident points; at 518 it is 0.183. Numbers and the diagnosis:
+`tools/FINDINGS.md`, "KV-Tracker on ARCTIC". `--resize-dim` now defaults to 518,
+so stage 3 needs no extra flag; pass `--resize-dim 308` to reproduce the first run.
 
 ## Stage 1: prepare, on `data`
 
@@ -122,10 +131,12 @@ the same SAM 2 call the loader makes on its first frame.
 srun -p 24g -w muenchen --account=students --qos=students_normal \
   --gres=gpu:1 --propagate=NONE --pty bash -l
 cd /mnt/projects/gr/3DRecon/layer_good
-bash tools/kvt_run.sh arctic-run --results pilot
+bash tools/kvt_run.sh arctic-run --results r518
 ```
 
-One invocation does all three sequences: stage `prepared.tar` into `/tmp`, symlink
+`--results` names both the per-scene results directory and the archive, so pick a
+name that says what the run is: the two done runs are `pilot` (308) and `r518`
+(518, the protocol). One invocation does all three sequences: stage `prepared.tar` into `/tmp`, symlink
 it as `kv_tracker/datasets/arctic_data`, copy each reviewed mask in as the scene's
 `init_mask.png`, track, evaluate, and write one archive. `--only-eval` re-evaluates
 and re-archives results already in `/tmp` without re-tracking — the recovery path
@@ -156,30 +167,40 @@ also what the project page shows: one `viz/tracking.mp4` per sequence, 1280x800.
 Plus `viz/object.ply` per sequence for MeshLab. No plots: the numbers are the
 printed table and `metrics.json`.
 
-`kvt_run.sh arctic-viz --results pilot --scenes <...> --metrics <metrics.json>`
-re-renders from results still in `/tmp`, without re-tracking.
+`kvt_run.sh arctic-viz --results r518 --scenes <...> --metrics <path>` re-renders
+from results still in `/tmp`, without re-tracking. The run leaves that file at
+`/tmp/arctic_<results>_<UTC>/metrics.json`, the staging directory it built the
+archive from.
 
 ### The articulation readout
 
 The run prints `ARTICULATION <scene>: <range> deg` before tracking — the GT column
 `load_gt_arctic` throws away. ARCTIC objects are articulated (box lid, ketchup cap,
 espresso lever) and KV-Tracker tracks the masked region as **rigid**, so a large
-range would mean one whole-object mask is the wrong initialization and the base
-part should be masked alone. `grab` sequences are expected to be near-rigid; this
-is the check, not the assumption.
+range could mean a whole-object mask is the wrong initialization and the base part
+should be masked alone.
 
-The archive `/mnt/.../kvt_arctic_out/arctic_pilot_<UTC>.tar` holds, per sequence,
+**Measured 2026-09-15: box 1.86 deg, ketchup 3.43 deg, espresso 53.61 deg.** So
+`grab` sequences are *not* uniformly near-rigid — the espresso lever really swings
+through its clip — and yet espresso, with the lever deliberately inside the mask, is
+the sequence that reproduces Table 4 exactly. Articulation does not drive the error
+here. Keep the readout as a check; do not re-mask on the strength of it alone.
+
+The archive `/mnt/.../kvt_arctic_out/arctic_<results>_<UTC>.tar` holds, per sequence,
 the results (`traj.npy`, `kf_poses.npy`, `kf_idx.npy`, `pcd.npy`,
 `keyframes.npz`), **every per-frame SAM mask**, everything under `viz/`, and the
-initial frame, mask, overlay and prompt; plus `summary.png`, `metrics.json` and a
-manifest with both git revisions, the `kv_tracker` diff,
-torch and GPU, the tracker arguments and the preparation manifest. The raw input
+initial frame, mask, overlay and prompt; plus `metrics.json` and a manifest with
+both git revisions, the `kv_tracker` diff, torch and GPU, the tracker arguments,
+the measured articulation and the preparation manifest. The raw input
 pixels stay reconstructible from `prepared.tar`, which is already on `/mnt`.
 
 ```bash
-rsync -av chunquancheng@131.159.11.60:'/mnt/projects/gr/3DRecon/kvt_arctic_out/arctic_pilot_*.tar' \
+rsync -av chunquancheng@131.159.11.60:'/mnt/projects/gr/3DRecon/kvt_arctic_out/arctic_*.tar' \
   cluster_results/kvt_arctic/
 ```
+
+`--results` names the archive, so the 308 run is `arctic_pilot_*` and the 518 run
+`arctic_r518_*`. Both are on `/mnt`; the 518 one is the protocol.
 
 ## What this pilot cannot claim
 
