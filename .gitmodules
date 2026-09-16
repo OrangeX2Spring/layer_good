@@ -25,3 +25,6 @@
 [submodule "point_to_pose"]
 	path = point_to_pose
 	url = git@github.com:OrangeX2Spring/point-to-pose.git
+[submodule "hot3d"]
+	path = hot3d
+	url = git@github.com:OrangeX2Spring/hot3d.git
