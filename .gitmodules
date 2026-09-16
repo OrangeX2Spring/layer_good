@@ -19,3 +19,6 @@
 [submodule "stream3r"]
 	path = stream3r
 	url = git@github.com:OrangeX2Spring/STream3R.git
+[submodule "4rc"]
+	path = 4rc
+	url = git@github.com:OrangeX2Spring/4RC.git
