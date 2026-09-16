@@ -1,12 +1,19 @@
 #!/bin/bash
 # Run inside an existing CAMP GPU allocation with localhost/genrecon loaded.
-# Usage: bash tools/fourrc_arctic.sh ["scene ..."] [frame_count]
+# Usage: bash tools/fourrc_arctic.sh ["scene ..."] [frame_count] [even|consecutive]
+# Match STream3R's first 30 post-offset frames:
+# bash tools/fourrc_arctic.sh "box_grab_01 ketchup_grab_01 espressomachine_grab_01" 30 consecutive
 set -euo pipefail
 
 ROOT=/mnt/projects/gr/3DRecon
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 SCENES=${1:-"box_grab_01 ketchup_grab_01 espressomachine_grab_01"}
 FRAMES=${2:-30}
+SAMPLING=${3:-even}
+case "$SAMPLING" in
+    even|consecutive) ;;
+    *) echo "Sampling must be even or consecutive" >&2; exit 2 ;;
+esac
 : "${SLURM_JOB_ID:?Run inside a GPU allocation}"
 : "${CUDA_VISIBLE_DEVICES:?No allocated GPU}"
 test "$(hostname -s)" != head
@@ -42,7 +49,7 @@ sha256sum "$CKPT/model.safetensors" > "$WORK/checkpoint.sha256"
 podman image inspect localhost/genrecon > "$WORK/container.json"
 nvidia-smi > "$WORK/nvidia-smi.txt"
 ulimit -m > "$WORK/memory_grant_kb.txt"
-printf 'scenes=%s\nframes=%s\n' "$SCENES" "$FRAMES" > "$WORK/arguments.txt"
+printf 'scenes=%s\nframes=%s\nsampling=%s\n' "$SCENES" "$FRAMES" "$SAMPLING" > "$WORK/arguments.txt"
 
 container=(podman run --rm --device="nvidia.com/gpu=$CUDA_VISIBLE_DEVICES"
     -v /mnt:/mnt:ro -v /tmp:/tmp:rw -w "$REPO/4rc"
@@ -52,11 +59,11 @@ container=(podman run --rm --device="nvidia.com/gpu=$CUDA_VISIBLE_DEVICES"
 "${container[@]}" pip freeze > "$WORK/pip_freeze.txt"
 "${container[@]}" python "$REPO/tools/fourrc_arctic.py" prepare \
     --prepared "$ROOT/kvt_arctic_out/prepared.tar" --kvt "$KVT" \
-    --out "$OUT" --scenes "${scene_list[@]}" --frames "$FRAMES"
+    --out "$OUT" --scenes "${scene_list[@]}" --frames "$FRAMES" --sampling "$SAMPLING"
 
 for scene in "${scene_list[@]}"; do
     for condition in original masked; do
-        echo "RUN $scene $condition"
+        echo "RUN $SAMPLING $scene $condition"
         "${container[@]}" python inference.py \
             --input "$OUT/$scene/$condition" --checkpoint_dir "$CKPT" \
             --save "$OUT/$scene/$condition.npz"

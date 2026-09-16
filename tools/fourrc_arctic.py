@@ -154,12 +154,13 @@ if __name__ == "__main__":
     prep.add_argument("--out", type=Path, required=True)
     prep.add_argument("--scenes", nargs="+", choices=SCENES, default=list(SCENES))
     prep.add_argument("--frames", type=int, default=30)
+    prep.add_argument("--sampling", choices=("even", "consecutive"), default="even")
     exp = sub.add_parser("export")
     exp.add_argument("--out", type=Path, required=True)
     exp.add_argument("--scene", choices=SCENES, required=True)
     exp.add_argument("--condition", choices=("original", "masked"), required=True)
     args = parser.parse_args()
     if args.mode == "prepare":
-        prepare(args)
+        prepare(args, sampling=args.sampling)
     else:
         export(args)
