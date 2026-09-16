@@ -135,7 +135,7 @@ def stage_dataset(manifest):
     link.symlink_to(STAGE)
 
 
-def track(scene, manifest, results_name, resize_dim):
+def track(scene, manifest, results_name, resize_dim, keyframe_indices=None):
     scene_dir = DATASET_DIR / scene
     reviewed = OUT / "masks" / scene / "init_mask.png"
     assert reviewed.is_file(), f"No reviewed initial mask for {scene}: {reviewed}"
@@ -158,9 +158,20 @@ def track(scene, manifest, results_name, resize_dim):
     started = time.perf_counter()
     tracker.run_track3r(cfg={"results_path": str(results_dir), "que_size": 1},
                         args=["--obj_mode", "--resize_dim", str(resize_dim)],
-                        frame_source=source, snapshot_callback=recorder)
+                        frame_source=source, snapshot_callback=recorder,
+                        keyframe_indices=keyframe_indices)
     elapsed = time.perf_counter() - started
     assert recorder.count, f"{scene}: no keyframe reconstruction was recorded"
+
+    if keyframe_indices is not None:
+        # main.py:481 inserts on membership alone and its revert path is dead code
+        # (:649 hardcodes revert_kf = False), so the run must have used exactly the
+        # requested set. Anything else means the replay is not what was asked for.
+        used = set(np.load(results_dir / "kf_idx.npy").tolist()) - {0}
+        assert used == set(keyframe_indices), (
+            scene, sorted(used ^ set(keyframe_indices)))
+        print(f"REPLAYED {scene}: {len(used)} requested keyframes, all inserted",
+              flush=True)
 
     traj = np.load(results_dir / "traj.npy")
     assert traj.shape == (expected, 4, 4), (scene, traj.shape, expected)
@@ -224,14 +235,35 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results", default="pilot",
                         help="Results subdirectory name inside each scene folder")
-    parser.add_argument("--resize-dim", type=int, default=308,
-                        help="Pi3 input resolution; 308 is the resolution the TUM "
-                             "baseline reproduced the paper at")
+    parser.add_argument("--resize-dim", type=int, default=518,
+                        help="Pi3 input resolution. 518 is main.py's default and the "
+                             "settled protocol: at 308 box_grab_01 starves Pi3 of "
+                             "confident points and lands 60%% above Table 4")
     parser.add_argument("--scenes", nargs="+", default=list(SCENES), choices=SCENES)
     parser.add_argument("--only-eval", action="store_true",
                         help="Re-evaluate and re-archive results already in /tmp")
+    parser.add_argument("--keyframes-from", type=Path,
+                        help="JSON from kvt_keyframe_sets.py. Replaces the tracker's "
+                             "own keyframe decision with a fixed set, through "
+                             "run_track3r's existing keyframe_indices argument")
+    parser.add_argument("--policy",
+                        help="Which policy in --keyframes-from to replay")
+    parser.add_argument("--no-viz", action="store_true",
+                        help="Skip rendering. For a policy sweep, where the comparison "
+                             "is the metrics table and only the chosen runs are rendered")
     args = parser.parse_args()
     assert torch.cuda.is_available(), "Tracking needs the GPU allocation"
+
+    keyframe_sets = None
+    if args.keyframes_from is not None:
+        assert args.policy, "--keyframes-from needs --policy"
+        sets = json.loads(args.keyframes_from.read_text())
+        assert args.policy in sets["policies"], (args.policy, sorted(sets["policies"]))
+        keyframe_sets = sets["policies"][args.policy]
+        for scene in args.scenes:
+            assert scene in keyframe_sets, (args.policy, scene)
+            print(f"POLICY {args.policy} {scene}: {len(keyframe_sets[scene])} "
+                  f"keyframes to insert", flush=True)
 
     manifest = json.loads((OUT / "initial_frames" / "manifest.json").read_text())
     os.chdir(CHECKOUT)  # The SAM checkpoint and eval.py's GT paths are relative to it.
@@ -247,11 +279,14 @@ def main():
         if args.only_eval:
             assert (DATASET_DIR / scene / args.results / "traj.npy").is_file(), scene
         else:
-            timings[scene] = track(scene, manifest, args.results, args.resize_dim)
+            timings[scene] = track(
+                scene, manifest, args.results, args.resize_dim,
+                keyframe_indices=None if keyframe_sets is None else keyframe_sets[scene])
     metrics = {"rows": evaluate(args.scenes, args.results), "timings": timings,
                "articulation_degrees": articulation}
 
-    kvt_arctic_viz.visualize(args.scenes, args.results, metrics)
+    if not args.no_viz:
+        kvt_arctic_viz.visualize(args.scenes, args.results, metrics)
 
     provenance = {
         "scenes": args.scenes,
@@ -259,6 +294,8 @@ def main():
         "resize_dim": args.resize_dim,
         "tracker_args": ["--obj_mode", "--resize_dim", str(args.resize_dim)],
         "offset": 2,
+        "keyframe_policy": args.policy,
+        "keyframe_sets": keyframe_sets,
         "articulation_degrees": articulation,
         "prepare_manifest": manifest,
         "initial_masks": {scene: json.loads((OUT / "masks" / scene / "prompt.json").read_text())
