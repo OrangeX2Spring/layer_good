@@ -11,7 +11,9 @@ No config.json was downloaded; constructor defaults successfully loaded the weig
 Three bundled robot-arm frames ran at 504x280, reported inference 0.88 s, and saved
 `4rc_out/smoke.npz`. This is a smoke test, not an ARCTIC result or FPS benchmark.
 
-**ARCTIC comparison: prepared locally, not runtime-verified yet.**
+**ARCTIC comparison: runner published, not runtime-verified yet.** The next gate is
+the 30-frame box run on the current `muenchen` allocation; see `docs/4rc-cluster.md`
+for the complete handoff and remaining work.
 
 ## Protocol
 

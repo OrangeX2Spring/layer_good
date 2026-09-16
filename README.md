@@ -10,7 +10,7 @@ repository contributes the scripts that build and run them on a SLURM cluster.
 |---|---|---|
 | `pixal3d/` | `TencentARC/Pixal3D` | Single-image image-to-3D (mesh + PBR), TRELLIS.2 backbone |
 | `kv_tracker/` | KV-Tracker | Monocular tracking / SLAM, evaluated on TUM RGB-D |
-| `4rc/` | `Luo-Yihang/4RC` | Video-based 4D reconstruction; planned comparison on the same three ARCTIC objects as KV-Tracker |
+| `4rc/` | `Luo-Yihang/4RC` | Video-based 4D reconstruction; matched original/masked comparison on the same three ARCTIC objects as KV-Tracker |
 | `opt_pose/` | OPT-Pose | Category-level object pose, evaluated on HouseCat6D |
 | `genrecon/` | `kasothaphie/GenRecon` | Posed multi-view scene reconstruction, TRELLIS.2 prior |
 | `sam3d/` | `facebookresearch/sam-3d-objects` | Single-image shape + texture + layout, built for occlusion |
