@@ -16,7 +16,8 @@ from PIL import Image
 SCENES = ("box_grab_01", "ketchup_grab_01", "espressomachine_grab_01")
 
 
-def prepare(args):
+def prepare(args, sampling="even"):
+    assert sampling in ("even", "consecutive")
     args.out.mkdir(parents=True, exist_ok=False)
     with tarfile.open(args.prepared) as source, tarfile.open(args.kvt) as baseline:
         manifest = json.load(source.extractfile("manifest.json"))
@@ -36,7 +37,8 @@ def prepare(args):
                           if m.isfile() and m.name.startswith(f"{scene}/results/sam_masks/")}
             assert mask_names == {f"{scene}/results/sam_masks/{i:05d}.png"
                                   for i in range(len(frames))}
-            indices = np.linspace(0, len(frames) - 1, args.frames, dtype=int)
+            indices = (np.linspace(0, len(frames) - 1, args.frames, dtype=int)
+                       if sampling == "even" else np.arange(args.frames))
             selected = []
             for output_index, index in enumerate(indices):
                 frame = frames[index]
@@ -61,7 +63,8 @@ def prepare(args):
                     source.extractfile(f"data/raw_seqs/s01/{name}").read())
             record = {"scene": scene, "frames": selected,
                       "conditions": ["original", "masked"],
-                      "sampling": "evenly spaced over full post-offset sequence",
+                      "sampling": ("evenly spaced over full post-offset sequence"
+                                   if sampling == "even" else "first consecutive post-offset frames"),
                       "masking": "saved KV-Tracker SAM mask, before 4RC resize; no bbox crop",
                       "prepared_archive": str(args.prepared), "kvt_archive": str(args.kvt),
                       "inference": {"size": 512, "patch_size": 14,
