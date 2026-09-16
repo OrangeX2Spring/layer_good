@@ -91,11 +91,12 @@ separate Kabsch object fit. Original RGB is a control, with no guaranteed
 object-centric interpretation. Metric geometry accuracy and fused completeness
 are separate questions.
 
-## Pose evaluation (prepared, remote execution pending)
+## Pose evaluation (completed)
 
-Run `bash tools/stream3r_arctic_eval.sh` inside an existing allocation with
-localhost/optpose loaded. It uses CPU only, reads the two completed archives plus
-the original KV-Tracker archive, and saves a timestamped JSON under stream3r_out.
+The evaluator ran in job 25621 with
+localhost/optpose loaded. It used CPU only, read the two completed archives plus
+the original KV-Tracker archive, and saved
+`stream3r_arctic_eval_20260916T193217Z_25621.json` under stream3r_out.
 No inference, dataset extraction or new packages are required.
 
 The evaluator reproduces upstream ARCTIC GT construction and evo's Sim(3)
@@ -111,7 +112,9 @@ a failure with no ATE. Short-window scores must be read beside GT motion spread;
 small motion can produce small errors without useful tracking. For even sampling,
 KV-Tracker has processed intervening frames that STream3R never saw: this is an
 output-at-matched-timestamps comparison, not identical temporal input history.
-ATE by itself does not establish a rigid reconstruction or shape accuracy.
+ATE by itself does not establish a rigid reconstruction or shape accuracy. The
+consecutive 4RC follow-up and its evaluation are recorded in
+`cluster_results/fourrc_arctic/consecutive/eval.json` and `tools/FINDINGS.md`.
 
 Sync on the Mac from the repository root, after the run:
 
