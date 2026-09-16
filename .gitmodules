@@ -22,3 +22,6 @@
 [submodule "4rc"]
 	path = 4rc
 	url = git@github.com:OrangeX2Spring/4RC.git
+[submodule "point_to_pose"]
+	path = point_to_pose
+	url = git@github.com:OrangeX2Spring/point-to-pose.git
