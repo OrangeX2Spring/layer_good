@@ -39,7 +39,11 @@ def ground_truth(archive, prefix, scene):
 def evaluate(est, gt):
     assert est.shape == gt.shape and est.shape[1:] == (4, 4)
     assert np.isfinite(est).all() and np.isfinite(gt).all()
-    assert np.allclose(est[:, 3], [0, 0, 0, 1])
+    row_error = float(np.max(np.abs(est[:, 3] - [0, 0, 0, 1])))
+    print(f"POSE CHECK homogeneous-row max error={row_error:.9g}", flush=True)
+    # KV-Tracker composes/inverts float32 poses. The default allclose atol=1e-8
+    # on nominally zero entries is stricter than the rotation check below.
+    assert row_error < 1e-4, f"Non-homogeneous pose: max bottom-row error {row_error}"
     rotations = est[:, :3, :3]
     assert np.allclose(rotations.transpose(0, 2, 1) @ rotations, np.eye(3), atol=1e-4)
     assert np.allclose(np.linalg.det(rotations), 1, atol=1e-4)
@@ -69,15 +73,23 @@ def evaluate(est, gt):
     aligned[:, :3, 3] = scale * (a @ rotation.T) + y.mean(0)
     errors = np.linalg.norm(aligned[:, :3, 3] - y, axis=1)
     # evo RPE: inverse(reference relative motion) @ estimated relative motion.
-    gt_delta = np.linalg.inv(gt[:-1]) @ gt[1:]
-    pred_delta = np.linalg.inv(aligned[:-1]) @ aligned[1:]
-    relative_error = np.linalg.inv(gt_delta) @ pred_delta
-    rpe_rot = relative_error[:, :3, :3] - np.eye(3)
+    # Match evo.lie_algebra.se3_inverse (R.T, -R.T @ t), rather than a
+    # general matrix inverse that also incorporates bottom-row roundoff.
+    gt_r = gt[:-1, :3, :3].transpose(0, 2, 1)
+    pred_r = aligned[:-1, :3, :3].transpose(0, 2, 1)
+    gt_delta_r = gt_r @ gt[1:, :3, :3]
+    pred_delta_r = pred_r @ aligned[1:, :3, :3]
+    gt_delta_t = (gt_r @ (gt[1:, :3, 3] - gt[:-1, :3, 3])[..., None])[..., 0]
+    pred_delta_t = (pred_r @ (aligned[1:, :3, 3] - aligned[:-1, :3, 3])[..., None])[..., 0]
+    relative_r = gt_delta_r.transpose(0, 2, 1) @ pred_delta_r
+    relative_t = (gt_delta_r.transpose(0, 2, 1) @ (pred_delta_t - gt_delta_t)[..., None])[..., 0]
+    rpe_rot = relative_r - np.eye(3)
     return {**diagnostics, "status": "ok", "alignment_scale": float(scale),
             "aligned_pred_spread_m": (scale * spread).tolist(),
             "ate_m": float(np.sqrt(np.mean(errors ** 2))),
             "translation_errors_m": errors.tolist(),
-            "rpe_t_m": float(np.sqrt(np.mean(np.sum(relative_error[:, :3, 3] ** 2, axis=1)))),
+            "homogeneous_row_max_error": row_error,
+            "rpe_t_m": float(np.sqrt(np.mean(np.sum(relative_t ** 2, axis=1)))),
             "rpe_rot": float(np.sqrt(np.mean(np.sum(rpe_rot ** 2, axis=(1, 2)))))}
 
 
