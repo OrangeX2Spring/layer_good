@@ -1,6 +1,20 @@
 # STream3R on the ARCTIC pilot
 
-Prepared 2026-09-16. Local static verification only; cluster execution pending.
+Completed 2026-09-16, job 25621 on muenchen, code c06d548. All 12 runs
+(three scenes, two samplings, two RGB conditions) passed the finite-output gates
+and both archives finished with exit status 0. Synced to the Mac and extracted
+separately under cluster_results/stream3r_arctic/{box,ketchup_espresso}/.
+Local inventory verified 12 summaries and 360 frame-condition exports, with
+source frames, masks, model-grid inputs and NPZ prediction files present.
+Prediction contents have not been independently evaluated for accuracy.
+
+The synchronized 30-frame forward took 19.528-20.073 seconds, with peak PyTorch
+allocated memory 17.046 GiB and reserved memory 19.311 GiB in every run.
+These are batched inference measurements, not streaming FPS.
+
+Archives:
+- stream3r_arctic_20260916T190534Z_25621_yALo7o.tar (box)
+- stream3r_arctic_20260916T190931Z_25621_eKETrF.tar (ketchup and espresso)
 
 ## Protocol
 
@@ -69,9 +83,35 @@ Summaries record one synchronized forward's duration and peak PyTorch allocated
 and reserved memory. Loading/export are excluded, no warmup is performed, and
 these values are not streaming FPS or total device memory.
 
-Geometry remains in model units. Camera extrinsics are camera-from-world; they
-are not object poses. No object ATE, metric geometry accuracy or fused completeness
-is claimed. A valid object-pose readout is separate evaluation work.
+Geometry remains in model units. Camera extrinsics are camera-from-world.
+The matching KV-Tracker pose-head readout is their inverse: KV-Tracker exports
+Pi3 camera-to-world poses from masked inputs, recentred and aligned across cache
+updates. This supplies the object-centric trajectory interpretation without a
+separate Kabsch object fit. Original RGB is a control, with no guaranteed
+object-centric interpretation. Metric geometry accuracy and fused completeness
+are separate questions.
+
+## Pose evaluation (prepared, remote execution pending)
+
+Run `bash tools/stream3r_arctic_eval.sh` inside an existing allocation with
+localhost/optpose loaded. It uses CPU only, reads the two completed archives plus
+the original KV-Tracker archive, and saves a timestamped JSON under stream3r_out.
+No inference, dataset extraction or new packages are required.
+
+The evaluator reproduces upstream ARCTIC GT construction and evo's Sim(3)
+alignment, translation ATE, adjacent-sample translation RPE and rotation-part
+Frobenius RPE (not degrees). All three full-sequence KV-Tracker metrics must agree
+with the recorded values within 1e-5 before results can be accepted. It then scores
+KV-Tracker and both STream3R conditions on identical selected timestamps. It fixes
+the pose convention from code; it never selects an inversion using GT error.
+
+Reports include translation spread, alignment scale, covariance rank and the ATE
+of a stationary mean-position baseline. Rank-deficient alignment is reported as
+a failure with no ATE. Short-window scores must be read beside GT motion spread;
+small motion can produce small errors without useful tracking. For even sampling,
+KV-Tracker has processed intervening frames that STream3R never saw: this is an
+output-at-matched-timestamps comparison, not identical temporal input history.
+ATE by itself does not establish a rigid reconstruction or shape accuracy.
 
 Sync on the Mac from the repository root, after the run:
 
