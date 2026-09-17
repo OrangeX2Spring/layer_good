@@ -38,6 +38,7 @@ case "$MODE" in
   # CPU-only: derives keyframe sets from a finished run. In the container purely so
   # it does not depend on numpy being present in the node's system python3.
   keyframe-sets) SCRIPT=kvt_keyframe_sets.py ;;
+  online-check) SCRIPT=test_kvt_online_selector.py ;;
   artifacts) SCRIPT=kvt_artifacts.py ;;
   roi) SCRIPT=kvt_roi/derive_roi.py ;;
   scan) SCRIPT=kvt_roi/scan_holes.py ;;
