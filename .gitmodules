@@ -28,3 +28,9 @@
 [submodule "hot3d"]
 	path = hot3d
 	url = git@github.com:OrangeX2Spring/hot3d.git
+[submodule "streamvggt"]
+	path = streamvggt
+	url = git@github.com:OrangeX2Spring/StreamVGGT.git
+[submodule "longstream"]
+	path = longstream
+	url = git@github.com:OrangeX2Spring/LongStream.git

@@ -3,7 +3,9 @@ import argparse
 import csv
 import hashlib
 import json
+import os
 from pathlib import Path
+import resource
 import subprocess
 import sys
 import tarfile
@@ -33,6 +35,47 @@ def semantic_configs():
             configs.append(dict(name=f'{layer}_{score}_{threshold:g}', policy='semantic',
                                 layer=layer, score=score, threshold=threshold))
     return configs
+
+
+def release_page_cache(*paths):
+    """Drop the page-cache pages these files occupy, after forcing writeback.
+
+    Slurm charges page cache to the job cgroup and the grant is a flat 24576 MB
+    per GPU (`ulimit -m` on muenchen, 2026-09-18). Staging reads every source PNG
+    whole to hash it, writes a resized copy, then reads the whole tree back to
+    tar it, so each scene costs several GB of cache that nothing needs again.
+    Job 25667 died at exactly the grant while archiving scene 6 of 8.
+    """
+    os.sync()
+    for path in paths:
+        targets = sorted(path.rglob('*')) if path.is_dir() else [path]
+        for target in targets:
+            if not target.is_file():
+                continue
+            descriptor = os.open(target, os.O_RDONLY)
+            try:
+                os.posix_fadvise(descriptor, 0, 0, os.POSIX_FADV_DONTNEED)
+            finally:
+                os.close(descriptor)
+
+
+def staging_report(scene, destination, archive):
+    """Peak process RSS beside the cgroup's own accounting, which includes cache.
+
+    If RSS stays small while the job is killed at the grant, the cache is the
+    cause and `release_page_cache` is the fix; if RSS tracks the grant, it is not.
+    """
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
+    current = 'unavailable'
+    for candidate in ('/sys/fs/cgroup/memory.current',
+                      '/sys/fs/cgroup/memory/memory.usage_in_bytes'):
+        try:
+            current = f'{int(Path(candidate).read_text()) // 1024 ** 2} MiB'
+            break
+        except OSError:
+            continue
+    print(f'STAGED {scene} peak_rss={peak} MiB cgroup={current} '
+          f'archive={archive.stat().st_size // 1024 ** 2} MiB', flush=True)
 
 
 def archive_directory(source, destination):
@@ -103,7 +146,12 @@ class Sweep:
                 for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b''):
                     digest.update(chunk)
             (destination / 'archive.sha256').write_text(f'{digest.hexdigest()}  {archive}\n')
-            archive_directory(destination, self.args.out / f'{self.args.tag}_inputs_{scene}.tar')
+            staged = self.args.out / f'{self.args.tag}_inputs_{scene}.tar'
+            archive_directory(destination, staged)
+            # Nothing reads this scene's bytes again until a run opens one frame
+            # at a time, so the cache they occupy is pure cgroup pressure.
+            release_page_cache(destination, staged)
+            staging_report(scene, destination, staged)
         write_json(self.work / 'inventory.json', {scene: {k: v for k, v in m.items() if k != 'inputs'}
                     for scene, m in self.manifests.items()})
 
