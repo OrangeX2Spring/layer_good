@@ -47,6 +47,16 @@ class TumTests(unittest.TestCase):
         self.assertGreater(difference[3], .9)
         self.assertEqual(np.diff(np.flatnonzero(valid)).tolist(), [1, 1, 2])
 
+    def test_duplicate_gt_timestamp(self):
+        # freiburg2_large_no_loop repeats one GT timestamp. Association must still
+        # pick a nearest pose, whichever side of the pair the search lands on.
+        rgb = np.array([.03, .033, .05])
+        gt = np.array([0., .033, .033, .066])
+        nearest, valid, difference = associate_gt(rgb, gt, .02)
+        np.testing.assert_array_equal(valid, [True, True, True])
+        np.testing.assert_array_equal(nearest, [1, 1, 3])
+        np.testing.assert_allclose(difference, [.003, 0., .016], atol=1e-12)
+
     def test_evaluation_excludes_gap_and_rpe_bridge(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

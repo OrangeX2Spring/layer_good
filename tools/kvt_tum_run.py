@@ -32,7 +32,9 @@ def periodic_indices(length, interval, cap):
 def associate_gt(rgb_times, gt_times, max_difference):
     """Nearest timestamp, rejecting missing-GT intervals; no extrapolated poses."""
     assert rgb_times.ndim == gt_times.ndim == 1
-    assert np.all(np.diff(rgb_times) > 0) and np.all(np.diff(gt_times) > 0)
+    # freiburg2_large_no_loop repeats one GT timestamp (row 4793 of 6476, no
+    # backward step); searchsorted needs non-decreasing, not strictly increasing.
+    assert np.all(np.diff(rgb_times) > 0) and np.all(np.diff(gt_times) >= 0)
     right = np.searchsorted(gt_times, rgb_times).clip(0, len(gt_times) - 1)
     left = (right - 1).clip(0)
     use_left = np.abs(gt_times[left] - rgb_times) < np.abs(gt_times[right] - rgb_times)

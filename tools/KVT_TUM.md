@@ -70,6 +70,17 @@ Results for all thresholds remain in the report. No random controls or eviction.
 - `freiburg2_large_with_loop`: ~173 s, only ~40.5 s GT; the middle is missing.
 - `freiburg2_large_no_loop`: ~112 s, only ~21.4 s GT.
 
+`freiburg2_large_no_loop` **repeats one ground-truth timestamp**: measured from the
+CAMP ZIP on 2026-09-18, its `groundtruth.txt` holds one duplicate (`1311875920.1044`,
+row 4793 of 6,476) and no backward step, while its 3,359 RGB stems are strictly
+increasing. GT association therefore requires **non-decreasing** timestamps, not
+strictly increasing ones; asserting the latter aborted staging on the eighth and last
+scene. A duplicate is inert for nearest-timestamp association — deleting the row
+leaves every matched time difference bit-identical — so no sorting or de-duplication
+is applied and the file is used as shipped. The other seven archives are strictly
+increasing on both sides, proved by the same assert passing. The tightened contract
+is pinned by `test_duplicate_gt_timestamp` in `tools/test_kvt_tum.py`.
+
 Official metadata: <https://cvg.cit.tum.de/data/datasets/rgbd-dataset/download>.
 The script inventories actual images, timestamps and GT coverage from the CAMP ZIPs.
 All three are tracked over their **full** RGB streams. Accuracy associates the nearest
@@ -298,11 +309,26 @@ sbatch /mnt/projects/gr/3DRecon/layer_good/tools/kvt_tum.sbatch
 ```
 
 For the initial deployment when the new file is absent, submit a wrapper that
-pulls inside the same allocation and executes it (no pull on head):
+pulls inside the same allocation and executes it (no pull on head). Terminal paste
+breaks lines longer than ~100 characters, and a break inside the `--wrap` quotes
+either hangs the shell or submits a broken script (job 25659, exit 127), so build
+the command from short lines, from `/mnt/projects/gr/3DRecon/layer_good`:
 
 ```bash
-sbatch --job-name=kvt-tum --account=students --qos=students_normal --partition=24g --nodelist=muenchen --gres=gpu:1 --nodes=1 --propagate=NONE --output=/mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log --wrap='git -C /mnt/projects/gr/3DRecon/layer_good -c fetch.recurseSubmodules=false pull --ff-only && bash /mnt/projects/gr/3DRecon/layer_good/tools/kvt_tum.sbatch'
+W='git -c fetch.recurseSubmodules=0 pull --ff-only && bash tools/kvt_tum.sbatch'
 ```
+
+```bash
+O=../kvt_tum_slurm-%j.log
+```
+
+```bash
+sbatch -p 24g -w muenchen --gres=gpu:1 --propagate=NONE -o "$O" --wrap="$W"
+```
+
+The `#SBATCH` lines in the file are comments to `bash`, so partition, node, GPU and
+log path come from the command line here. This is how job 25660 was submitted on
+2026-09-18.
 
 After completion, on the Mac from the repo root (replace JOBID with the actual ID):
 
