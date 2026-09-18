@@ -106,6 +106,14 @@ The batch stops at the first unexpected failure:
    poses agree at 1e-4, decisions and cache IDs exactly, scores at atol 1e-5/rtol 1e-4.
    Every input's resized RGB hash matches the shared archive. Cache IDs must always
    precede the query, and accepted IDs must match `kf_idx.npy`.
+   Before each scene's full experiments, one prefix from each of the four semantic
+   families exercises the real feature hooks, export, PCA/similarity plots and
+   patch overlays. Those prefixes are reused for the later causality comparisons.
+   Prefix PCA bases stay separate from full-sequence bases.
+
+Prefixes and memory probes deliberately do not run GT alignment: a short initial
+segment can lack matched GT or enough motion for Sim(3), which is irrelevant to
+their causality/memory checks. Full runs still require successful ATE/RPE evaluation.
 
 The preflight estimates device peak as peak PyTorch reservation plus end-of-run
 non-allocator use. It is not a guarantee against all later fragmentation. Allocated

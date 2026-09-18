@@ -13,7 +13,7 @@ import torch.nn.functional as F
 
 from kvt_tum_run import associate_gt, evaluate, periodic_indices
 from kvt_tum_selector import TumSelector, patch_novelty
-from kvt_tum_sweep import compare_prefix, semantic_configs
+from kvt_tum_sweep import Sweep, compare_prefix, semantic_configs
 
 
 class TumTests(unittest.TestCase):
@@ -112,6 +112,42 @@ class TumTests(unittest.TestCase):
         self.assertEqual(len({c['name'] for c in configs}), 16)
         self.assertEqual({c['layer'] for c in configs}, {'encoder', 'decoder0'})
 
+    def test_short_runs_do_not_request_gt_alignment(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            out = root / 'archives'
+            out.mkdir()
+            sweep = Sweep(SimpleNamespace(work=root, out=out, tag='test'))
+            sweep.manifests['synthetic'] = dict(frames=256)
+
+            def complete(command, **kwargs):
+                result = Path(command[-1]).parent
+                (result / 'metrics.json').write_text('{}')
+                return SimpleNamespace(returncode=0)
+
+            with patch('kvt_tum_sweep.subprocess.run', side_effect=complete):
+                for name, prefix, preflight, expected in (
+                        ('prefix', True, False, False), ('memory', False, True, False),
+                        ('full', False, False, True)):
+                    result, _ = sweep.run_one('synthetic', dict(name=name, policy='original'),
+                                              prefix=prefix, preflight=preflight)
+                    config = json.loads((result / 'config.json').read_text())
+                    self.assertEqual(config['evaluate_trajectory'], expected)
+
+    def test_feature_preflight_prefix_is_reused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sweep = Sweep(SimpleNamespace(work=root, out=root, tag='test'))
+            short, full = root / 'short', root / 'full'
+            sweep.prefixes[('synthetic', 'semantic')] = short
+            with patch.object(sweep, 'run_one', return_value=(full, {})) as run_one, \
+                    patch('kvt_tum_sweep.compare_prefix') as compare, \
+                    patch('kvt_tum_sweep.archive_directory'):
+                settings = dict(name='semantic', policy='semantic')
+                sweep.paired('synthetic', settings)
+                run_one.assert_called_once_with('synthetic', settings)
+                compare.assert_called_once_with(short, full)
+
     @patch('torch.cuda.synchronize')
     def test_periodic_phase_cap_and_future_rejected(self, synchronize):
         config = dict(policy='periodic', interval=3, cap=3)
@@ -160,7 +196,7 @@ class TumTests(unittest.TestCase):
 
     def test_visualization_and_video_decode(self):
         import cv2
-        from kvt_tum_viz import patch_overlays, visualize_run
+        from kvt_tum_viz import feature_views, patch_overlays, visualize_run
 
         with tempfile.TemporaryDirectory() as temporary:
             inputs, result = Path(temporary) / 'inputs', Path(temporary) / 'result'
@@ -209,6 +245,14 @@ class TumTests(unittest.TestCase):
                 self.assertTrue(np.isnan(projection['similarity'][0]).all())
                 self.assertTrue(np.isnan(projection['similarity'][:3, 1]).all())
                 self.assertTrue(np.isfinite(projection['similarity'][3]).all())
+            prefix = result.parent / 'prefix'
+            (prefix / 'viz').mkdir(parents=True)
+            np.savez(prefix / 'frame_features.npz', descriptors=np.eye(4), frame_ids=np.arange(4))
+            feature_views(inputs, prefix, manifest, dict(config, name=config['name']+'_prefix'),
+                          [json.loads(line) for line in (result / 'decisions.jsonl').read_text().splitlines()],
+                          np.array([0, 2]), np.arange(4)/15)
+            with np.load(prefix / 'viz' / 'feature_projection.npz') as projection:
+                self.assertEqual(str(projection['basis_condition']), config['name']+'_prefix')
             maps = np.array([[1., 1., 1., 1.], [1., 1., .8, .8], [.8, .8, .8, .8]], dtype=np.float32)
             np.savez(result / 'patch_novelty.npz', maps=maps, frame_ids=np.arange(1, 4),
                      patch_grid=np.array([2, 2]))

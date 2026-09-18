@@ -64,6 +64,7 @@ class Sweep:
         self.args = args
         self.work = args.work
         self.records = []
+        self.prefixes = {}
         self.manifests = {}
         (self.work / 'runs').mkdir(parents=True)
         (self.work / 'inputs').mkdir()
@@ -112,7 +113,8 @@ class Sweep:
         result = self.work / 'runs' / scene / name
         result.mkdir(parents=True)
         frames = 128 if prefix else settings.get('frames', self.manifests[scene]['frames'])
-        config.update(name=name, scene=scene, scene_dir=str(self.work / 'inputs' / scene), frames=frames)
+        config.update(name=name, scene=scene, scene_dir=str(self.work / 'inputs' / scene), frames=frames,
+                      evaluate_trajectory=not (prefix or preflight))
         write_json(result / 'config.json', config)
         started = time.time()
         print('RUN', scene, name, frames, 'frames', flush=True)
@@ -137,7 +139,11 @@ class Sweep:
         return result, metrics
 
     def paired(self, scene, settings):
-        short, _ = self.run_one(scene, settings, prefix=True)
+        key = (scene, settings['name'])
+        if key in self.prefixes:
+            short = self.prefixes.pop(key)
+        else:
+            short, _ = self.run_one(scene, settings, prefix=True)
         full, metrics = self.run_one(scene, settings)
         compare_prefix(short, full)
         if scene in LONG_SCENES:
@@ -238,6 +244,25 @@ class Sweep:
         self.fidelity()
         cap = self.choose_cap()
         for scene in LONG_SCENES:
+            # Exercise every feature family and its real-data rendering before
+            # spending time on full trajectories. Reuse these exact prefixes.
+            from kvt_tum_viz import feature_views, read_rows
+            checked = set()
+            for settings in semantic_configs():
+                family = (settings['layer'], settings['score'])
+                if family in checked:
+                    continue
+                checked.add(family)
+                result, _ = self.run_one(scene, dict(settings, cap=cap), prefix=True)
+                self.prefixes[(scene, settings['name'])] = result
+                config = json.loads((result / 'config.json').read_text())
+                times = np.array([r['timestamp'] for r in self.manifests[scene]['inputs'][:128]])
+                (result / 'viz').mkdir()
+                feature_views(self.work / 'inputs' / scene, result, self.manifests[scene], config,
+                              read_rows(result / 'decisions.jsonl'), np.load(result / 'kf_idx.npy'),
+                              times - times[0])
+                archive_directory(result, self.args.out / f'{self.args.tag}_{scene}_{result.name}.tar')
+                print('FEATURE PREFLIGHT OK', scene, family, flush=True)
             self.paired(scene, dict(name='original', policy='original'))
             self.paired(scene, dict(name='original_extended', policy='periodic', cap=cap))
             semantics = []

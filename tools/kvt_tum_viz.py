@@ -45,7 +45,9 @@ def feature_views(inputs, result, manifest, config, decisions, keyframes, times)
     np.testing.assert_allclose(np.linalg.norm(vectors, axis=1), 1., atol=1e-5)
     # A single basis per sequence/layer keeps threshold plots comparable. Each
     # condition also saves that basis, so its archive is independently renderable.
-    basis_path = result.parent / f'pca_{config["layer"]}.npz'
+    # Short preflight projections must not seed the full-sequence shared basis.
+    basis_root = output if config['name'].endswith('_prefix') else result.parent
+    basis_path = basis_root / f'pca_{config["layer"]}.npz'
     own_projection = output / 'feature_projection.npz'
     if own_projection.exists():
         with np.load(own_projection) as saved:
@@ -123,7 +125,9 @@ def feature_views(inputs, result, manifest, config, decisions, keyframes, times)
     (output / 'feature_manifest.json').write_text(json.dumps(dict(
         layer=config['layer'], frame_count=n, descriptor_dimension=dimension,
         pooling='L2-normalized mean of raw frame-local patch tokens',
-        projection='offline PCA; full sequence fit of first condition per layer; never feeds selection',
+        projection=('offline PCA; preflight prefix only; never feeds selection'
+                    if config['name'].endswith('_prefix') else
+                    'offline PCA; full sequence fit of first condition per layer; never feeds selection'),
         reference_variance_ratio=variance_ratio.tolist(),
         basis_condition=basis_condition,
         pooled_similarity_is_native_metric=config['score'] == 'cosine',

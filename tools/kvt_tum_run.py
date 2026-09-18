@@ -239,7 +239,10 @@ def run(config_path):
         # preflight estimate; sampled nvidia-smi device usage is archived separately.
         metrics['estimated_peak_device_bytes'] = (metrics['peak_reserved_bytes']
             + total - free - torch.cuda.memory_reserved())
-        metrics.update(evaluate(scene_dir, result, config['max_gt_difference']))
+        # Prefixes verify causality and probes measure memory. Neither requires
+        # a nondegenerate GT alignment on its short initial motion segment.
+        if config['evaluate_trajectory']:
+            metrics.update(evaluate(scene_dir, result, config['max_gt_difference']))
         rows = [json.loads(line) for line in (result / 'inference.jsonl').read_text().splitlines()]
         for kind in ('bootstrap', 'query', 'rebuild'):
             values = [row['seconds'] for row in rows if row['kind'] == kind]
