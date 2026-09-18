@@ -34,6 +34,157 @@ def letterbox(image, width, height):
     return canvas
 
 
+def feature_views(inputs, result, manifest, config, decisions, keyframes, times):
+    """Offline pooled-feature projection, causal-reference similarities and patch maps."""
+    output = result / 'viz'
+    with np.load(result / 'frame_features.npz') as saved:
+        vectors = saved['descriptors']
+        frame_ids = saved['frame_ids']
+    n, dimension = vectors.shape
+    assert n == len(times) and np.array_equal(frame_ids, np.arange(n))
+    np.testing.assert_allclose(np.linalg.norm(vectors, axis=1), 1., atol=1e-5)
+    # A single basis per sequence/layer keeps threshold plots comparable. Each
+    # condition also saves that basis, so its archive is independently renderable.
+    basis_path = result.parent / f'pca_{config["layer"]}.npz'
+    own_projection = output / 'feature_projection.npz'
+    if own_projection.exists():
+        with np.load(own_projection) as saved:
+            mean, components, variance_ratio = saved['mean'], saved['components'], saved['variance_ratio']
+            basis_condition = str(saved['basis_condition'])
+    elif basis_path.exists():
+        with np.load(basis_path) as saved:
+            mean, components, variance_ratio = saved['mean'], saved['components'], saved['variance_ratio']
+            basis_condition = str(saved['basis_condition'])
+    else:
+        mean = vectors.mean(0, dtype=np.float64)
+        centered = vectors.astype(np.float64) - mean
+        eigenvalues, eigenvectors = np.linalg.eigh(centered.T @ centered)
+        total = float(np.maximum(eigenvalues, 0).sum())
+        assert total > 0, 'All pooled frame features are identical; no PCA variance'
+        components = eigenvectors[:, -2:][:, ::-1].T
+        # Stable sign convention, without changing the subspace.
+        for component in components:
+            if component[np.argmax(np.abs(component))] < 0:
+                component *= -1
+        variance_ratio = np.maximum(eigenvalues[-2:][::-1], 0) / total
+        basis_condition = config['name']
+        np.savez(basis_path, mean=mean, components=components, variance_ratio=variance_ratio,
+                 basis_condition=basis_condition)
+    assert components.shape == (2, dimension)
+    xy = (vectors - mean) @ components.T
+    native_score = np.r_[np.nan, [r['score'] for r in decisions]]
+    cap_blocked = np.array([r['frame'] for r in decisions if r['cap_blocked']], dtype=int)
+    similarities = np.clip(vectors @ vectors[keyframes].T, -1, 1)
+    available = frame_ids[:, None] > keyframes[None, :]
+    similarities[~available] = np.nan  # Includes self: decisions precede insertion.
+    np.savez(own_projection, xy=xy, mean=mean, components=components,
+             variance_ratio=variance_ratio, native_score=native_score, frame_ids=frame_ids,
+             similarity=similarities, keyframe_ids=keyframes, basis_condition=basis_condition)
+
+    figure, axes = plt.subplots(1, 2, figsize=(13, 5), constrained_layout=True)
+    for axis, color, label in zip(axes, (times, native_score), ('Sequence time (s)', 'Native novelty score')):
+        axis.plot(xy[:, 0], xy[:, 1], color='grey', alpha=.2, lw=.5)
+        dots = axis.scatter(xy[:, 0], xy[:, 1], c=color, cmap='viridis', s=8)
+        axis.scatter(xy[keyframes, 0], xy[keyframes, 1], facecolors='none', edgecolors='red',
+                     s=65, linewidths=1, label='selected keyframes (incl. bootstrap)')
+        axis.scatter(xy[cap_blocked, 0], xy[cap_blocked, 1], marker='x', color='orange',
+                     s=12, label='candidate blocked by cap')
+        axis.set(xlabel=f'PC1 ({variance_ratio[0]:.1%} reference variance)',
+                 ylabel=f'PC2 ({variance_ratio[1]:.1%} reference variance)')
+        axis.legend(fontsize=7)
+        figure.colorbar(dots, ax=axis, label=label)
+    figure.suptitle(f"{config['name']} | pooled {config['layer']} features\n"
+                   'Offline PCA; shared basis per layer/sequence; projected distances are not selection scores')
+    save_figure(figure, output / 'feature_pca.png')
+
+    figure, axes = plt.subplots(2, 1, figsize=(13, 8), constrained_layout=True,
+                                gridspec_kw={'height_ratios': [3, 1]})
+    cmap = plt.get_cmap('viridis').copy()
+    cmap.set_bad('#dddddd')
+    matrix = axes[0].imshow(similarities.T, origin='lower', aspect='auto', cmap=cmap,
+        extent=(-.5, n-.5, -.5, len(keyframes)-.5),
+        vmin=float(np.nanmin(similarities)), vmax=1.)
+    slots = np.unique(np.linspace(0, len(keyframes)-1, min(12, len(keyframes))).astype(int))
+    axes[0].set_yticks(slots, [str(keyframes[i]) for i in slots])
+    axes[0].set(xlabel='Source frame', ylabel='Cached keyframe source ID')
+    figure.colorbar(matrix, ax=axes[0], label=f'Pooled cosine similarity (original {dimension}-D space)')
+    axes[1].plot(frame_ids, native_score, label=f"native {config['score']} score", lw=.8)
+    axes[1].axhline(config['threshold'], color='red', label='insertion threshold')
+    axes[1].scatter(keyframes[1:], native_score[keyframes[1:]], color='red', s=12, label='inserted')
+    axes[1].set(xlabel='Source frame', ylabel='Native novelty')
+    axes[1].legend(fontsize=8)
+    caveat = 'same pooled feature as selector' if config['score'] == 'cosine' else (
+        'pooled-feature proxy only; patch-set selector uses a different score')
+    figure.suptitle(f"{config['name']} | {caveat}\nGrey = keyframe not yet available; no future references")
+    save_figure(figure, output / 'feature_similarity.png')
+
+    if config['score'] in ('coverage', 'chamfer'):
+        patch_overlays(inputs, result, manifest, config, decisions, times)
+    (output / 'feature_manifest.json').write_text(json.dumps(dict(
+        layer=config['layer'], frame_count=n, descriptor_dimension=dimension,
+        pooling='L2-normalized mean of raw frame-local patch tokens',
+        projection='offline PCA; full sequence fit of first condition per layer; never feeds selection',
+        reference_variance_ratio=variance_ratio.tolist(),
+        basis_condition=basis_condition,
+        pooled_similarity_is_native_metric=config['score'] == 'cosine',
+        unavailable_reference_cells='NaN where keyframe ID >= query ID',
+        sources=['frame_features.npz', 'decisions.jsonl', 'kf_idx.npy', 'patch_novelty.npz (patch policies)']),
+        indent=2) + '\n')
+
+
+def patch_overlays(inputs, result, manifest, config, decisions, times):
+    with np.load(result / 'patch_novelty.npz') as saved:
+        maps, indices, grid = saved['maps'], saved['frame_ids'], saved['patch_grid']
+    assert np.array_equal(indices, np.arange(1, len(times)))
+    assert maps.shape == (len(indices), int(np.prod(grid)))
+    # Coverage stores actual max cosine; Chamfer stores current-to-reference d².
+    novelty = 1 - maps if config['score'] == 'coverage' else maps
+    if config['score'] == 'coverage':
+        recomputed = (maps < config['similarity_floor']).mean(1)
+    else:
+        recomputed = (maps.mean(1) + np.array([r['chamfer_reverse_mean'] for r in decisions])) / 2
+    np.testing.assert_allclose(recomputed, [r['score'] for r in decisions], atol=1e-6, rtol=1e-5)
+    choices = {}
+    categories = [('high selected', [r for r in decisions if r['selected']], lambda r: -r['score']),
+                  ('near rejected', [r for r in decisions if not r['candidate']],
+                   lambda r: abs(r['score'] - config['threshold'])),
+                  ('cap blocked', [r for r in decisions if r['cap_blocked']], lambda r: -r['score'])]
+    for label, rows, ordering in categories:
+        for row in sorted(rows, key=ordering)[:3]:
+            choices.setdefault(row['frame'], label)
+    for index in np.linspace(1, len(times)-1, 4).astype(int):
+        choices.setdefault(int(index), 'timeline')
+    choices = list(choices.items())[:12]
+    maximum = max(float(np.quantile(novelty, .99)), 1e-6)
+    figure, axes = plt.subplots(len(choices), 2, figsize=(10, 2.5*len(choices)),
+                                squeeze=False, constrained_layout=True)
+    for (index, reason), (left, right) in zip(choices, axes):
+        path = inputs / 'model_rgb' / Path(manifest['inputs'][index]['file']).name
+        bgr = cv2.imread(str(path))
+        assert bgr is not None, path
+        rgb = bgr[:, :, ::-1]
+        row = decisions[index-1]
+        patch_map = novelty[index-1].reshape(tuple(grid))
+        pixels = cv2.resize(patch_map, (rgb.shape[1], rgb.shape[0]), interpolation=cv2.INTER_NEAREST)
+        left.imshow(rgb)
+        left.set_title(f"frame {index}, {times[index]:.2f}s | {reason}", fontsize=9)
+        right.imshow(rgb)
+        overlay = right.imshow(pixels, cmap='magma', vmin=0, vmax=maximum, alpha=.65)
+        reference = f" | ref {row['chamfer_reference_frame']}" if config['score'] == 'chamfer' else ''
+        right.set_title(f"score {row['score']:.4f} / threshold {config['threshold']:g}{reference}", fontsize=9)
+        for axis in (left, right):
+            axis.axis('off')
+    label = '1 - best cached-patch cosine' if config['score'] == 'coverage' else (
+        'current-to-chosen-reference squared distance; score also includes reverse direction')
+    figure.colorbar(overlay, ax=axes[:, 1].tolist(), label=label, shrink=.6)
+    figure.suptitle(f"{config['name']} | actual pre-insertion patch novelty\n"
+                   f'Per-run display scale clips above 99th percentile ({maximum:.4g}); stored maps are unclipped')
+    save_figure(figure, result / 'viz' / 'patch_novelty.png')
+    (result / 'viz' / 'patch_overlays.json').write_text(json.dumps(dict(
+        source_frames=[dict(frame=i, reason=reason) for i, reason in choices],
+        display_maximum=maximum, score_reconstruction_verified=True, label=label), indent=2) + '\n')
+
+
 def visualize_run(inputs, result, video=False):
     manifest = json.loads((inputs / 'manifest.json').read_text())
     config = json.loads((result / 'config.json').read_text())
@@ -128,6 +279,8 @@ def visualize_run(inputs, result, video=False):
                         cv2.FONT_HERSHEY_SIMPLEX, .5, (240, 240, 240), 1, cv2.LINE_AA)
         assert cv2.imwrite(str(output / f'keyframes_{page:02d}.png'), sheet)
 
+    if config['policy'] == 'semantic':
+        feature_views(inputs, result, manifest, config, decisions, keyframes, times)
     if video:
         tracking_video(inputs, result, manifest, config, metrics, evaluation, times, error, keyframes)
     artifacts = sorted(p for p in output.iterdir() if p.suffix in ('.png', '.mp4', '.ply'))

@@ -75,6 +75,36 @@ class TumTests(unittest.TestCase):
         squared = ((a[:, None] - b[None]) ** 2).sum(-1)
         expected = (squared.min(0).values.mean() + squared.min(1).values.mean()) / 2
         self.assertAlmostEqual(patch_novelty(a, [b], 'chamfer', .95), float(expected), places=5)
+        score, details = patch_novelty(a, [b], 'chamfer', .95, return_details=True)
+        self.assertAlmostEqual(score, float(expected), places=5)
+        self.assertAlmostEqual((float(details['map'].mean()) + details['reverse_mean']) / 2,
+                               score, places=6)
+
+    def test_coverage_map_reconstructs_native_score(self):
+        a = torch.eye(3)
+        b = a[0].repeat(3, 1)
+        score, details = patch_novelty(a, [b], 'coverage', .95, return_details=True)
+        self.assertAlmostEqual(score, float((details['map'] < .95).float().mean()))
+
+    @patch('torch.cuda.synchronize')
+    def test_arrival_features_are_archived(self, synchronize):
+        log = io.StringIO()
+        config = dict(policy='semantic', score='cosine', threshold=.05, cap=2)
+        selector = TumSelector(config, log, io.StringIO())
+        selector.model = SimpleNamespace(cache={})
+        frame = dict(idx=0, resized_mask_np=np.ones((14, 14), dtype=bool))
+        selector.tokens = torch.eye(1, 1024)
+        selector.bootstrap(frame)
+        for i in range(1, 4):
+            selector.tokens = torch.zeros(1, 1024)
+            selector.tokens[0, i] = 1
+            selector.select(dict(frame, idx=i), None, None, None, selector.inserted.copy(), False)
+        with tempfile.TemporaryDirectory() as temporary:
+            selector.close(Path(temporary))
+            with np.load(Path(temporary) / 'frame_features.npz') as saved:
+                np.testing.assert_array_equal(saved['frame_ids'], [0, 1, 2, 3])
+                np.testing.assert_array_equal(saved['descriptors'], np.eye(4, 1024))
+        self.assertEqual(selector.inserted, [0, 1])
 
     def test_four_thresholds_per_family(self):
         configs = semantic_configs()
@@ -130,7 +160,7 @@ class TumTests(unittest.TestCase):
 
     def test_visualization_and_video_decode(self):
         import cv2
-        from kvt_tum_viz import visualize_run
+        from kvt_tum_viz import patch_overlays, visualize_run
 
         with tempfile.TemporaryDirectory() as temporary:
             inputs, result = Path(temporary) / 'inputs', Path(temporary) / 'result'
@@ -144,11 +174,12 @@ class TumTests(unittest.TestCase):
                 manifest['inputs'].append(dict(file=f'rgb/{filename}', timestamp=i/15))
             (inputs / 'manifest.json').write_text(json.dumps(manifest))
             config = dict(scene='synthetic', name='decoder0_cosine_0.3', policy='semantic',
-                          threshold=.3, cap=2, interval=50)
+                          layer='decoder0', score='cosine', threshold=.3, cap=2, interval=50)
             (result / 'config.json').write_text(json.dumps(config))
             (result / 'metrics.json').write_text(json.dumps(dict(frames=4, ate_m=0.,
                 evaluated_fraction=.75, cap_reached=True)))
             np.save(result / 'kf_idx.npy', np.array([0, 2]))
+            np.savez(result / 'frame_features.npz', descriptors=np.eye(4), frame_ids=np.arange(4))
             positions = np.array([[i/10, 0., 0.] for i in range(4)])
             reference = np.tile(np.eye(4), (3, 1, 1))
             reference[:, :3, 3] = positions[[0, 1, 3]]
@@ -173,6 +204,19 @@ class TumTests(unittest.TestCase):
             self.assertEqual(video['decoded_frames'], len(video['source_indices']))
             self.assertEqual(video['source_indices'][-1], 3)
             self.assertTrue((result / 'viz' / 'scene_gt_aligned.ply').is_file())
+            self.assertTrue((result / 'viz' / 'feature_pca.png').is_file())
+            with np.load(result / 'viz' / 'feature_projection.npz') as projection:
+                self.assertTrue(np.isnan(projection['similarity'][0]).all())
+                self.assertTrue(np.isnan(projection['similarity'][:3, 1]).all())
+                self.assertTrue(np.isfinite(projection['similarity'][3]).all())
+            maps = np.array([[1., 1., 1., 1.], [1., 1., .8, .8], [.8, .8, .8, .8]], dtype=np.float32)
+            np.savez(result / 'patch_novelty.npz', maps=maps, frame_ids=np.arange(1, 4),
+                     patch_grid=np.array([2, 2]))
+            patch_rows = [dict(frame=i, score=score, candidate=score>.3, selected=i==2,
+                               cap_blocked=i==3) for i, score in enumerate((0., .5, 1.), 1)]
+            patch_overlays(inputs, result, manifest, dict(config, score='coverage', similarity_floor=.95),
+                           patch_rows, np.arange(4)/15)
+            self.assertTrue((result / 'viz' / 'patch_novelty.png').is_file())
 
 
 if __name__ == '__main__':

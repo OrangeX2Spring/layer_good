@@ -87,8 +87,10 @@ The batch stops at the first unexpected failure:
 
 1. CPU contract tests in the existing container: timestamp gaps, counter phase,
    patch comparisons/chunking, caps, feature interfaces, threshold grid and prefix gate.
-   A tiny synthetic visualization also checks PNG/PLY generation and MP4 encoding
-   plus full decoding before the first model run.
+  A tiny synthetic visualization also checks PNG/PLY generation and MP4 encoding
+   plus full decoding before the first model run. Feature tests check arrival-vector
+   export, future-reference masking and reconstruction of native patch scores from
+   the saved maps (including Chamfer's reverse contribution).
 2. Five full original TUM runs at 308 reproduce the recorded ATEs within 0.002 m:
    xyz .021, rpy .045, desk2 .083, desk .059, room .361. This historical gate uses
    the original GT association; corrected timestamp-valid metrics are saved separately.
@@ -140,6 +142,57 @@ All visualization happens headlessly on CAMP after inference; matplotlib uses Ag
   sheets (16 per page), labelled with source index and timestamp, with aspect ratio
   preserved. No selected keyframes are omitted.
 - `manifest.json`: artifact inventory and source-file references.
+
+**Feature-space diagnostics for every full semantic run:**
+
+- `feature_pca.png`: two views of the same 2D PCA projection, colored by sequence
+  time and actual native novelty. Selected keyframes are red rings; cap-blocked
+  candidates are orange crosses. The basis is fitted after inference on the first
+  full condition for that sequence/layer and shared across its threshold/score
+  plots. Axes report the reference explained variance. Encoder and decoder plots
+  have separate bases; their coordinates are not directly comparable.
+- `feature_similarity.png`: pooled cosine similarities between each arriving frame
+  and selected keyframes, in the original descriptor space, above the actual
+  selection-score trace. A cell is grey whenever the reference frame is not
+  strictly earlier than the query. For cosine selection these are the same pooled
+  descriptors used by the selector (CPU recomputation for plotting); for coverage
+  and Chamfer this is explicitly a **pooled-feature proxy**, not their decision metric.
+- `patch_novelty.png` for coverage/Chamfer: input RGB beside a patch-grid heat overlay.
+  A deterministic set of up to 12 examples includes high-scoring selections,
+  rejections near the threshold, cap-blocked candidates and evenly spaced times.
+  Coverage overlays `1 - max cached-patch cosine`, with the maximum taken over the
+  complete retained patch bank. Chamfer overlays the current-to-reference squared
+  distances for the actual chosen reference frame; the score also includes its
+  reverse-direction mean. Reference IDs and reverse contributions are logged.
+  Rendering verifies that saved patch maps reproduce the native scores.
+
+PCA is an **offline explanatory projection**, never used for selection. Apparent
+distances/clusters in two dimensions do not establish the 1024-D novelty, object
+identity, or a semantic class. The native score remains visible. Patch heatmap
+display scales are labelled per-run 99th percentiles; clipping affects display
+only. Raw maps and display limits are saved.
+
+Data retained for these views:
+
+- `frame_features.npz`: each arriving frame's L2-normalized mean of raw patch tokens,
+  frame IDs and patch-grid shape. It is the actual selection vector for cosine;
+  the patch-set policies export it only as a display diagnostic.
+- `patch_novelty.npz`: every post-bootstrap query's patch map at its decision time.
+  Coverage stores the maximum similarity itself (so the 0.95 boundary is preserved);
+  Chamfer stores forward squared distances. These maps are reused from selection,
+  not recomputed against the final cache or future keyframes.
+- `viz/feature_projection.npz`: coordinates, mean, PCA components, reference explained
+  variance, fitting-condition name, masked similarity matrix and native scores.
+  Each run carries the shared basis for independent re-rendering.
+- `viz/feature_manifest.json`, `viz/patch_overlays.json`: interpretation, sources,
+  sampled source indices and display settings.
+
+No additional encoder pass or full stream of patch descriptors is stored. At 5,000
+frames, pooled float32 descriptors cost about 20 MiB per run; patch maps cost
+`4 * (N-1) * patch_count` bytes. These diagnostic arrays live on CPU, outside the
+inference cache. `diagnostic_cpu_feature_bytes` and query `feature_export_seconds`
+are reported; copy time is also included in selector/total wall time. Capture is
+observational: thresholds, retained descriptors and insertion decisions are unchanged.
 
 After the semantic and periodic comparison for each sequence, the batch additionally
 renders the **stock original, best semantic condition, and smallest tested matching

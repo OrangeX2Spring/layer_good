@@ -9,13 +9,14 @@ import json
 from pathlib import Path
 import time
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
 PI3_SHA256 = 'cbcf68b3c05baab7680f6e24afda42501dc0ba799e85ca18668ba3e8a5812979'
 
 
-def patch_novelty(current, retained, score, similarity_floor):
+def patch_novelty(current, retained, score, similarity_floor, return_details=False):
     """Inputs are float32 L2-normalized patch rows; match all spatial positions.
 
     Coverage matches against the union of retained patches. Chamfer takes the
@@ -26,6 +27,8 @@ def patch_novelty(current, retained, score, similarity_floor):
     assert retained and score in ('coverage', 'chamfer')
     covered_similarity = torch.full((len(current),), -1., device=current.device)
     distances = []
+    forward_maps = []
+    reverse_means = []
     for reference in retained:
         assert reference.shape == current.shape and reference.dtype == current.dtype
         forward = []
@@ -41,9 +44,18 @@ def patch_novelty(current, retained, score, similarity_floor):
         else:
             # ||u-v||² = 2-2 cos(u,v); symmetric mean averages the two directions.
             distances.append(((2 - 2 * forward).mean() + (2 - 2 * backward).mean()) / 2)
+            if return_details:
+                forward_maps.append(2 - 2 * forward)
+                reverse_means.append((2 - 2 * backward).mean())
     if score == 'coverage':
-        return float((covered_similarity < similarity_floor).float().mean())
-    return float(torch.stack(distances).min())
+        value = float((covered_similarity < similarity_floor).float().mean())
+        return (value, dict(map=covered_similarity)) if return_details else value
+    distances = torch.stack(distances)
+    if not return_details:
+        return float(distances.min())
+    closest = int(distances.argmin())
+    return float(distances[closest]), dict(map=forward_maps[closest], closest=closest,
+                                          reverse_mean=float(reverse_means[closest]))
 
 
 class TumSelector:
@@ -57,6 +69,8 @@ class TumSelector:
         self.tokens = None
         self.initialized = False
         self.hooks = []
+        self.frame_features = []
+        self.patch_maps = []
 
     def attach(self, model):
         self.model = model
@@ -112,6 +126,9 @@ class TumSelector:
         assert frame['idx'] == 0
         if self.config['policy'] in ('semantic', 'probe'):
             self.retained.append(self.feature(frame))
+            h, w = frame['resized_mask_np'].shape
+            self.patch_grid = (h // 14, w // 14)
+            self.frame_features.append(F.normalize(self.tokens.mean(0), dim=0).cpu().numpy())
         self.tokens = None
         self.initialized = True
 
@@ -128,6 +145,8 @@ class TumSelector:
         config = self.config
         score = None
         value = None
+        patch_details = None
+        feature_export_seconds = 0.
         if config['policy'] == 'original':
             candidate = bool(original)
         elif config['policy'] == 'periodic':
@@ -139,9 +158,17 @@ class TumSelector:
             if config['score'] == 'cosine':
                 score = float(1 - (torch.stack(self.retained) @ value).max().clamp(-1, 1))
             else:
-                score = patch_novelty(value, self.retained, config['score'],
-                                      config['similarity_floor'])
+                score, patch_details = patch_novelty(value, self.retained, config['score'],
+                                                     config['similarity_floor'], return_details=True)
             candidate = config['policy'] == 'probe' or score > config['threshold']
+            exported_at = time.perf_counter()
+            # For patch-set policies this pooled vector is a display diagnostic,
+            # not the descriptor set used by the selection metric.
+            pooled = value if config['score'] == 'cosine' else F.normalize(self.tokens.mean(0), dim=0)
+            self.frame_features.append(pooled.cpu().numpy())
+            if patch_details is not None:
+                self.patch_maps.append(patch_details['map'].cpu().numpy())
+            feature_export_seconds = time.perf_counter() - exported_at
         capped = len(self.inserted) >= config['cap']
         selected = bool(candidate and not capped)
         torch.cuda.synchronize()
@@ -150,7 +177,11 @@ class TumSelector:
                    original_decision=bool(original), cache_frame_ids=list(self.inserted),
                    cache_bytes_before=self.cache_bytes(),
                    feature_bytes_before=sum(v.numel() * v.element_size() for v in self.retained),
+                   feature_export_seconds=feature_export_seconds,
                    selector_seconds=time.perf_counter() - started)
+        if patch_details is not None and config['score'] == 'chamfer':
+            row['chamfer_reference_frame'] = self.inserted[patch_details['closest']]
+            row['chamfer_reverse_mean'] = patch_details['reverse_mean']
         self.log.write(json.dumps(row, allow_nan=False) + '\n')
         self.log.flush()
         if selected:
@@ -160,6 +191,12 @@ class TumSelector:
         self.tokens = None
         return selected
 
-    def close(self):
+    def close(self, result):
         for hook in self.hooks:
             hook.remove()
+        if self.frame_features:
+            np.savez(result / 'frame_features.npz', descriptors=np.stack(self.frame_features),
+                     frame_ids=np.arange(len(self.frame_features)), patch_grid=self.patch_grid)
+        if self.patch_maps:
+            np.savez(result / 'patch_novelty.npz', maps=np.stack(self.patch_maps),
+                     frame_ids=np.arange(1, len(self.patch_maps) + 1), patch_grid=self.patch_grid)

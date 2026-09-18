@@ -207,12 +207,13 @@ def run(config_path):
                       '--kf_auto', str(config['interval'])], frame_source=source,
                 keyframe_selector=selector, snapshot_callback=recorder)
         finally:
+            if selector is not None:
+                selector.close(result)
             if recorder.data is not None:
                 np.savez(result / 'final_scene.npz', **recorder.data)
         torch.cuda.synchronize()
         elapsed = time.perf_counter() - started
         if selector is not None:
-            selector.close()
             assert selector.last_index == length - 1
             if len(selector.inserted) == 1:
                 np.save(result / 'kf_idx.npy', np.array([0]))
@@ -250,9 +251,12 @@ def run(config_path):
         choices = [json.loads(line) for line in (result / 'decisions.jsonl').read_text().splitlines()]
         metrics['cap_blocked_frames'] = sum(row['cap_blocked'] for row in choices)
         metrics['selector_seconds'] = sum(row['selector_seconds'] for row in choices)
+        metrics['feature_export_seconds'] = sum(row['feature_export_seconds'] for row in choices)
         metrics['max_cache_bytes'] = max((row['cache_bytes'] for row in rows), default=0)
         metrics['final_feature_bytes'] = 0 if selector is None else sum(
             value.numel() * value.element_size() for value in selector.retained)
+        metrics['diagnostic_cpu_feature_bytes'] = 0 if selector is None else sum(
+            value.nbytes for value in selector.frame_features + selector.patch_maps)
         write_json(result / 'environment.json', dict(torch=torch.__version__,
             cuda=torch.version.cuda, gpu=torch.cuda.get_device_name(),
             seed=0, timing='synchronous instrumented wall times, no FPS benchmark',
