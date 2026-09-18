@@ -85,7 +85,12 @@ extend the saturation/resource evidence.
 
 The batch stops at the first unexpected failure:
 
-1. CPU contract tests in the existing container: timestamp gaps, counter phase,
+1. Before dataset staging, import the real tracker, TUM loader, evaluator, Pi3,
+   compiled RoPE extension, SAM builder, safetensors and visualization entry points.
+   This checks their transitive imports/native libraries, including the RealSense
+   dependency imported even in dataset mode. Save `context/packages.json` from
+   the actual container. Set `MPLBACKEND=Agg` before any evaluator imports pyplot.
+   CPU contract tests in the existing container: timestamp gaps, counter phase,
    patch comparisons/chunking, caps, feature interfaces, threshold grid and prefix gate.
   A tiny synthetic visualization also checks PNG/PLY generation and MP4 encoding
    plus full decoding before the first model run. Feature tests check arrival-vector

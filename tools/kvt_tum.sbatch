@@ -80,12 +80,13 @@ CONTAINER=(podman run --rm --network=host
     -v /mnt:/mnt:rw -v /tmp:/tmp:rw -w "$REPO/kv_tracker"
     --device="nvidia.com/gpu=${CUDA_VISIBLE_DEVICES:?GPU allocation required}"
     -e "PYTHONPATH=$THIRDPARTY/Pi3:$THIRDPARTY/segment-anything-2-real-time:$REPO/kv_tracker"
-    -e PYTHONUNBUFFERED=1 -e "HF_HOME=$ROOT/.hf_cache"
+    -e PYTHONUNBUFFERED=1 -e MPLBACKEND=Agg -e "HF_HOME=$ROOT/.hf_cache"
     -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 localhost/kvt)
 
 nvidia-smi --query-gpu=timestamp,uuid,memory.used,memory.total,utilization.gpu \
     --format=csv -l 1 > "$WORK/context/gpu_samples.csv" &
 MONITOR_PID=$!
+"${CONTAINER[@]}" python -m pip list --format=json > "$WORK/context/packages.json"
 "${CONTAINER[@]}" python "$REPO/tools/test_kvt_tum.py" 2>&1 | tee "$WORK/context/tests.log"
 "${CONTAINER[@]}" python "$REPO/tools/kvt_tum_sweep.py" \
     --work "$WORK" --out "$OUT" --tag "$TAG" 2>&1 | tee "$WORK/context/sweep.log"

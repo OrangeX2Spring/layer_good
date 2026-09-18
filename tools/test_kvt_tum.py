@@ -1,5 +1,6 @@
 """Contract tests for the TUM sweep. Run on CAMP, never on the editing Mac."""
 import io
+import importlib
 import json
 from pathlib import Path
 import tempfile
@@ -17,6 +18,21 @@ from kvt_tum_sweep import Sweep, compare_prefix, semantic_configs
 
 
 class TumTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Import actual entry points, including their transitive/native deps,
+        # before staging data. Importing torch alone does not check this closure.
+        for name in ('main', 'kv_tracker.dataloaders.tum',
+                     'kv_tracker.eval_tools.evo_utils', 'pi3.models.pi3',
+                     'pi3.curope.curope2d', 'sam2.build_sam', 'safetensors.torch',
+                     'kvt_tum_viz'):
+            print('CHECK IMPORT', name, flush=True)
+            module = importlib.import_module(name)
+            print('IMPORT OK', name, module.__file__, flush=True)
+        from pi3.models.layers.pos_embed import RoPE2D
+        assert RoPE2D is not None, 'Pi3 compiled RoPE backend is unavailable'
+        print('DEPENDENCY IMPORTS OK', flush=True)
+
     def test_original_counter_phase(self):
         self.assertEqual(periodic_indices(2600, 50, 20), [0] + list(range(49, 950, 50)))
         self.assertEqual(periodic_indices(2600, 50, 64)[-1], 2599)
