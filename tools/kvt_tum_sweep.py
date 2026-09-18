@@ -180,7 +180,7 @@ class Sweep:
         write_json(self.work / 'inventory.json', {scene: {k: v for k, v in m.items() if k != 'inputs'}
                     for scene, m in self.manifests.items()})
 
-    def run_one(self, scene, settings, prefix=False, preflight=False):
+    def run_one(self, scene, settings, prefix=False, preflight=False, archive=True):
         config = dict(self.base, **settings)
         name = settings['name'] + ('_prefix' if prefix else '')
         result = self.work / 'runs' / scene / name
@@ -208,7 +208,9 @@ class Sweep:
         if not prefix and not preflight:
             self.records.append(dict(config, **metrics))
             self.checkpoint()
-        archive_directory(result, destination)
+        if archive:
+            archive_directory(result, destination)
+            release_page_cache(result, destination)
         return result, metrics
 
     def paired(self, scene, settings):
@@ -217,9 +219,13 @@ class Sweep:
             short = self.prefixes.pop(key)
         else:
             short, _ = self.run_one(scene, settings, prefix=True)
-        full, metrics = self.run_one(scene, settings)
+        # compare_prefix writes prefix_gate.json into `full`, so archiving inside
+        # run_one would only be overwritten here. Write the tar once.
+        full, metrics = self.run_one(scene, settings, archive=False)
         compare_prefix(short, full)
-        archive_directory(full, self.args.out / f'{self.args.tag}_{scene}_{settings["name"]}.tar')
+        staged = self.args.out / f'{self.args.tag}_{scene}_{settings["name"]}.tar'
+        archive_directory(full, staged)
+        release_page_cache(full, staged)
         return full, metrics
 
     def fidelity(self):
@@ -236,7 +242,11 @@ class Sweep:
             actual = float(actual)
             write_json(result / 'historical_gate.json', dict(ate_m=actual, expected_m=expected,
                        tolerance_m=.002, passed=abs(actual - expected) <= .002))
-            archive_directory(result, self.args.out / f'{self.args.tag}_{scene}_original.tar')
+            # historical_gate.json is written above, so this tar genuinely differs
+            # from the one paired() staged; it is the only deliberate rewrite left.
+            staged = self.args.out / f'{self.args.tag}_{scene}_original.tar'
+            archive_directory(result, staged)
+            release_page_cache(result, staged)
             assert abs(actual - expected) <= .002, (scene, actual, expected)
             print('BASELINE GATE OK', scene, actual, flush=True)
         # Observational hook fidelity against a genuinely unmodified decision path.
@@ -325,7 +335,6 @@ class Sweep:
                 checked.add(family)
                 result, _ = self.run_one(scene, dict(settings, cap=cap), prefix=True)
                 self.prefixes[(scene, settings['name'])] = result
-                archive_directory(result, self.args.out / f'{self.args.tag}_{scene}_{result.name}.tar')
                 print('FEATURE PREFLIGHT OK', scene, family, flush=True)
             self.paired(scene, dict(name='original', policy='original'))
             self.paired(scene, dict(name='original_extended', policy='periodic', cap=cap))
