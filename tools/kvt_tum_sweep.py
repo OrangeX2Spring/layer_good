@@ -86,7 +86,9 @@ def archive_inputs(source, destination):
 
     The frames are regenerable byte for byte: `archive.sha256` pins the public
     TUM ZIP and `manifest.json` records every frame's source and resized
-    SHA-256, so shipping the PNGs adds ~4.5 GB per job and no information.
+    SHA-256, so shipping the source PNGs adds ~4.5 GB per job and no
+    information. `model_rgb/` IS shipped: it is what kvt_tum_viz.py reads and it
+    is far smaller, which is what lets every render happen on the Mac.
     The project quota is 233 GB and four dead attempts had consumed 18 GB of
     exactly these tars by 2026-09-18, which is what stopped job 25668 -- Slurm
     could not even write its log. Re-render by re-staging from the ZIP.
@@ -95,6 +97,9 @@ def archive_inputs(source, destination):
     with tarfile.open(temporary, 'w') as archive:
         for name in INPUT_METADATA:
             archive.add(source / name, arcname=f'{source.name}/{name}')
+        # model_rgb is what every render reads, and it is ~25% of the source
+        # frames' size. Ship it so the Mac can render; leave rgb/ behind.
+        archive.add(source / 'model_rgb', arcname=f'{source.name}/model_rgb')
     temporary.replace(destination)
 
 
@@ -214,9 +219,6 @@ class Sweep:
             short, _ = self.run_one(scene, settings, prefix=True)
         full, metrics = self.run_one(scene, settings)
         compare_prefix(short, full)
-        if scene in LONG_SCENES:
-            subprocess.run([sys.executable, str(Path(__file__).with_name('kvt_tum_viz.py')),
-                'run', '--inputs', str(self.work / 'inputs' / scene), '--result', str(full)], check=True)
         archive_directory(full, self.args.out / f'{self.args.tag}_{scene}_{settings["name"]}.tar')
         return full, metrics
 
@@ -312,9 +314,9 @@ class Sweep:
         self.fidelity()
         cap = self.choose_cap()
         for scene in LONG_SCENES:
-            # Exercise every feature family and its real-data rendering before
-            # spending time on full trajectories. Reuse these exact prefixes.
-            from kvt_tum_viz import feature_views, read_rows
+            # Exercise every feature family's hooks and export before spending
+            # time on full trajectories. Reuse these exact prefixes. Rendering
+            # happens on the Mac; see render_plan.txt.
             checked = set()
             for settings in semantic_configs():
                 family = (settings['layer'], settings['score'])
@@ -323,12 +325,6 @@ class Sweep:
                 checked.add(family)
                 result, _ = self.run_one(scene, dict(settings, cap=cap), prefix=True)
                 self.prefixes[(scene, settings['name'])] = result
-                config = json.loads((result / 'config.json').read_text())
-                times = np.array([r['timestamp'] for r in self.manifests[scene]['inputs'][:128]])
-                (result / 'viz').mkdir()
-                feature_views(self.work / 'inputs' / scene, result, self.manifests[scene], config,
-                              read_rows(result / 'decisions.jsonl'), np.load(result / 'kf_idx.npy'),
-                              times - times[0])
                 archive_directory(result, self.args.out / f'{self.args.tag}_{scene}_{result.name}.tar')
                 print('FEATURE PREFLIGHT OK', scene, family, flush=True)
             self.paired(scene, dict(name='original', policy='original'))
@@ -342,16 +338,14 @@ class Sweep:
             names = ['original', report['target_semantic']['name']]
             if report['smallest_tested_match'] is not None:
                 names.append(report['smallest_tested_match']['name'])
-            for name in dict.fromkeys(names):
-                result = self.work / 'runs' / scene / name
-                subprocess.run([sys.executable, str(Path(__file__).with_name('kvt_tum_viz.py')),
-                    'run', '--inputs', str(self.work / 'inputs' / scene), '--result', str(result),
-                    '--video'], check=True)
-                archive_directory(result, self.args.out / f'{self.args.tag}_{scene}_{name}.tar')
-            subprocess.run([sys.executable, str(Path(__file__).with_name('kvt_tum_viz.py')),
-                'summary', '--work', str(self.work), '--scene', scene], check=True)
-            archive_directory(self.work / 'visualizations' / scene,
-                              self.args.out / f'{self.args.tag}_visualizations_{scene}.tar')
+            # Every render runs on the Mac from the archives. Record which
+            # conditions earn a video so the loop there is mechanical.
+            with (self.work / 'render_plan.txt').open('a') as plan:
+                for entry in self.records:
+                    if entry['scene'] == scene:
+                        plan.write(f"{scene} {entry['name']} plots\n")
+                for name in dict.fromkeys(names):
+                    plan.write(f'{scene} {name} video\n')
         (self.work / 'JOB_OK').write_text('All gates and configurations completed\n')
         print('JOB OK', flush=True)
 

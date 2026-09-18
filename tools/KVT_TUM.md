@@ -263,6 +263,45 @@ Rendering failures stop the job; completed inference artifacts remain archived.
 have all succeeded. A job that already started under the earlier code will not gain
 this capture retroactively; use this revision for the next submission.
 
+## Where rendering happens: the Mac, not the job (changed 2026-09-18)
+
+**The job produces raw data only.** No matplotlib, no PLY, no MP4, no contact sheets
+run inside the allocation. Three reasons: a rendering bug must not destroy a sweep
+that has already computed its numbers (`cluster_results/point2pose/p2p_mustard_run1`
+crashed in plotting *after* printing correct metrics, and that is the failure this
+removes); rendering was holding figure buffers and an encoder inside a 24576 MB
+per-GPU grant that job 25667 already hit; and every render is deterministic from the
+archives, so the cluster is the wrong place to spend GPU-allocation minutes on it.
+
+The job writes `context/render_plan.txt`, one line per render:
+
+```
+<scene> <condition> plots|video
+```
+
+`kvt_tum_viz.py` is unchanged and already takes `--inputs` and `--result`, so the Mac
+side is the loop it always supported. After syncing and extracting, from the repo root:
+
+```bash
+while read scene cond kind; do
+  extra=""; [ "$kind" = video ] && extra="--video"
+  ~/anaconda3/bin/python tools/kvt_tum_viz.py run \
+    --inputs cluster_results/kvt_tum/inputs/$scene \
+    --result cluster_results/kvt_tum/runs/$scene/$cond $extra
+done < cluster_results/kvt_tum/context/render_plan.txt
+```
+
+```bash
+~/anaconda3/bin/python tools/kvt_tum_viz.py summary --work cluster_results/kvt_tum --scene <scene>
+```
+
+**Mac prerequisites, measured 2026-09-18:** `matplotlib` and `numpy` are present, so
+the plot outputs (`diagnostics.png`, `trajectory.png`, `feature_pca.png`,
+`feature_similarity.png`, `accuracy_cost.png`, `saturation.png`) work as-is.
+`cv2` and `ffmpeg` are **absent**, so keyframe contact sheets, patch overlays and
+`tracking.mp4` need `pip install opencv-python` and a `brew install ffmpeg` first.
+Neither is inference or a large download; both are ordinary local tooling.
+
 ## Execution and archives
 
 `kvt_tum.sbatch` requests one GPU on `24g/muenchen`, account `students`, QoS
@@ -281,14 +320,15 @@ Persistent destination: `/mnt/projects/gr/3DRecon/kvt_tum_out/`. Job-local RGB,
 resized model inputs and results live in `/tmp/tum_<jobid>/`, never in the checkout.
 Archives:
 
-- `tum_<jobid>_inputs_<scene>.tar`: **metadata only, changed 2026-09-18** —
-  `manifest.json`, `groundtruth.txt`, `rgb.txt` and `archive.sha256`. Scene masks are
-  all true by definition. The frames are **not** shipped: `archive.sha256` pins the
+- `tum_<jobid>_inputs_<scene>.tar`: **changed 2026-09-18** — `manifest.json`,
+  `groundtruth.txt`, `rgb.txt`, `archive.sha256` and `model_rgb/`. Scene masks are
+  all true by definition. The **source** frames are not shipped: `archive.sha256` pins the
   public TUM ZIP and the manifest records every frame's source and resized SHA-256, so
   they are regenerable byte for byte by re-staging. Shipping them cost ~4.5 GB per job,
   and four dead attempts had filled 18 GB of the 233 GB project quota, which is what
   killed job 25668 — Slurm could not write its own log. Re-rendering an archived
-  condition therefore needs a re-stage first.
+  condition needs no re-stage — `model_rgb/` is what every render reads and is about a
+  quarter of the source frames' size — but re-running *inference* does.
 - `tum_<jobid>_<scene>_<condition>.tar`: config, trajectory, keyframes/poses,
   decisions with score/cap/bytes/cost, inference and frame timings, evaluation,
   final reconstruction, peak memory, environment, process status and log. Full
