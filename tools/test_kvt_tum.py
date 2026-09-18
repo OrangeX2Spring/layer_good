@@ -171,7 +171,7 @@ class TumTests(unittest.TestCase):
                     patch('kvt_tum_sweep.archive_directory'):
                 settings = dict(name='semantic', policy='semantic')
                 sweep.paired('synthetic', settings)
-                run_one.assert_called_once_with('synthetic', settings)
+                run_one.assert_called_once_with('synthetic', settings, archive=False)
                 compare.assert_called_once_with(short, full)
 
     @patch('torch.cuda.synchronize')
