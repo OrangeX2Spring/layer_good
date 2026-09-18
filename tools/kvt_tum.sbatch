@@ -32,7 +32,11 @@ finish() {
     # Completed runs and inputs already have their own archives. Preserve any
     # failed/partial run as well, without duplicating all source images here.
     if [ -d "$WORK/runs" ]; then
-        tar -C "$WORK" -cf "$OUT/${TAG}_all_runs.tar.partial" runs
+        # Safety net for partial/failed runs only. Completed runs already have
+        # their own archive, so excluding the two heavy artefacts keeps this
+        # from doubling the job's storage cost against a 233 GB quota.
+        tar -C "$WORK" --exclude='*/final_scene.npz' --exclude='*/viz' \
+            -cf "$OUT/${TAG}_all_runs.tar.partial" runs
         mv "$OUT/${TAG}_all_runs.tar.partial" "$OUT/${TAG}_all_runs.tar"
     fi
     tar --exclude=./inputs --exclude=./runs -C "$WORK" \

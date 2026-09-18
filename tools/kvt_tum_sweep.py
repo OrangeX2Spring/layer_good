@@ -78,6 +78,26 @@ def staging_report(scene, destination, archive):
           f'archive={archive.stat().st_size // 1024 ** 2} MiB', flush=True)
 
 
+INPUT_METADATA = ('manifest.json', 'groundtruth.txt', 'rgb.txt', 'archive.sha256')
+
+
+def archive_inputs(source, destination):
+    """Archive a staged scene's metadata, not its frames.
+
+    The frames are regenerable byte for byte: `archive.sha256` pins the public
+    TUM ZIP and `manifest.json` records every frame's source and resized
+    SHA-256, so shipping the PNGs adds ~4.5 GB per job and no information.
+    The project quota is 233 GB and four dead attempts had consumed 18 GB of
+    exactly these tars by 2026-09-18, which is what stopped job 25668 -- Slurm
+    could not even write its log. Re-render by re-staging from the ZIP.
+    """
+    temporary = destination.with_suffix('.tar.partial')
+    with tarfile.open(temporary, 'w') as archive:
+        for name in INPUT_METADATA:
+            archive.add(source / name, arcname=f'{source.name}/{name}')
+    temporary.replace(destination)
+
+
 def archive_directory(source, destination):
     temporary = destination.with_suffix('.tar.partial')
     with tarfile.open(temporary, 'w') as archive:
@@ -147,7 +167,7 @@ class Sweep:
                     digest.update(chunk)
             (destination / 'archive.sha256').write_text(f'{digest.hexdigest()}  {archive}\n')
             staged = self.args.out / f'{self.args.tag}_inputs_{scene}.tar'
-            archive_directory(destination, staged)
+            archive_inputs(destination, staged)
             # Nothing reads this scene's bytes again until a run opens one frame
             # at a time, so the cache they occupy is pure cgroup pressure.
             release_page_cache(destination, staged)
