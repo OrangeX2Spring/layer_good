@@ -281,8 +281,14 @@ Persistent destination: `/mnt/projects/gr/3DRecon/kvt_tum_out/`. Job-local RGB,
 resized model inputs and results live in `/tmp/tum_<jobid>/`, never in the checkout.
 Archives:
 
-- `tum_<jobid>_inputs_<scene>.tar`: exact original RGB, resized RGB, GT/rgb metadata,
-  source ZIP checksum and per-frame manifest. Scene masks are all true by definition.
+- `tum_<jobid>_inputs_<scene>.tar`: **metadata only, changed 2026-09-18** —
+  `manifest.json`, `groundtruth.txt`, `rgb.txt` and `archive.sha256`. Scene masks are
+  all true by definition. The frames are **not** shipped: `archive.sha256` pins the
+  public TUM ZIP and the manifest records every frame's source and resized SHA-256, so
+  they are regenerable byte for byte by re-staging. Shipping them cost ~4.5 GB per job,
+  and four dead attempts had filled 18 GB of the 233 GB project quota, which is what
+  killed job 25668 — Slurm could not write its own log. Re-rendering an archived
+  condition therefore needs a re-stage first.
 - `tum_<jobid>_<scene>_<condition>.tar`: config, trajectory, keyframes/poses,
   decisions with score/cap/bytes/cost, inference and frame timings, evaluation,
   final reconstruction, peak memory, environment, process status and log. Full
@@ -293,8 +299,10 @@ Archives:
   CSV/JSON summaries, per-scene periodic-match reports, source/container provenance,
   GPU samples, controller log and job exit status.
 - `tum_<jobid>_all_runs.tar`: all run directories, including partial failures, staged
-  by the EXIT trap. It deliberately duplicates completed result archives for recovery,
-  but does not duplicate input RGB. No files are deleted from /tmp during the run.
+  by the EXIT trap, **excluding `final_scene.npz` and `viz/` since 2026-09-18**, because
+  completed runs already carry those in their own archive and duplicating them doubled
+  the job's storage cost. It does not duplicate input RGB. No files are deleted from
+  /tmp during the run.
 
 Only `JOB_OK` plus context exit status 0 means the complete sweep passed.
 Prefix/probe runs are gate artifacts and are excluded from the performance table.
