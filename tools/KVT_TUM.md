@@ -333,8 +333,9 @@ Archives:
   decisions with score/cap/bytes/cost, inference and frame timings, evaluation,
   final reconstruction, peak memory, environment, process status and log. Full
   experimental runs include their `viz/` artifacts. Prefixes have separate archives.
-- `tum_<jobid>_visualizations_<scene>.tar`: all-variant accuracy/cost and saturation
-  plots, available immediately after that scene completes.
+- `tum_<jobid>_visualizations_<scene>.tar`: **no longer produced since 2026-09-18.**
+  The all-variant accuracy/cost and saturation plots are rendered on the Mac from
+  `summary.csv` in the context archive; see the rendering section above.
 - `tum_<jobid>_context.tar`: protocol, inventory, chosen cap and preflight results,
   CSV/JSON summaries, per-scene periodic-match reports, source/container provenance,
   GPU samples, controller log and job exit status.
