@@ -140,6 +140,9 @@ class Sweep:
         short, _ = self.run_one(scene, settings, prefix=True)
         full, metrics = self.run_one(scene, settings)
         compare_prefix(short, full)
+        if scene in LONG_SCENES:
+            subprocess.run([sys.executable, str(Path(__file__).with_name('kvt_tum_viz.py')),
+                'run', '--inputs', str(self.work / 'inputs' / scene), '--result', str(full)], check=True)
         archive_directory(full, self.args.out / f'{self.args.tag}_{scene}_{settings["name"]}.tar')
         return full, metrics
 
@@ -242,6 +245,20 @@ class Sweep:
                 _, metrics = self.paired(scene, dict(settings, cap=cap))
                 semantics.append(dict(settings, **metrics))
             self.periodic_search(scene, semantics, cap)
+            report = json.loads((self.work / f'match_{scene}.json').read_text())
+            names = ['original', report['target_semantic']['name']]
+            if report['smallest_tested_match'] is not None:
+                names.append(report['smallest_tested_match']['name'])
+            for name in dict.fromkeys(names):
+                result = self.work / 'runs' / scene / name
+                subprocess.run([sys.executable, str(Path(__file__).with_name('kvt_tum_viz.py')),
+                    'run', '--inputs', str(self.work / 'inputs' / scene), '--result', str(result),
+                    '--video'], check=True)
+                archive_directory(result, self.args.out / f'{self.args.tag}_{scene}_{name}.tar')
+            subprocess.run([sys.executable, str(Path(__file__).with_name('kvt_tum_viz.py')),
+                'summary', '--work', str(self.work), '--scene', scene], check=True)
+            archive_directory(self.work / 'visualizations' / scene,
+                              self.args.out / f'{self.args.tag}_visualizations_{scene}.tar')
         (self.work / 'JOB_OK').write_text('All gates and configurations completed\n')
         print('JOB OK', flush=True)
 

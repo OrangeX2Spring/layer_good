@@ -95,6 +95,7 @@ def prepare(archive, destination, resize_dim, max_difference):
 def evaluate(scene_dir, result, max_difference):
     from scipy.spatial.transform import Rotation
     from kv_tracker.eval_tools.evo_utils import align_pair
+    from kv_tracker.geometry import umeyama_alignment
 
     manifest = json.loads((scene_dir / 'manifest.json').read_text())
     estimate = np.load(result / 'traj.npy')
@@ -110,6 +111,10 @@ def evaluate(scene_dir, result, max_difference):
     poses[:, :3, :3] = Rotation.from_quat(matched[:, 4:8]).as_matrix()
     poses[:, :3, 3] = matched[:, 1:4]
     aligned, reference = align_pair(dict(traj_gt=poses, traj_est=estimate[valid]))
+    rotation, translation_offset, scale = umeyama_alignment(
+        estimate[valid, :3, 3].T, poses[:, :3, 3].T, with_scale=True)
+    full_positions = scale * (estimate[:, :3, 3] @ rotation.T) + translation_offset
+    np.testing.assert_allclose(full_positions[valid], aligned[:, :3, 3], atol=1e-6, rtol=1e-6)
     translation = np.linalg.norm(aligned[:, :3, 3] - reference[:, :3, 3], axis=1)
     # No adjacent-pose errors across a missing GT interval or dropped RGB frame.
     adjacent = (np.diff(indices) == 1) & (np.diff(timestamps[valid]) <= 0.1)
@@ -118,16 +123,41 @@ def evaluate(scene_dir, result, max_difference):
     est_relative = np.linalg.inv(aligned[:-1]) @ aligned[1:]
     error = (np.linalg.inv(ref_relative) @ est_relative)[adjacent]
     angles = Rotation.from_matrix(error[:, :3, :3]).magnitude()
+    relative_translation = np.linalg.norm(error[:, :3, 3], axis=1)
     np.savez(result / 'evaluation.npz', rgb_indices=indices,
              gt_indices=nearest[valid], timestamps=timestamps[valid],
              timestamp_difference=difference[valid], aligned=aligned, reference=reference,
-             rpe_pair_start_indices=indices[:-1][adjacent], ate_per_frame_m=translation)
+             rpe_pair_start_indices=indices[:-1][adjacent], ate_per_frame_m=translation,
+             alignment_rotation=rotation, alignment_translation=translation_offset,
+             alignment_scale=scale, full_aligned_positions=full_positions,
+             rpe_translation_per_pair_m=relative_translation,
+             rpe_rotation_per_pair_deg=np.rad2deg(angles))
     return dict(ate_m=float(np.sqrt(np.mean(translation ** 2))),
-                rpe_translation_m=float(np.sqrt(np.mean(np.sum(error[:, :3, 3] ** 2, axis=1)))),
+                rpe_translation_m=float(np.sqrt(np.mean(relative_translation ** 2))),
                 rpe_rotation_deg=float(np.rad2deg(np.sqrt(np.mean(angles ** 2)))),
                 evaluated_frames=len(indices), evaluated_fraction=float(valid.mean()),
                 rpe_pairs=int(adjacent.sum()), alignment='one full-valid-trajectory Sim(3)',
                 max_gt_difference_seconds=max_difference)
+
+
+class FinalScene:
+    """Keep the latest joint reconstruction on CPU; write once, even on failure."""
+    def __init__(self):
+        self.data = None
+        self.seconds = 0.
+
+    def __call__(self, kind, frame_ids, xyz, poses, confidence, rgb, masks, threshold, latest_rgb):
+        if kind != 'keyframes':
+            return
+        started = time.perf_counter()
+        assert masks.all()
+        self.data = dict(xyz=xyz[0].detach().float().cpu().numpy(),
+                         confidence=confidence[0, ..., 0].detach().float().cpu().numpy(),
+                         poses=poses[0].detach().float().cpu().numpy(),
+                         frame_ids=np.asarray(frame_ids), threshold=float(threshold))
+        assert self.data['xyz'].shape == rgb.shape
+        assert self.data['confidence'].shape == masks.shape
+        self.seconds += time.perf_counter() - started
 
 
 def run(config_path):
@@ -170,10 +200,15 @@ def run(config_path):
         source = Frames('cuda:0', scene_dir=scene_dir, obj_mode=False,
                         resize_dim=config['resize_dim'], offset=0)
         selector = None if config['policy'] == 'bare' else TumSelector(config, decisions, inference)
-        tracker.run_track3r(cfg=dict(results_path=str(result), que_size=1),
-            args=['--cam_only', '--resize_dim', str(config['resize_dim']),
-                  '--kf_auto', str(config['interval'])], frame_source=source,
-            keyframe_selector=selector)
+        recorder = FinalScene()
+        try:
+            tracker.run_track3r(cfg=dict(results_path=str(result), que_size=1),
+                args=['--cam_only', '--resize_dim', str(config['resize_dim']),
+                      '--kf_auto', str(config['interval'])], frame_source=source,
+                keyframe_selector=selector, snapshot_callback=recorder)
+        finally:
+            if recorder.data is not None:
+                np.savez(result / 'final_scene.npz', **recorder.data)
         torch.cuda.synchronize()
         elapsed = time.perf_counter() - started
         if selector is not None:
@@ -190,6 +225,7 @@ def run(config_path):
             assert selected == periodic_indices(length, config['interval'], cap)
         free, total = torch.cuda.mem_get_info()
         metrics = dict(frames=length, keyframes=len(selected), last_keyframe=selected[-1],
+                       snapshot_copy_seconds=recorder.seconds,
                        tail_frames=length - 1 - selected[-1],
                        tail_seconds=manifest['inputs'][length-1]['timestamp']
                            - manifest['inputs'][selected[-1]]['timestamp'],

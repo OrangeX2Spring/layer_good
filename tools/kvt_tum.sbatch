@@ -63,6 +63,8 @@ git -C "$REPO" diff > "$WORK/context/parent.diff"
 git -C "$REPO/kv_tracker" diff > "$WORK/context/tracker.diff"
 cp "$REPO/tools/kvt_tum.sbatch" "$REPO/tools/kvt_tum_run.py" \
    "$REPO/tools/kvt_tum_selector.py" "$REPO/tools/kvt_tum_sweep.py" \
+   "$REPO/tools/kvt_tum_viz.py" "$REPO/tools/kvt_artifacts.py" \
+   "$REPO/tools/kvt_confidence_videos.py" \
    "$REPO/tools/test_kvt_tum.py" "$REPO/tools/KVT_TUM.md" "$WORK/context/"
 git -C "$REPO/kv_tracker" archive HEAD > "$WORK/context/tracker_source.tar"
 git -C "$REPO/kv_tracker/thirdparty/Pi3" archive HEAD > "$WORK/context/pi3_source.tar"

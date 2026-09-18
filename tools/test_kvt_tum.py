@@ -128,6 +128,52 @@ class TumTests(unittest.TestCase):
             with self.assertRaises(AssertionError):
                 compare_prefix(prefix, full)
 
+    def test_visualization_and_video_decode(self):
+        import cv2
+        from kvt_tum_viz import visualize_run
+
+        with tempfile.TemporaryDirectory() as temporary:
+            inputs, result = Path(temporary) / 'inputs', Path(temporary) / 'result'
+            (inputs / 'model_rgb').mkdir(parents=True)
+            result.mkdir()
+            manifest = dict(inputs=[])
+            for i in range(4):
+                filename = f'{i}.png'
+                pixels = np.full((2, 2, 3), (30 + i*40, 80, 180), np.uint8)
+                self.assertTrue(cv2.imwrite(str(inputs / 'model_rgb' / filename), pixels))
+                manifest['inputs'].append(dict(file=f'rgb/{filename}', timestamp=i/15))
+            (inputs / 'manifest.json').write_text(json.dumps(manifest))
+            config = dict(scene='synthetic', name='decoder0_cosine_0.3', policy='semantic',
+                          threshold=.3, cap=2, interval=50)
+            (result / 'config.json').write_text(json.dumps(config))
+            (result / 'metrics.json').write_text(json.dumps(dict(frames=4, ate_m=0.,
+                evaluated_fraction=.75, cap_reached=True)))
+            np.save(result / 'kf_idx.npy', np.array([0, 2]))
+            positions = np.array([[i/10, 0., 0.] for i in range(4)])
+            reference = np.tile(np.eye(4), (3, 1, 1))
+            reference[:, :3, 3] = positions[[0, 1, 3]]
+            np.savez(result / 'evaluation.npz', rgb_indices=np.array([0, 1, 3]),
+                     ate_per_frame_m=np.zeros(3), reference=reference,
+                     alignment_rotation=np.eye(3), alignment_translation=np.zeros(3),
+                     alignment_scale=1., full_aligned_positions=positions,
+                     rpe_pair_start_indices=np.array([0]), rpe_translation_per_pair_m=np.zeros(1),
+                     rpe_rotation_per_pair_deg=np.zeros(1))
+            cloud = np.array([[[-.5, -.5, 1.], [.5, -.5, 1.]],
+                              [[-.5, .5, 1.], [.5, .5, 1.]]])
+            np.savez(result / 'final_scene.npz', xyz=np.stack([cloud, cloud]),
+                     confidence=np.ones((2, 2, 2)), frame_ids=np.array([0, 2]), threshold=.5)
+            rows = [dict(frame=i, score=i*.2, cap_blocked=i==3,
+                         cache_bytes_before=1024, feature_bytes_before=512,
+                         selector_seconds=.001) for i in range(1, 4)]
+            (result / 'decisions.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in rows))
+            rows = [dict(frame=i, kind='query', seconds=.01) for i in range(1, 4)]
+            (result / 'inference.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in rows))
+            visualize_run(inputs, result, video=True)
+            video = json.loads((result / 'viz' / 'video_frames.json').read_text())
+            self.assertEqual(video['decoded_frames'], len(video['source_indices']))
+            self.assertEqual(video['source_indices'][-1], 3)
+            self.assertTrue((result / 'viz' / 'scene_gt_aligned.ply').is_file())
+
 
 if __name__ == '__main__':
     unittest.main()

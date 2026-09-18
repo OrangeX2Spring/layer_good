@@ -87,6 +87,8 @@ The batch stops at the first unexpected failure:
 
 1. CPU contract tests in the existing container: timestamp gaps, counter phase,
    patch comparisons/chunking, caps, feature interfaces, threshold grid and prefix gate.
+   A tiny synthetic visualization also checks PNG/PLY generation and MP4 encoding
+   plus full decoding before the first model run.
 2. Five full original TUM runs at 308 reproduce the recorded ATEs within 0.002 m:
    xyz .021, rpy .045, desk2 .083, desk .059, room .361. This historical gate uses
    the original GT association; corrected timestamp-valid metrics are saved separately.
@@ -109,11 +111,80 @@ and reserved peaks and 1-second `nvidia-smi` device samples are archived separat
 An unexpected full-run OOM stops and preserves partial results; no silent cap change.
 The scene path does not accumulate per-query pointmaps. It does retain trajectories,
 and writes them each frame; timings include that existing behaviour.
+The visualization callback copies the latest keyframe reconstruction to CPU on
+each insertion, overwriting its previous copy; it writes one `final_scene.npz`
+when tracking returns or raises. Snapshot-copy time is reported separately as
+`snapshot_copy_seconds` and is included in synchronous total time. Query/rebuild
+model-call timing excludes this callback. Preflights include the same callback.
 
 Natural saturation is insertion slowing/stopping below K, with a substantial
 remaining tail. Hitting K is **cap-limited**, not natural saturation. Scores and
 cap-blocked candidates continue to be recorded after K. Threshold-dependent lack
 of insertions is not by itself proof that the scene is adequately represented.
+
+## Visualizations saved by the batch
+
+All visualization happens headlessly on CAMP after inference; matplotlib uses Agg.
+`tools/kvt_tum_viz.py` reads saved artifacts and requires no model forward.
+
+**Every full experimental run** gets `viz/` with:
+
+- `diagnostics.png`: novelty and threshold (including cap-blocked candidates),
+  retained-keyframe count and cap, per-frame translation error with GT holes blank,
+  K/V and descriptor bytes, query/rebuild timings, and selector time. Insertions are
+  marked against sequence time. Translation and rotation RPE panels show the
+  per-frame jitter without bridging missing GT.
+- `trajectory.png`: XY/XZ/YZ views of the complete estimated trajectory, valid GT,
+  and selected keyframe locations. GT gaps remain disconnected.
+- `keyframes_00.png`, etc.: every selected model-input frame in paginated contact
+  sheets (16 per page), labelled with source index and timestamp, with aspect ratio
+  preserved. No selected keyframes are omitted.
+- `manifest.json`: artifact inventory and source-file references.
+
+After the semantic and periodic comparison for each sequence, the batch additionally
+renders the **stock original, best semantic condition, and smallest tested matching
+original** (deduplicated; two videos if the match is already the stock original):
+
+- `viz/tracking.mp4`: 1280x800, model RGB on the left; one-pixel, depth-sorted
+  **frozen final scene cloud** and growing camera trails on the right. Green is
+  timestamp-valid GT, red is the estimate. The same verified full-valid-trajectory
+  Sim(3) used for ATE transforms the cloud and trajectory; missing GT is explicitly
+  labelled and never connected across a gap. Camera trails are diagram overlays.
+  The video states that the cloud is frozen final geometry, not an online map.
+- Playback is timestamp-resampled to 15 fps; `video_frames.json` records every
+  displayed source index, fixed view, native confidence threshold, retained point
+  count, video SHA-256, and verified decoded-frame count. This is playback speed,
+  not inference FPS. Beginning/middle/end PNG previews are saved.
+- `viz/scene_gt_aligned.ply`: native-confidence-filtered final cloud in the same
+  metric GT alignment, for inspection in MeshLab.
+
+`visualizations/<scene>/accuracy_cost.png` compares **all** tested settings by
+keyframes, total time and peak reserved memory versus ATE, with threshold labels.
+`saturation.png` compares all four thresholds per feature/score family against
+stock and extended originals. The plots and all configuration results are retained,
+not just the selected video winners. Summary plots are separately archived after
+each scene and also included in the context archive.
+
+**Necessary data is saved for every condition**, including conditions without an
+automatic MP4: `final_scene.npz` retains the latest full-resolution keyframe XYZ,
+confidence, poses, frame IDs and native display threshold. Color comes from the
+exact archived `model_rgb` frames; all scene masks are true. `evaluation.npz` now
+also retains the exact alignment and complete aligned trajectory. Bootstrap's
+duplicate frame is deduplicated for display. Confidence thresholds can be inspected
+afterward from the saved values without inference. Per-query pointmaps and every
+historical reconstruction are not produced/stored by this camera-only protocol.
+
+Re-render any archived condition after restoring its result and shared input
+directories on a Linux allocation, using the existing container environment:
+
+```bash
+python /mnt/projects/gr/3DRecon/layer_good/tools/kvt_tum_viz.py run --inputs /tmp/restored/inputs/freiburg3_long_office_household --result /tmp/restored/runs/freiburg3_long_office_household/decoder0_cosine_0.05 --video
+```
+
+Rendering failures stop the job; completed inference artifacts remain archived.
+`JOB_OK` is written only after per-run visuals, selected videos and scene comparisons
+have all succeeded. A job that already started under the earlier code will not gain
+this capture retroactively; use this revision for the next submission.
 
 ## Execution and archives
 
@@ -137,7 +208,10 @@ Archives:
   source ZIP checksum and per-frame manifest. Scene masks are all true by definition.
 - `tum_<jobid>_<scene>_<condition>.tar`: config, trajectory, keyframes/poses,
   decisions with score/cap/bytes/cost, inference and frame timings, evaluation,
-  peak memory, environment, process status and log. Prefixes have separate archives.
+  final reconstruction, peak memory, environment, process status and log. Full
+  experimental runs include their `viz/` artifacts. Prefixes have separate archives.
+- `tum_<jobid>_visualizations_<scene>.tar`: all-variant accuracy/cost and saturation
+  plots, available immediately after that scene completes.
 - `tum_<jobid>_context.tar`: protocol, inventory, chosen cap and preflight results,
   CSV/JSON summaries, per-scene periodic-match reports, source/container provenance,
   GPU samples, controller log and job exit status.
