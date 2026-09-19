@@ -17,14 +17,38 @@ Model-agnostic on purpose. Everything here returns *indices into a flat cache of
 
 No model, no GPU, no file I/O. Every function is testable on CPU.
 
-Mask -> token mapping is NOT here: `tools/stream3r_ycbv_tokens.py` already has
-`token_grid_shape` and `mask_to_token_mask`, which replicate the loader's resize
-and centre crop. Callers pass the token mask in; do not re-derive it.
+Image resize/crop mapping is NOT here. The pooling helpers accept masks and
+confidence already aligned to the exact model-input pixels.
 """
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 POLICIES = ('causal', 'window', 'semantic', 'confidence', 'random', 'uniform')
+
+
+def pool_mask(pixels, grid_shape, patch_start_idx, threshold=0.0):
+    """Pool an already resized/cropped boolean mask; never select special tokens."""
+    assert pixels.dtype == torch.bool and pixels.ndim == 3
+    rows, cols = grid_shape
+    assert rows > 0 and cols > 0 and patch_start_idx >= 0
+    assert pixels.shape[1] % rows == 0 and pixels.shape[2] % cols == 0
+    assert 0 <= threshold <= 1
+    coverage = F.adaptive_avg_pool2d(pixels[:, None].float(), (rows, cols)).flatten(1)
+    selected = coverage > 0 if threshold == 0 else coverage >= threshold
+    specials = pixels.new_zeros((pixels.shape[0], patch_start_idx))
+    return torch.cat((specials, selected), dim=1)
+
+
+def pool_confidence(confidence, grid_shape, patch_start_idx):
+    """Average already aligned confidence pixels within each patch cell."""
+    assert confidence.ndim == 3 and confidence.is_floating_point()
+    rows, cols = grid_shape
+    assert rows > 0 and cols > 0 and patch_start_idx >= 0
+    assert confidence.shape[1] % rows == 0 and confidence.shape[2] % cols == 0
+    patches = F.adaptive_avg_pool2d(confidence[:, None], (rows, cols)).flatten(1)
+    specials = confidence.new_full((confidence.shape[0], patch_start_idx), float('inf'))
+    return torch.cat((specials, patches), dim=1)
 
 
 def frames_in_cache(cache_length, tokens_per_frame):
@@ -47,7 +71,7 @@ def semantic_budget(mask, patch_start_idx):
 
 def select(policy, *, frames, tokens_per_frame, patch_start_idx, mask=None,
            score=None, budget=None, window_size=5, anchor=True, keep_special=True,
-           generator=None):
+           generator=None, window_counts_anchor=True):
     """Cache positions to retain, sorted ascending.
 
     frames            number of frames currently in the cache
@@ -59,9 +83,10 @@ def select(policy, *, frames, tokens_per_frame, patch_start_idx, mask=None,
                       the semantic arm frame by frame
     anchor            keep frame 0 entire, as upstream `window` mode does
     keep_special      always retain each surviving frame's special tokens
+    window_counts_anchor  True: LongStream's total-frame budget; False:
+                          STream3R's anchor plus window_size recent frames
 
-    'causal' and 'window' reproduce the upstream policies exactly and exist as
-    self-checks, not as experimental arms.
+    'window' requires the host's explicit anchor-counting convention.
     """
     assert policy in POLICIES, policy
     assert frames >= 1 and tokens_per_frame > patch_start_idx >= 0
@@ -72,9 +97,11 @@ def select(policy, *, frames, tokens_per_frame, patch_start_idx, mask=None,
         return torch.arange(frames * tokens_per_frame)
 
     if policy == 'window':
-        kept = list(range(max(0, frames - window_size), frames))
-        if anchor and 0 not in kept:
-            kept = [0] + kept[1:] if len(kept) == window_size else [0] + kept
+        assert window_size >= 1
+        recent = window_size - int(anchor and window_counts_anchor)
+        kept = list(range(max(0, frames - recent), frames))
+        if anchor:
+            kept = [0] + kept
         rows = [offsets[f] + torch.arange(tokens_per_frame) for f in sorted(set(kept))]
         return torch.cat(rows)
 

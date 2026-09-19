@@ -1,6 +1,6 @@
-"""Contract tests for the token-selection policies. CPU only; runs on the Mac.
+"""Contract tests for the token-selection policies. Run on remote Linux only.
 
-    ~/anaconda3/bin/python tools/test_kvcache_policy.py
+    python tools/test_kvcache_policy.py
 """
 import unittest
 
@@ -49,6 +49,23 @@ class PolicyTests(unittest.TestCase):
         mask[1, 0] = True
         with self.assertRaises(AssertionError):
             semantic_budget(mask, SPECIAL)
+
+    def test_stream3r_window_counts_recent_frames_in_addition_to_anchor(self):
+        kept = select('window', frames=FRAMES, tokens_per_frame=TOKENS,
+                      patch_start_idx=SPECIAL, window_size=2, anchor=True,
+                      window_counts_anchor=False)
+        expected = np.concatenate([np.arange(TOKENS),
+                                   np.arange(2 * TOKENS, 4 * TOKENS)])
+        np.testing.assert_array_equal(kept.numpy(), expected)
+
+    def test_window_one_and_short_prefix(self):
+        for frames in (1, FRAMES):
+            kept = select('window', frames=frames, tokens_per_frame=TOKENS,
+                          patch_start_idx=SPECIAL, window_size=1)
+            np.testing.assert_array_equal(kept.numpy(), np.arange(TOKENS))
+        kept = select('window', frames=2, tokens_per_frame=TOKENS,
+                      patch_start_idx=SPECIAL, window_size=5)
+        np.testing.assert_array_equal(kept.numpy(), np.arange(2 * TOKENS))
 
     def test_semantic_keeps_object_specials_and_anchor(self):
         mask = object_mask()

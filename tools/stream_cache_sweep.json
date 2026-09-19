@@ -1,0 +1,27 @@
+{
+  "description": "Exploratory fixed-budget sweep; thresholds frozen across sequences, not calibrated claims. Native causal heads held fixed.",
+  "max_frames": 32,
+  "conditions": [
+    {"name": "causal", "policy": {"frame_budget": 1000000}},
+    {"name": "recent8", "policy": {}},
+    {"name": "pooled_encoder", "policy": {"admission": "novelty"}},
+    {"name": "pooled_frame0", "policy": {"feature": "frame0", "admission": "novelty"}},
+    {"name": "spatial2_encoder", "policy": {"spatial_grid": 2, "admission": "novelty"}},
+    {"name": "spatial4_encoder", "policy": {"spatial_grid": 4, "admission": "novelty"}},
+    {"name": "centered_encoder", "policy": {"score": "centered", "admission": "novelty"}},
+    {"name": "coverage_encoder", "policy": {"score": "coverage", "threshold": 0.1, "admission": "novelty"}},
+    {"name": "chamfer_encoder", "policy": {"score": "chamfer", "admission": "novelty"}},
+    {"name": "q90_encoder", "policy": {"score": "q90", "admission": "novelty"}},
+    {"name": "redundancy8", "policy": {"eviction": "redundancy"}},
+    {"name": "random_frames_s0", "policy": {"eviction": "random", "seed": 0}},
+    {"name": "random_frames_s1", "policy": {"eviction": "random", "seed": 1}},
+    {"name": "random_frames_s2", "policy": {"eviction": "random", "seed": 2}},
+    {"name": "uniform_p50", "policy": {"patch_policy": "uniform", "patch_fraction": 0.5}},
+    {"name": "confidence_p50", "policy": {"patch_policy": "confidence", "patch_fraction": 0.5}},
+    {"name": "novelty_p50", "policy": {"patch_policy": "novelty", "patch_fraction": 0.5}},
+    {"name": "confidence_novelty_p50", "policy": {"patch_policy": "confidence_novelty", "patch_fraction": 0.5}},
+    {"name": "random_p50_s0", "policy": {"patch_policy": "random", "patch_fraction": 0.5, "seed": 0}},
+    {"name": "random_p50_s1", "policy": {"patch_policy": "random", "patch_fraction": 0.5, "seed": 1}},
+    {"name": "random_p50_s2", "policy": {"patch_policy": "random", "patch_fraction": 0.5, "seed": 2}}
+  ]
+}
