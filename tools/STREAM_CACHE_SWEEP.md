@@ -12,6 +12,34 @@ on the allocated host and pass `--git-provenance` to the runner. No Git install 
 needed in the borrowed image. This fix is locally syntax-checked; fidelity and the
 sweep still await the next remote run.
 
+### Operational record
+
+The first submission used job 25690 on `muenchen` with `localhost/optpose` and
+failed only at provenance collection. The order before failure was:
+
+```
+MODEL IMPORT OK stream3r
+Ran 24 tests ... OK
+PREPARED 10 frames: /tmp/cache_stream3r_25690_.../prepared
+FileNotFoundError: ... executable 'git'
+```
+
+The image is intentionally immutable and has no Git. Commit `d84e4ba` moved
+`rev-parse` and binary `diff` capture into the outer Slurm script. Commit `5a3ad7d`
+removed the explicit `--time=04:00:00`; the job now requests no project-level
+wall-time limit. Any scheduler or partition limit remains authoritative.
+
+The canonical unattended entry point is `tools/stream_cache.sbatch`. The older
+`tools/stream_cache_run.sh` is a lower-level in-allocation wrapper for manual use.
+Each host gets a separate job and container setting; do not combine StreamVGGT,
+LongStream, and STream3R when their dependency closures or images differ.
+
+All extraction, preparation, intermediate predictions, and condition outputs stay
+under job-local `/tmp`. The only persistent run artifact is one tar under
+`/mnt/projects/gr/3DRecon/stream_cache_out/`, containing logs, package inventories,
+Git provenance, exact model-input pixels, masks, manifests, predictions, metrics,
+and visualization inputs. Large source archives remain packed on project storage.
+
 ## Questions and controlled comparisons
 
 Separate the three interventions:
