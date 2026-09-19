@@ -71,6 +71,22 @@ if [ -n "${CACHE_INPUT_TAR:-}" ]; then
     sha256sum "$CACHE_INPUT_TAR" > "$WORK/input_archive.sha256"
     extra=(--manifest "$WORK/extracted/${CACHE_MANIFEST:-manifest.json}")
 fi
+# TUM needs no staged input archive: the ZIPs are read-only on /mnt/datasets and
+# cost no quota, so the clip is cut straight into job-local /tmp. Runs inside the
+# image because a bare node is not guaranteed to have python3.
+if [ -n "${CACHE_TUM_ZIP:-}" ]; then
+    test -z "${CACHE_INPUT_TAR:-}"
+    test -e "$CACHE_TUM_ZIP"
+    podman run --rm --network=none -v /mnt:/mnt:ro -v /tmp:/tmp:rw -w "$REPO" \
+        -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONUNBUFFERED=1 "$IMAGE" \
+        python tools/stream_cache_tum.py --zip "$CACHE_TUM_ZIP" \
+        --out "$WORK/extracted" --start "${CACHE_TUM_START:-0}" \
+        --count "${CACHE_TUM_COUNT:?Set CACHE_TUM_COUNT}" \
+        --stride "${CACHE_TUM_STRIDE:-1}"
+    sha256sum "$CACHE_TUM_ZIP" > "$WORK/input_archive.sha256"
+    cp "$WORK/extracted/manifest.json" "$WORK/source_manifest.json"
+    extra=(--manifest "$WORK/extracted/manifest.json")
+fi
 podman run --rm --network=host --device="nvidia.com/gpu=$CUDA_VISIBLE_DEVICES" \
     -v /mnt:/mnt:ro -v /tmp:/tmp:rw -w "$REPO" \
     -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONUNBUFFERED=1 \

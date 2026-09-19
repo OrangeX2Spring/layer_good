@@ -210,7 +210,33 @@ Default is a **STream3R example smoke sweep**: existing `optpose.tar`, existing
 This completes environment and integration checks, not the long-sequence study.
 
 Optional exported job settings: `CACHE_HOST`, `CACHE_IMAGE`, `CACHE_IMAGE_TAR`,
-`CACHE_CHECKPOINT`, `CACHE_INPUT_TAR`, `CACHE_MANIFEST`, `CACHE_SWEEP`, `CACHE_WIDTH`.
+`CACHE_CHECKPOINT`, `CACHE_INPUT_TAR`, `CACHE_MANIFEST`, `CACHE_SWEEP`, `CACHE_WIDTH`,
+and for TUM `CACHE_TUM_ZIP`, `CACHE_TUM_COUNT`, `CACHE_TUM_START`, `CACHE_TUM_STRIDE`.
+
+### TUM needs no staged input archive (2026-09-19)
+
+`/mnt/datasets/tum-rgbd` is read-only and costs no quota, so `CACHE_TUM_ZIP` cuts the
+clip straight into job-local `/tmp` instead of staging ~1 G on project storage.
+`tools/stream_cache_tum.py` reads the ZIP, writes the selected frames and a source
+manifest carrying `timestamp`, original-resolution `intrinsics`, `gt_c2w` and
+`gt_timestamp`; `prepare` then derives `model_intrinsics` from its own pixel
+transform. GT association mirrors `kvt_tum_run.associate_gt` -- nearest timestamp
+within 20 ms, `null` beyond it, never an extrapolated pose -- so this sweep and the
+KV-Tracker TUM sweep agree on which frames are scorable. It runs inside the image
+because a bare allocated node is not guaranteed to have `python3`.
+`CACHE_TUM_ZIP` and `CACHE_INPUT_TAR` are mutually exclusive.
+
+`tools/test_stream_cache_tum.py` is standard library only, so it runs on the Mac and
+is also picked up by the job's `test_*cache*.py` discovery -- a broken clip stops the
+allocation before the model loads. It covers the rotation contract, the GT-hole
+branch, stride, and the two loud failures (too few frames, existing output directory).
+
+**`max_frames` is a ceiling, not a truncation.** `stream_cache_sweep.py:360` raises
+`ValueError` when the prepared clip is longer than the sweep JSON allows, by design.
+`CACHE_TUM_COUNT` must therefore be <= `max_frames`, currently 32. That 32 is sized to
+what the all-retained `causal` condition can hold: STream3R measured 17.05 GiB
+allocated / 19.31 GiB reserved at 30 frames on a 24 GB card. A longer clip is a
+different experiment and needs `causal` bounded or dropped first.
 For other hosts provide the verified checkpoint path and an input archive.
 `CACHE_MANIFEST` defaults to `manifest.json` relative to the extracted archive.
 The archive must contain the source manifest and its referenced RGB/masks, using
