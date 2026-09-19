@@ -11,7 +11,6 @@
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --propagate=NONE
-#SBATCH --time=04:00:00
 #SBATCH --output=/mnt/projects/gr/3DRecon/stream_cache_slurm-%j.log
 set -euo pipefail
 test "$(hostname -s)" != head

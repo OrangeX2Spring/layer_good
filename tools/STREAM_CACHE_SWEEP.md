@@ -168,7 +168,7 @@ and 4RC's offline selection remain separate questions; no learned module is adde
 ### Unattended CAMP entry point (2026-09-19)
 
 `tools/stream_cache.sbatch` now supplies the allocation lifecycle: 24g/muenchen,
-one GPU, students/students_normal, four hours. It pulls inside the allocation,
+one GPU, students/students_normal, no explicit wall-clock limit. It pulls inside the allocation,
 initializes the selected host and StreamVGGT (used by the small attention tests),
 loads the selected image, and runs `stream_cache_job.py` inside one disposable
 container. One host per job, including when different images are needed. It does
@@ -201,7 +201,7 @@ From `head`, use the established short-variable bootstrap (after publication):
 cd /mnt/projects/gr/3DRecon/layer_good
 W='git -c fetch.recurseSubmodules=0 pull --ff-only && bash tools/stream_cache.sbatch'
 O=/mnt/projects/gr/3DRecon/stream_cache_slurm-%j.log
-sbatch -p 24g -w muenchen --gres=gpu:1 --propagate=NONE -t 04:00:00 -o "$O" --wrap="$W"
+sbatch -p 24g -w muenchen --gres=gpu:1 --propagate=NONE -o "$O" --wrap="$W"
 ```
 
 The bootstrap inherits the verified students/students_normal defaults. Once the
