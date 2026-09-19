@@ -50,6 +50,11 @@ git -C "$REPO" -c url.https://github.com/.insteadOf=git@github.com: \
 cp "$REPO/tools/stream_cache.sbatch" "$REPO/tools/stream_cache_job.py" "$WORK/"
 git -C "$REPO" rev-parse HEAD > "$WORK/commit.txt"
 git -C "$REPO" submodule status > "$WORK/submodules.txt"
+mkdir "$WORK/git_provenance"
+git -C "$REPO" rev-parse HEAD > "$WORK/git_provenance/superproject_commit.txt"
+git -C "$REPO" diff --binary HEAD > "$WORK/git_provenance/superproject.patch"
+git -C "$REPO/$HOST" rev-parse HEAD > "$WORK/git_provenance/model_commit.txt"
+git -C "$REPO/$HOST" diff --binary HEAD > "$WORK/git_provenance/model.patch"
 if ! podman image exists "$IMAGE"; then
     podman load -i "$IMAGE_TAR"
 fi

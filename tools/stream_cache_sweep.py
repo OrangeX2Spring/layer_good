@@ -6,7 +6,6 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
-import subprocess
 import sys
 import time
 
@@ -384,9 +383,9 @@ def run(args):
     provenance = dict(host=args.host, checkpoint={str(p): digest(p) for p in checkpoint_files if p.is_file()},
                       torch=torch.__version__, device=torch.cuda.get_device_name(),
                       arguments={key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()})
-    for name, path in [('superproject', REPO), ('model', REPO / args.host)]:
-        provenance[name + '_commit'] = subprocess.check_output(['git', '-C', str(path), 'rev-parse', 'HEAD'], text=True).strip()
-        (source / f'{name}.patch').write_bytes(subprocess.check_output(['git', '-C', str(path), 'diff', 'HEAD']))
+    for name in ('superproject', 'model'):
+        provenance[name + '_commit'] = (args.git_provenance / f'{name}_commit.txt').read_text().strip()
+        shutil.copy2(args.git_provenance / f'{name}.patch', source)
     write_json(args.out / 'provenance.json', provenance)
     model = load_model(args)
     fidelity(args, model, args.out / 'inputs', frames)
@@ -415,6 +414,7 @@ def main():
     sweep.add_argument('--inputs', type=Path, required=True)
     sweep.add_argument('--sweep', type=Path, required=True)
     sweep.add_argument('--out', type=Path, required=True)
+    sweep.add_argument('--git-provenance', type=Path, required=True)
     sweep.add_argument('--keyframe-stride', type=int, default=8)
     sweep.add_argument('--refresh', type=int, default=4)
     sweep.add_argument('--gate-frames', type=int, default=4)

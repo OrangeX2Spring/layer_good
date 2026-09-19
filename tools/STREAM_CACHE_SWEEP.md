@@ -5,6 +5,13 @@ result.** Hosts: StreamVGGT, LongStream, STream3R. 4RC remains an offline diagno
 and is not given a fictitious KV-cache adapter. This supersedes the threshold-only
 proposal for these three hosts; it does not change the separate KV-Tracker TUM job.
 
+Job **25690** passed the STream3R model import and all 24 contract tests, then
+prepared ten example frames. It stopped before model loading/fidelity because the
+container has no Git executable. The wrappers now capture commits and binary diffs
+on the allocated host and pass `--git-provenance` to the runner. No Git install is
+needed in the borrowed image. This fix is locally syntax-checked; fidelity and the
+sweep still await the next remote run.
+
 ## Questions and controlled comparisons
 
 Separate the three interventions:
@@ -225,7 +232,10 @@ bash tools/stream_cache_run.sh HOST CHECKPOINT /tmp/cache_inputs tools/stream_ca
 ```
 
 Direct inference interface is `stream_cache_sweep.py run --host ... --checkpoint ...
---inputs ... --sweep ... --out ...`, with `--model-config` required for LongStream.
+--inputs ... --sweep ... --out ... --git-provenance ...`, with `--model-config`
+required for LongStream. Both wrappers create the Git provenance directory on the
+allocated host; it contains `superproject_commit.txt`, `model_commit.txt`, and the
+corresponding `superproject.patch` / `model.patch` files.
 Use `longstream/configs/longstream_infer.yaml` for its architecture. Loading is strict;
 no missing weights are silently accepted and no download fallback is added.
 

@@ -31,6 +31,11 @@ podman image inspect "$CACHE_IMAGE" > "$WORK/container.json"
 nvidia-smi > "$WORK/nvidia-smi.txt"
 ulimit -m > "$WORK/memory_grant_kb.txt"
 cp "$REPO/tools/stream_cache_run.sh" "$WORK/"
+mkdir "$WORK/git_provenance"
+git -C "$REPO" rev-parse HEAD > "$WORK/git_provenance/superproject_commit.txt"
+git -C "$REPO" diff --binary HEAD > "$WORK/git_provenance/superproject.patch"
+git -C "$REPO/$HOST" rev-parse HEAD > "$WORK/git_provenance/model_commit.txt"
+git -C "$REPO/$HOST" diff --binary HEAD > "$WORK/git_provenance/model.patch"
 container=(podman run --rm --device="nvidia.com/gpu=$CUDA_VISIBLE_DEVICES"
     -v /mnt:/mnt:ro -v /tmp:/tmp:rw -w "$REPO"
     -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONUNBUFFERED=1
@@ -44,5 +49,6 @@ if [ -n "$MODEL_CONFIG" ]; then
 fi
 "${container[@]}" python tools/stream_cache_sweep.py run \
     --host "$HOST" --checkpoint "$CKPT" --inputs "$INPUTS" \
-    --sweep "$SWEEP" --out "$WORK/run" "${extra[@]}"
+    --sweep "$SWEEP" --out "$WORK/run" \
+    --git-provenance "$WORK/git_provenance" "${extra[@]}"
 echo 'JOB OK'

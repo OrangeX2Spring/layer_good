@@ -68,7 +68,8 @@ def main():
              if args.host == 'longstream' else [])
     subprocess.run([python, 'tools/stream_cache_sweep.py', 'run', '--host', args.host,
                     '--checkpoint', str(args.checkpoint), '--inputs', str(prepared),
-                    '--sweep', str(args.sweep), '--out', str(args.work / 'run'), *extra],
+                    '--sweep', str(args.sweep), '--out', str(args.work / 'run'),
+                    '--git-provenance', str(args.work / 'git_provenance'), *extra],
                    cwd=repo, check=True)
 
 
