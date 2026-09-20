@@ -1,8 +1,9 @@
 {
-  "description": "STream3R office calibration follow-up to 25692; score-specific exploratory thresholds, not held-out evidence or guaranteed admission rates. Coverage floors are exploratory. Native heads fixed.",
-  "max_frames": 32,
+  "description": "Full TUM streams, start 0 / stride 1 / width 308; exploratory score grid frozen across sequences, no held-out claim. LongStream causal retains only its native refresh segment.",
+  "max_frames": 5182,
+  "isolate_conditions": true,
+  "geometry_export": "final",
   "conditions": [
-    {"name": "causal", "policy": {"frame_budget": 1000000}},
     {"name": "recent8", "policy": {}},
     {"name": "pooled_encoder_t0", "policy": {"admission": "novelty", "threshold": 0.0001}},
     {"name": "pooled_encoder_t1", "policy": {"admission": "novelty", "threshold": 0.00034}},

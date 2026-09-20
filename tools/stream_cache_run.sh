@@ -50,5 +50,6 @@ fi
 "${container[@]}" python tools/stream_cache_sweep.py run \
     --host "$HOST" --checkpoint "$CKPT" --inputs "$INPUTS" \
     --sweep "$SWEEP" --out "$WORK/run" \
+    --max-pair-gap "${CACHE_MAX_PAIR_GAP:-0.1}" \
     --git-provenance "$WORK/git_provenance" "${extra[@]}"
 echo 'JOB OK'

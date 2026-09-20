@@ -24,9 +24,13 @@ IMAGE_TAR=${CACHE_IMAGE_TAR:-$ROOT/optpose.tar}
 WORK="$(mktemp -d "/tmp/cache_${HOST}_${SLURM_JOB_ID}_XXXXXX")"
 mkdir -p "$ROOT/stream_cache_out"
 ARCHIVE="$ROOT/stream_cache_out/$(basename "$WORK").tar"
+MONITOR=
 finish() {
     status=$?
     trap - EXIT
+    if [ -n "$MONITOR" ] && kill -0 "$MONITOR" 2>/dev/null; then
+        kill "$MONITOR"
+    fi
     printf '%s\n' "$status" > "$WORK/exit_status.txt"
     # run/inputs contains the exact model pixels. Do not duplicate extracted data.
     tar --exclude=./extracted --exclude=./prepared -cf "$ARCHIVE.part" -C "$WORK" .
@@ -41,12 +45,16 @@ exec > >(tee "$WORK/run.log") 2>&1
 hostname
 ulimit -m > "$WORK/memory_grant_kb.txt"
 nvidia-smi > "$WORK/nvidia-smi.txt"
+nvidia-smi --query-gpu=timestamp,utilization.gpu,memory.used,memory.total \
+    --format=csv -l 30 > "$WORK/gpu_usage.csv" &
+MONITOR=$!
 scontrol show job "$SLURM_JOB_ID" > "$WORK/slurm_job.txt"
 git -C "$REPO" -c fetch.recurseSubmodules=false pull --ff-only
 # The tiny attention contract test also reads StreamVGGT's source.
 git -C "$REPO" -c url.https://github.com/.insteadOf=git@github.com: \
     submodule update --init "$HOST" streamvggt
-cp "$REPO/tools/stream_cache.sbatch" "$REPO/tools/stream_cache_job.py" "$WORK/"
+cp "$REPO/tools/stream_cache.sbatch" "$REPO/tools/stream_cache_job.py" \
+    "$REPO/tools/stream_cache_long.sbatch" "$WORK/"
 git -C "$REPO" rev-parse HEAD > "$WORK/commit.txt"
 git -C "$REPO" submodule status > "$WORK/submodules.txt"
 mkdir "$WORK/git_provenance"
@@ -93,5 +101,6 @@ podman run --rm --network=host --device="nvidia.com/gpu=$CUDA_VISIBLE_DEVICES" \
     -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 "$IMAGE" \
     python tools/stream_cache_job.py --host "$HOST" --checkpoint "$CKPT" \
     --work "$WORK" --width "${CACHE_WIDTH:-308}" \
+    --max-pair-gap "${CACHE_MAX_PAIR_GAP:-0.1}" \
     --sweep "${CACHE_SWEEP:-$REPO/tools/stream_cache_sweep.json}" "${extra[@]}"
 echo 'JOB OK'

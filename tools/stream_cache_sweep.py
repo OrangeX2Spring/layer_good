@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import time
 
@@ -226,6 +227,8 @@ def run_condition(args, model, root, frames, name, config):
     torch.manual_seed(config.seed)
     pose_chunks = {}
     latencies = []
+    admission_scores = []
+    admitted = 0
     with (target / 'events.jsonl').open('w') as log:
         for index, frame in enumerate(frames):
             torch.cuda.synchronize()
@@ -241,6 +244,9 @@ def run_condition(args, model, root, frames, name, config):
                 token_mask = None if mask is None else pool_mask(mask[None], grid, 0)[0]
                 picked, kept, event = policy.update(index, adapter.features.float().cpu(), grid,
                                                     confidence, token_mask)
+                if event['score'] is not None:
+                    admission_scores.append(event['score'])
+                    admitted += int(event['accepted'])
                 adapter.prune(picked, kept)
                 event.update(adapter.memory())
                 event['feature_bytes'] = policy.feature_bytes()
@@ -274,19 +280,29 @@ def run_condition(args, model, root, frames, name, config):
                 if key in predictions:
                     pose_chunks.setdefault(key, []).append(predictions[key])
             export_start = time.perf_counter()
-            np.savez_compressed(target / f'frame_{index:06d}.npz',
-                                **{key: value.numpy() for key, value in predictions.items()})
+            if args.geometry_export == 'all' or index == len(frames) - 1:
+                np.savez_compressed(target / f'frame_{index:06d}.npz',
+                                    **{key: value.numpy() for key, value in predictions.items()})
             event['disk_seconds'] = time.perf_counter() - export_start
             log.write(json.dumps(event, allow_nan=False) + '\n')
             log.flush()
             del image, predictions
     poses = {key: torch.cat(value, dim=1) for key, value in pose_chunks.items()}
+    np.savez_compressed(target / 'pose_encodings.npz',
+                        **{key: value.numpy() for key, value in poses.items()})
     arrays = pose_arrays(args.host, poses, frames[0]['model_hw'], args.keyframe_stride)
     np.savez_compressed(target / 'camera.npz', **arrays)
     write_json(target / 'summary.json', dict(frames=len(frames),
                p50_seconds=float(np.median(latencies)), p95_seconds=float(np.quantile(latencies, .95)),
+               admission_diagnostics=dict(
+                   scored_frames=len(admission_scores), admitted=admitted,
+                   rejected=len(admission_scores) - admitted,
+                   nontrivial=0 < admitted < len(admission_scores),
+                   score_min=min(admission_scores) if admission_scores else None,
+                   score_max=max(admission_scores) if admission_scores else None),
                total_seconds=sum(latencies), inference='single-frame causal, fixed head histories',
-               quality='camera.npz and per-frame geometry; no object-pose claim'))
+               geometry_export=args.geometry_export,
+               quality='camera.npz and selected geometry exports; no object-pose claim'))
     adapter.close()
     print(f'RUN OK {name}', flush=True)
 
@@ -330,7 +346,9 @@ def evaluate(args):
         translation_error = np.linalg.norm(relative_error[:, :3, 3], axis=1)
         rotation_error = np.degrees(np.arccos(np.clip(
             (np.trace(relative_error[:, :3, :3], axis1=1, axis2=2) - 1) / 2, -1, 1)))
-        report = dict(status='ok', valid_frames=valid, aligned_center_error_m=errors.tolist(),
+        report = dict(status='ok' if pairs.any() else 'ATE only: no eligible RPE pairs',
+                      rpe_pair_count=int(pairs.sum()), max_pair_gap=args.max_pair_gap,
+                      max_gt_delta=args.max_gt_delta, valid_frames=valid, aligned_center_error_m=errors.tolist(),
                       full_trajectory_sim3_ate_m=float(np.sqrt(np.mean(errors ** 2))),
                       fitted_scale=scale, rpe_pair_end_frames=np.asarray(valid)[1:][pairs].tolist(),
                       rpe_translation_m=translation_error[pairs].tolist(),
@@ -341,7 +359,9 @@ def evaluate(args):
         write_json(args.out / name / 'camera_metrics.json', report)
         summaries[name] = {key: value for key, value in report.items() if not isinstance(value, list)}
     write_json(args.out / 'camera_metrics.json', summaries)
-    print('CAMERA EVALUATION OK', flush=True)
+    print('CAMERA EVALUATION OK' if pairs.any() else
+          'CAMERA EVALUATION INCOMPLETE: no eligible RPE pairs; inspect timestamps and --max-pair-gap',
+          flush=True)
 
 
 def run(args):
@@ -350,10 +370,12 @@ def run(args):
     if args.host == 'longstream' and args.model_config is None:
         raise ValueError('--model-config is required for LongStream')
     specification = json.loads(args.sweep.read_text())
+    args.geometry_export = specification.get('geometry_export', 'all')
+    assert args.geometry_export in ('all', 'final')
     configs = [(row['name'], PolicyConfig(**row['policy'])) for row in specification['conditions']]
     names = [name for name, _ in configs]
     assert len(names) == len(set(names)) and all(name and Path(name).name == name for name in names)
-    assert all(name not in ('.', '..', 'inputs') for name in names)
+    assert all(name not in ('.', '..', 'inputs', '__fidelity__') for name in names)
     manifest = json.loads((args.inputs / 'manifest.json').read_text())
     frames = manifest['frames']
     assert len(frames) >= 2
@@ -366,6 +388,14 @@ def run(args):
             assert digest(args.inputs / frame['mask']) == frame['mask_sha256']
     if any(config.patch_policy == 'mask' for _, config in configs):
         assert all('mask' in frame for frame in frames)
+    if args.worker is not None:
+        model = load_model(args)
+        if args.worker == '__fidelity__':
+            fidelity(args, model, args.out / 'inputs', frames)
+        else:
+            run_condition(args, model, args.out / 'inputs', frames,
+                          args.worker, dict(configs)[args.worker])
+        return
     args.out.mkdir(parents=True, exist_ok=False)
     shutil.copytree(args.inputs, args.out / 'inputs')
     shutil.copy2(args.sweep, args.out / 'sweep.json')
@@ -378,6 +408,7 @@ def run(args):
     shutil.copy2(Path(__file__).with_name('kvcache_policy.py'), source)
     shutil.copy2(Path(__file__).with_name('stream3r_ycbv_metrics.py'), source)
     shutil.copy2(Path(__file__).with_name('test_stream_cache.py'), source)
+    shutil.copy2(Path(__file__).with_name('test_stream_cache_workers.py'), source)
     shutil.copy2(Path(__file__).with_name('test_kvcache_policy.py'), source)
     checkpoint_files = sorted(args.checkpoint.rglob('*')) if args.checkpoint.is_dir() else [args.checkpoint]
     provenance = dict(host=args.host, checkpoint={str(p): digest(p) for p in checkpoint_files if p.is_file()},
@@ -387,11 +418,18 @@ def run(args):
         provenance[name + '_commit'] = (args.git_provenance / f'{name}_commit.txt').read_text().strip()
         shutil.copy2(args.git_provenance / f'{name}.patch', source)
     write_json(args.out / 'provenance.json', provenance)
-    model = load_model(args)
-    fidelity(args, model, args.out / 'inputs', frames)
-    for name, config in configs:
-        print(f'RUN {name}', flush=True)
-        run_condition(args, model, args.out / 'inputs', frames, name, config)
+    if specification.get('isolate_conditions', False):
+        # Fidelity and each condition release their CUDA context at process exit.
+        command = [sys.executable, '-u', str(Path(__file__).resolve()), *sys.argv[1:]]
+        for worker in ['__fidelity__', *names]:
+            print(f'WORKER {worker}', flush=True)
+            subprocess.run([*command, '--worker', worker], check=True)
+    else:
+        model = load_model(args)
+        fidelity(args, model, args.out / 'inputs', frames)
+        for name, config in configs:
+            print(f'RUN {name}', flush=True)
+            run_condition(args, model, args.out / 'inputs', frames, name, config)
     if any(frame.get('gt_c2w') is not None for frame in frames):
         evaluate(args)
     else:
@@ -421,6 +459,7 @@ def main():
     sweep.add_argument('--gate-atol', type=float, default=1e-5)
     sweep.add_argument('--gate-rtol', type=float, default=1e-4)
     sweep.add_argument('--seed', type=int, default=0)
+    sweep.add_argument('--worker', help=argparse.SUPPRESS)
     sweep.add_argument('--max-gt-delta', type=float, default=.02)
     sweep.add_argument('--max-pair-gap', type=float, default=.1)
     evaluation = commands.add_parser('evaluate')

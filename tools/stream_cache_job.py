@@ -17,6 +17,7 @@ def main():
     parser.add_argument('--manifest', type=Path)
     parser.add_argument('--sweep', type=Path, required=True)
     parser.add_argument('--width', type=int, required=True)
+    parser.add_argument('--max-pair-gap', type=float, default=.1)
     args = parser.parse_args()
     assert sys.platform == 'linux' and args.work.resolve().is_relative_to('/tmp')
     repo = Path(__file__).resolve().parents[1]
@@ -29,7 +30,7 @@ def main():
     # Only add absent inference dependencies, without changing existing packages.
     requirements = {'einops': 'einops'}
     if args.host == 'streamvggt':
-        requirements['transformers'] = 'transformers'
+        requirements['transformers'] = 'transformers==5.17.0'
     if args.host == 'longstream':
         requirements.update(cv2='opencv-python-headless', yaml='PyYAML')
     missing = [package for module, package in requirements.items()
@@ -69,7 +70,8 @@ def main():
     subprocess.run([python, 'tools/stream_cache_sweep.py', 'run', '--host', args.host,
                     '--checkpoint', str(args.checkpoint), '--inputs', str(prepared),
                     '--sweep', str(args.sweep), '--out', str(args.work / 'run'),
-                    '--git-provenance', str(args.work / 'git_provenance'), *extra],
+                    '--git-provenance', str(args.work / 'git_provenance'),
+                    '--max-pair-gap', str(args.max_pair_gap), *extra],
                    cwd=repo, check=True)
 
 

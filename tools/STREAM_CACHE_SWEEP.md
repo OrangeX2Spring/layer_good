@@ -1,5 +1,133 @@
 # Streaming cache sweep
 
+## Full-sweep handoff — 2026-09-20
+
+This supersedes the unrun-host and next-command statements below. StreamVGGT's
+full-office recent8 probe is archived and read; LongStream's corresponding run
+reached JOB OK in the user-supplied terminal log. Evidence and limitations are in
+tools/FINDINGS.md. The new isolated-worker path has only local static verification;
+its tests run in the container before the next inference job.
+
+User approved camera metrics plus final-frame geometry: every pose encoding,
+converted camera, cache event, shared prepared RGB/mask input and manifest is kept;
+only the final frame retains dense predictions. Each archive also keeps GPU samples,
+source, sweep config, model YAML where required, checkpoint hashes and provenance.
+This supports camera/cache analysis, not per-frame geometry accuracy evaluation.
+
+`stream_cache_long.sbatch HOST` selects all three full TUM sequences as array tasks,
+start 0 / stride 1 / width 308, RPE gap 0.1 s. The bounded JSON has 37 conditions;
+LongStream's JSON adds native segment-causal retention, for 38. recent8 runs first.
+Fidelity and every condition use fresh processes; a failure stops that task before
+later conditions and evaluation. Other array tasks are independent. LongStream
+keeps native refresh. StreamVGGT/STream3R exclude unrestricted causal retention;
+their head caches still grow. The longer sequences remain resource-unverified.
+Thresholds are an exploratory grid held fixed across sequences, not a held-out
+winner or a claim of calibrated admission rates on the new hosts.
+
+The wrapper must be present on the cluster before direct sbatch submission. Pull
+inside an allocation, never on head. Submit one host at a time with array concurrency
+one. The batch container runs all cache tests (including worker failure propagation)
+before preparing inputs and running fidelity. Do not claim these new tests passed
+until the remote log confirms them. No new image build is needed.
+
+## Repair handoff — 2026-09-20 (historical)
+
+STream3R job 25691 passed smoke fidelity; job 25692 completed the scored pilot.
+Seven admission arms collapsed to anchor plus latest, and RPE had no eligible pairs.
+The detailed corrected read is in `tools/FINDINGS.md`. Earlier handoff below is historical.
+
+`stream_cache_sweep.json` now holds 38 calibration conditions: the 13 admission-all
+controls, seven score families at three explicit thresholds each, and coverage at
+two stricter similarity floors crossed with two thresholds. The original 21 arms
+are preserved in `stream_cache_sweep_pilot.json`. Policy defaults are unchanged.
+Thresholds bracket the corresponding saved score distributions; coverage floors
+are exploratory because the original coverage score was identically zero.
+Do not claim prescribed admission rates or choose a held-out winner on this clip.
+Inspect `summary.json` admission_diagnostics and events: all-reject/all-admit arms
+are calibration outcomes, not evidence of useful selective admission. Compare
+actual retained counts/bytes, not just the cap, before claiming a matched budget.
+
+User chose the same 32 frames, start 0, stride 4, width 308. Set
+`CACHE_MAX_PAIR_GAP=0.15`; both wrappers pass it through to automatic evaluation.
+Reports now record pair counts and thresholds and explicitly flag empty RPE.
+Other jobs retain the 0.1-second default. No remote execution of this repair yet.
+The existing pilot predictions can also recover stride-4 RPE without new inference:
+use `evaluate --out EXTRACTED_RUN --max-pair-gap 0.15` on remote Linux and preserve
+that evaluation separately from the original archive, with its source revision.
+The follow-up still needs inference because it changes admission policies.
+
+After publishing these changes, the next user-executed command chunk on head is:
+
+```bash
+cd /mnt/projects/gr/3DRecon/layer_good
+export CACHE_HOST=stream3r CACHE_TUM_COUNT=32 CACHE_TUM_START=0 CACHE_TUM_STRIDE=4 CACHE_WIDTH=308 CACHE_MAX_PAIR_GAP=0.15
+export CACHE_TUM_ZIP=/mnt/datasets/tum-rgbd/rgbd_dataset_freiburg3_long_office_household.zip
+unset CACHE_INPUT_TAR CACHE_SWEEP
+W='git -c fetch.recurseSubmodules=0 pull --ff-only && bash tools/stream_cache.sbatch'
+O=/mnt/projects/gr/3DRecon/stream_cache_slurm-%j.log
+sbatch -p 24g -w muenchen --gres=gpu:1 --propagate=NONE -o "$O" --wrap="$W"
+```
+
+StreamVGGT and LongStream have implemented adapters, not verified host runs. Their
+checkpoint availability is unconfirmed remotely; last recorded status is absent.
+Their checked-out READMEs specify `lch01/StreamVGGT` / `checkpoints.pth` and
+`NicolasCC/LongStream` / `50_longstream.pt`. Use the existing hf_download.sbatch
+interface when staging them, then run one host per job with CACHE_CHECKPOINT.
+The job wrapper already supplies LongStream's inference YAML. The runner loads
+only its model section and calls streaming_refresh directly; it does not call
+core/infer.py's output stage, so sky masking/ONNX download is outside this path.
+Imports, strict checkpoint loading and native fidelity in optpose.tar remain gates.
+Downloads may be queued separately but the recorded students_normal QoS serializes
+GPU jobs. They need not wait for scientific success; transfer claims do require a
+frozen rule and held-out evaluation, including matched random and confidence controls.
+
+## Long-sequence feasibility audit — 2026-09-20
+
+Source-inspected, not runtime-verified. Neither host has a model-level 32-frame
+limit; that ceiling is in our pilot JSON. Full TUM source streams are appropriate
+for both hosts, with the following distinctions and gates.
+
+- **StreamVGGT:** the adapter prunes aggregator K/V and the matching RoPE positions.
+  The native camera head appends at every refinement iteration and is not pruned;
+  memory and query cost therefore still grow with sequence length. An unrestricted
+  aggregator causal baseline is unsuitable for the full TUM streams on the existing
+  GPU. Use bounded aggregator conditions and a short native fidelity prefix, then
+  a full-length resource probe. A bounded aggregator is not bounded total memory.
+- **LongStream:** keyframe_stride=8 and refresh=4 reset caches every 24 source frames
+  in our streaming-refresh protocol. `clear_cache_only` clears aggregator, camera,
+  relative-pose K/V, reference tokens and frame metadata. The adapter uses
+  `record=False`, exports each prediction, and composes the saved relative poses
+  along global keyframe references afterward. Thus a full trajectory does not
+  require a full-history attention cache. Its all-retained arm is all-retained
+  *within each refresh segment*, not a global causal baseline. This experiment
+  cannot establish semantic memory across refresh boundaries.
+- The native fidelity oracle runs only a prefix, including a LongStream refresh;
+  it does not load the entire long stream into GPU memory. The experimental loop
+  loads one frame at a time and retains only pose chunks on CPU. Per-frame dense
+  NPZ exports still grow on disk for every condition. Budget /tmp and persistent
+  archive space before a multi-condition long run; do not silently omit provenance.
+
+For comparison to KV-Tracker, use all source RGB frames, start=0, stride=1, the same
+three TUM archives, GT association <=20 ms, and RPE gap <=100 ms. The stride-4 /
+0.15-second choice applies only to the short calibration repair. Full sequence
+counts are recorded in tools/FINDINGS.md, KV-Tracker job 25680.
+
+**Resolution is not yet matched:** KV-Tracker's `pi3_resize_image` interprets 308
+as a square pixel-area budget with aspect-preserving patch alignment and linear
+interpolation. This runner interprets it as width and uses bicubic resizing plus
+centre-height cropping. For a controlled cross-host comparison, freeze shared
+prepared pixels (and rerun KV-Tracker if needed), or explicitly report each host's
+native preprocessing and actual dimensions; do not label both simply resolution 308.
+
+Before submission: checkpoint/import/strict-load and native fidelity gates for each
+host; a separate long-run JSON without the 32-frame ceiling or unrestricted
+StreamVGGT causal arm; full-count stride-1 input settings; a full-length memory,
+latency and output-size probe; then frozen policy comparisons. Existing frame caps
+are not automatically byte-matched across models or to KV-Tracker's keyframe cap.
+These checks support feasibility, not a claim that either host already ran on CAMP.
+
+## Original implementation record
+
 2026-09-19 implementation handoff. **Locally syntax-checked only; no new runtime
 result.** Hosts: StreamVGGT, LongStream, STream3R. 4RC remains an offline diagnostic
 and is not given a fictitious KV-cache adapter. This supersedes the threshold-only
@@ -58,7 +186,7 @@ Separate the three interventions:
    fills the same fixed count, using background when the mask is smaller; it is
    explicitly not the old variable-size object-only cache.
 
-The checked-in JSON has 21 exploratory conditions and a **32-frame maximum** for
+The original `stream_cache_sweep_pilot.json` has 21 exploratory conditions and a **32-frame maximum** for
 the first integration pilot. It rejects longer inputs rather than truncating them.
 This is not the long-sequence result. After the pilot's memory and fidelity checks,
 create a separate frozen JSON for long clips; an unrestricted causal arm can exceed
@@ -156,9 +284,10 @@ config, commits/diffs and checkpoint hashes into its output. The wrapper additio
 saves container inspection, package versions, GPU inventory, memory grant, logs and
 exit status. Outputs go to job-local `/tmp` and are archived even on failure into
 one tar under `/mnt/projects/gr/3DRecon/stream_cache_out/`, outside the checkout.
-Each frame stores full predictions in NPZ, including confidence and scale factors;
-camera poses/intrinsics are also saved as `camera.npz`. Check disk capacity before
-long dense runs; there is intentionally no silent dropping of geometry.
+The default `geometry_export=all` stores every frame in NPZ. The approved long-run
+JSONs explicitly select `geometry_export=final`: final-frame dense predictions, all
+pose encodings in `pose_encodings.npz`, and all camera poses/intrinsics in
+`camera.npz`. The selected export mode is recorded in each condition summary.
 
 ## Gates and interpretation
 
