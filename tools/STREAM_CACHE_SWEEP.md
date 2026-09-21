@@ -1,5 +1,26 @@
 # Streaming cache sweep
 
+## StreamVGGT calibration follow-up — 2026-09-21
+
+Job 25762 passed, and its archive has been inspected. Coverage threshold 0.5
+rejected every candidate. The next step is a single-arm retry at threshold 0.2,
+floor 0.99, on the same first 256 office frames. Other 16 arms need no repeat.
+The candidate is motivated by score distributions, not accuracy; admission feedback
+means its realized acceptance rate must be measured. Detailed evidence lives in
+local tools/FINDINGS.md; progress in docs/STATUS.md.
+
+After pulling this revision inside an allocation, submit from the repository root:
+
+```bash
+sbatch --array=0 tools/stream_cache_long.sbatch streamvggt coverage
+```
+
+This selects `stream_cache_streamvggt_coverage.json`, preserving native fidelity,
+input provenance and final-geometry output. Inspect admission and retained histories
+before replacing the failed candidate in the main reduced JSON and lifting its
+256-frame ceiling. Full runs remain gated. Source configuration and shell changes
+are locally static-checked only until the new remote job completes.
+
 ## Reduced StreamVGGT sweep — 2026-09-21
 
 The LongStream archives have been reviewed. User authorized preparing the reduced

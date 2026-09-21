@@ -20,7 +20,7 @@ ROOT=/mnt/projects/gr/3DRecon
 REPO="$ROOT/layer_good"
 export CACHE_HOST=${1:?Choose streamvggt, longstream or stream3r}
 STAGE=${2:-full}
-case "$STAGE" in full|calibrate) ;; *) echo "Unknown stage: $STAGE" >&2; exit 2 ;; esac
+case "$STAGE" in full|calibrate|coverage) ;; *) echo "Unknown stage: $STAGE" >&2; exit 2 ;; esac
 case "$CACHE_HOST" in
     streamvggt) export CACHE_CHECKPOINT="$ROOT/streamvggt_ckpt/checkpoints.pth" ;;
     longstream) export CACHE_CHECKPOINT="$ROOT/longstream_ckpt/50_longstream.pt" ;;
@@ -40,10 +40,13 @@ fi
 if [ "$CACHE_HOST" = longstream ]; then
     export CACHE_SWEEP="$REPO/tools/stream_cache_long_longstream.json"
 fi
-if [ "$STAGE" = calibrate ]; then
+if [ "$STAGE" != full ]; then
     test "$CACHE_HOST" = streamvggt
     test "$SLURM_ARRAY_TASK_ID" = 0
     COUNT=256
+fi
+if [ "$STAGE" = coverage ]; then
+    export CACHE_SWEEP="$REPO/tools/stream_cache_streamvggt_coverage.json"
 fi
 export CACHE_TUM_ZIP="/mnt/datasets/tum-rgbd/rgbd_dataset_${SCENE}.zip"
 export CACHE_TUM_COUNT="$COUNT" CACHE_TUM_START=0 CACHE_TUM_STRIDE=1

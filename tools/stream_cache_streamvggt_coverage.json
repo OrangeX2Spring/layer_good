@@ -1,0 +1,17 @@
+{
+  "description": "Targeted StreamVGGT calibration follow-up to job 25762: coverage threshold 0.5 admitted zero frames. Test 0.2 on the same first 256 office frames, without rerunning the other 16 conditions. Candidate chosen from saved score distributions, not ATE; realized admission rate remains to be measured.",
+  "max_frames": 256,
+  "isolate_conditions": true,
+  "geometry_export": "final",
+  "conditions": [
+    {
+      "name": "coverage_f099_t02",
+      "policy": {
+        "score": "coverage",
+        "admission": "novelty",
+        "similarity_floor": 0.99,
+        "threshold": 0.2
+      }
+    }
+  ]
+}
