@@ -1,6 +1,58 @@
 # Streaming cache sweep
 
-## Full-sweep handoff — 2026-09-20
+## Reduced StreamVGGT sweep — 2026-09-21
+
+The LongStream archives have been reviewed. User authorized preparing the reduced
+StreamVGGT sweep while preserving exploratory variety: different strategies are
+valuable at this stage; a common paper method can be formulated later.
+
+`stream_cache_streamvggt_reduced.json` contains 17 conditions:
+
+| Group | Conditions |
+|---|---|
+| Frame controls/selection | recent8, redundancy8, random_frames_s0/s1/s2 |
+| Half-patch controls/selection | uniform_p50, confidence_p50, confidence_novelty_p50, random_p50_s0/s1/s2 |
+| Pooled admission candidates | pooled_encoder_t1/t2: thresholds 0.00034 / 0.00087 |
+| Centered admission candidates | centered_encoder_t1/t2: thresholds 0.15 / 0.3 |
+| Coverage admission candidates | coverage_f099_t01/t05: similarity floor 0.99, thresholds 0.1 / 0.5 |
+
+**These thresholds are provisional LongStream-derived candidates.** First run all
+17 arms on the first 256 consecutive office frames, start 0, stride 1, width 308,
+RPE gap 0.1 s. Fresh processes, native fidelity, remote contract tests and final-only
+geometry exports remain enabled. Unrestricted causal attention stays excluded.
+The existing runner rejects clips exceeding max_frames=256 before model loading;
+this guards against accidentally using provisional settings for full runs.
+
+After pulling this revision inside an allocation, submit from the repository root:
+
+```bash
+sbatch --array=0 tools/stream_cache_long.sbatch streamvggt calibrate
+```
+
+Do not use a multi-task array: the observed student QoS rejected it. Source updates
+must be pulled inside an allocation before submitting the wrapper, since sbatch
+copies the wrapper at submission. The in-job pull does not update that copied code.
+
+Calibration review must inspect fidelity, scores, actual admission fractions,
+retained counts/bytes, distinct frame/patch histories, memory and timings. ATE on
+this prefix is diagnostic only; do not select thresholds by its best ATE. If an
+admission pair collapses to all-admit/all-reject or indistinguishable behavior,
+adjust that pair and repeat only the necessary short arms before freezing. The
+short office prefix cannot establish calibration across every scene. This is an
+exploratory dataset reuse, not held-out validation or promised admission rates.
+
+Once reviewed, commit the frozen thresholds and raise max_frames to 5182 in the
+same JSON; full office/loop/no-loop then use the same frozen configuration with
+`--array=0`, `--array=1`, `--array=2`, one at a time, without `calibrate`.
+The wrapper now selects this reduced JSON for StreamVGGT; LongStream and STream3R
+retain their existing configurations. Full runs remain gated until calibration.
+
+No policy implementation changed. StreamVGGT's head cache still grows even when
+its aggregator cache is bounded. A successful short calibration does not establish
+memory safety for the longest sequence. All poses/events/shared pixels/provenance
+and final-frame geometry are archived as before.
+
+## Full-sweep handoff — 2026-09-20 (historical)
 
 This supersedes the unrun-host and next-command statements below. StreamVGGT's
 full-office recent8 probe is archived and read; LongStream's corresponding run
