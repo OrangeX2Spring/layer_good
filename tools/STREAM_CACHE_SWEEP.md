@@ -1,6 +1,29 @@
 # Streaming cache sweep
 
-## StreamVGGT calibration follow-up — 2026-09-21
+## Frozen StreamVGGT full sweep — 2026-09-21
+
+Calibration jobs 25762 and 25778 are complete and inspected. Coverage threshold
+0.5 was all-reject; 0.2 has distinct selective admission. The reduced JSON is now
+frozen at 17 conditions: replace coverage_f099_t05 with coverage_f099_t02 (floor
+0.99, threshold 0.2), keep all other policies unchanged, max_frames=5182. This
+supersedes the calibration gates and provisional-threshold instructions below.
+
+Next, after pulling inside an allocation, submit from the repository root:
+
+```bash
+sbatch --array=0 tools/stream_cache_long.sbatch streamvggt
+```
+
+No `calibrate` or `coverage` argument: this is the complete office sequence.
+After successful completion/archive, submit task 1 for with-loop, then task 2 for
+no-loop. Use one task at a time because of the observed QoS submission limit.
+Keep the same frozen JSON across all three. Preserve all poses/events, shared
+inputs and final-frame dense geometry. Each condition still has a fresh process.
+Full runs may take hours; calibration runtime is not a full-sweep runtime estimate.
+Growing native head caches leave longer-sequence resource safety unverified.
+Selection is based on admission behavior, not prefix ATE; no held-out claim.
+
+## StreamVGGT calibration follow-up — 2026-09-21 (historical)
 
 Job 25762 passed, and its archive has been inspected. Coverage threshold 0.5
 rejected every candidate. The next step is a single-arm retry at threshold 0.2,

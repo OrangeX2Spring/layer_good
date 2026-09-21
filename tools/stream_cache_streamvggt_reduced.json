@@ -1,6 +1,6 @@
 {
-  "description": "StreamVGGT reduced exploratory sweep: 11 controls/selection arms plus 6 provisional admission settings. Calibrate on first 256 office frames, start 0 / stride 1 / width 308. Thresholds inherited from LongStream are candidates, not calibrated StreamVGGT values. Review events and freeze thresholds before increasing max_frames for full sequences; no held-out claim.",
-  "max_frames": 256,
+  "description": "Frozen StreamVGGT reduced exploratory sweep after calibration jobs 25762 and 25778: 17 conditions, same thresholds across all three full TUM sequences. Coverage 0.5 replaced by 0.2 based on admission behavior, not ATE. Start 0 / stride 1 / width 308. Calibration reused an office prefix; no held-out claim.",
+  "max_frames": 5182,
   "isolate_conditions": true,
   "geometry_export": "final",
   "conditions": [
@@ -120,12 +120,12 @@
       }
     },
     {
-      "name": "coverage_f099_t05",
+      "name": "coverage_f099_t02",
       "policy": {
         "score": "coverage",
         "admission": "novelty",
         "similarity_floor": 0.99,
-        "threshold": 0.5
+        "threshold": 0.2
       }
     }
   ]
