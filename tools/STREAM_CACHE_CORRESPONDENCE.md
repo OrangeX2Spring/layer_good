@@ -46,14 +46,18 @@ failure is diagnostic evidence, not a reason to auto-submit full runs.
 
 After publishing the parent revision, submit from the CAMP head node. The
 checkout pull occurs inside the allocation. Use `--array=0` to override the
-wrapper's normal three-scene array:
+wrapper's normal three-scene array. The single `correspondence-gates` positional
+argument selects all three hosts internally; do not split the host list and
+stage across shell lines. Job 25826's supplied log ran the wrapper's default
+`full` stage, and `scontrol` showed the stage argument on a new line; its
+2,585-frame `pooled_encoder_*` workers are not correspondence-gate evidence:
 
 ```bash
 sbatch -A students --qos=students_normal -p 24g -w muenchen \
   --gres=gpu:1 --propagate=NONE --array=0 \
   --chdir=/mnt/projects/gr/3DRecon/layer_good \
   -o /mnt/projects/gr/3DRecon/stream_corr_gates-%j.log \
-  --wrap='git -c fetch.recurseSubmodules=false pull --ff-only && bash tools/stream_cache_long.sbatch stream3r,streamvggt,longstream correspondence-gates'
+  --wrap='git -c fetch.recurseSubmodules=false pull --ff-only && bash tools/stream_cache_long.sbatch correspondence-gates'
 ```
 
 Check `sacct` completion and the six archives' `exit_status.txt`, `run/fidelity.json`,

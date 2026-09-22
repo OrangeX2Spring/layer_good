@@ -24,6 +24,10 @@ ROOT=/mnt/projects/gr/3DRecon
 REPO="$ROOT/layer_good"
 HOSTS=${1:?Choose streamvggt, longstream or stream3r}
 STAGE=${2:-full}
+if [ "$HOSTS" = correspondence-gates ]; then
+    HOSTS=stream3r,streamvggt,longstream
+    STAGE=correspondence-gates
+fi
 case "$STAGE" in full|calibrate|coverage|combined|combined-pilot|correspondence-gates) ;; *) echo "Unknown stage: $STAGE" >&2; exit 2 ;; esac
 case "$SLURM_ARRAY_TASK_ID" in
     0) ARRAY_SCENE=freiburg3_long_office_household; ARRAY_COUNT=2585 ;;
