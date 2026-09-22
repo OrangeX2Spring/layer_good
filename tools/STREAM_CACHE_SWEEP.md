@@ -256,8 +256,11 @@ wall-time limit. Any scheduler or partition limit remains authoritative.
 
 The canonical unattended entry point is `tools/stream_cache.sbatch`. The older
 `tools/stream_cache_run.sh` is a lower-level in-allocation wrapper for manual use.
-Each host gets a separate job and container setting; do not combine StreamVGGT,
-LongStream, and STream3R when their dependency closures or images differ.
+The standalone interface runs one host per job. The later correspondence gate
+combines hosts in one allocation because all three have verified the same saved
+base image; each host/task pair still starts a fresh disposable container with
+its own dependency installation. Do not reuse one mutable container environment
+across hosts or combine runs that require different saved base images.
 
 All extraction, preparation, intermediate predictions, and condition outputs stay
 under job-local `/tmp`. The only persistent run artifact is one tar under

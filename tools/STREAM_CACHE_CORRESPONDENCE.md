@@ -31,7 +31,12 @@ not yet score object pose. TUM camera ATE/RPE is scored where GT is valid.
 
 `tools/stream_cache_long.sbatch` mode `correspondence-gates` runs the six
 host/task pairs sequentially in one allocation, preserving one archive per
-pair under `stream_cache_out/`. A failure is recorded and does not skip later
+pairs under `stream_cache_out/`. All three hosts use the previously verified
+`optpose.tar` base image. Each pair starts a fresh disposable `podman run`, and
+`stream_cache_job.py` installs that host's missing inference wheels inside that
+container without changing the saved image or another pair's environment.
+The image is loaded once into the allocation's job-local Podman store.
+A failure is recorded and does not skip later
 pairs; the overall job exits nonzero if any gate fails. Each pair runs its native
 fidelity oracle, contract tests and all conditions in isolated processes. The
 gate checks fixed retention, half-patch counts including LongStream refresh,
