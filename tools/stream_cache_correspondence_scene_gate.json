@@ -1,0 +1,12 @@
+{
+  "description": "TUM long-office structural gate: dense, spatial-uniform half and geometric correspondence half, all with FIFO budget 8.",
+  "max_frames": 256,
+  "isolate_conditions": true,
+  "geometry_export": "final",
+  "correspondence_gate": "scene",
+  "conditions": [
+    {"name": "recent8", "policy": {}},
+    {"name": "spatial_uniform_p50", "policy": {"patch_policy": "spatial_uniform", "patch_fraction": 0.5}},
+    {"name": "correspondence_p50", "policy": {"patch_policy": "correspondence", "patch_fraction": 0.5}}
+  ]
+}

@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 
 from stream_cache_adapters import sparse_vggt_attention, tensor_bytes
-from stream_cache_policy import CachePolicy, PolicyConfig
+from stream_cache_policy import CachePolicy, PolicyConfig, reciprocal_links
 
 
 class PolicyTests(unittest.TestCase):
@@ -79,6 +79,49 @@ class PolicyTests(unittest.TestCase):
             histories.append([policy.update(i, self.patches, (2, 2), self.confidence)[2]
                               for i in range(8)])
         self.assertEqual(*histories)
+
+    def test_correspondence_is_reciprocal_geometric_and_label_consistent(self):
+        features = torch.eye(4)
+        points = torch.tensor([[0., 0., 0.], [1., 0., 0.],
+                               [0., 1., 0.], [1., 1., 0.]])
+        links, _ = reciprocal_links(features, points, features, points, .1)
+        torch.testing.assert_close(links, torch.arange(4))
+        displaced = points + 10
+        links, _ = reciprocal_links(features, displaced, features, points, .1)
+        self.assertTrue(bool((links == -1).all()))
+        labels = torch.tensor([True, False, False, False])
+        other = labels.clone()
+        other[0] = False
+        links, _ = reciprocal_links(features, points, features, points, .1,
+                                    labels, other)
+        self.assertEqual(int(links[0]), -1)
+        torch.testing.assert_close(links[1:], torch.arange(1, 4))
+
+    def test_correspondence_keeps_half_and_surviving_fifo_tracks(self):
+        policy = CachePolicy(PolicyConfig(patch_policy='correspondence',
+                                          patch_fraction=.5, frame_budget=3))
+        points = torch.tensor([[0., 0., 0.], [1., 0., 0.],
+                               [0., 1., 0.], [1., 1., 0.]])
+        for frame in range(5):
+            picked, kept, event = policy.update(frame, self.patches, (2, 2),
+                                                 self.confidence, points=points)
+            self.assertEqual(len(picked), 4 if frame == 0 else 2)
+            self.assertLessEqual(len(kept), 3)
+            if frame:
+                self.assertGreater(event['matched_kept'], 0)
+        self.assertEqual(kept, [0, 3, 4])
+
+    def test_semantic_policy_requires_target_labels(self):
+        policy = CachePolicy(PolicyConfig(patch_policy='semantic_correspondence',
+                                          patch_fraction=.5))
+        points = torch.tensor([[0., 0., 0.], [1., 0., 0.],
+                               [0., 1., 0.], [1., 1., 0.]])
+        labels = torch.tensor([True, False, False, False])
+        policy.update(0, self.patches, (2, 2), self.confidence, labels, points)
+        picked, _, event = policy.update(1, self.patches, (2, 2),
+                                          self.confidence, labels, points)
+        self.assertEqual(len(picked), 2)
+        self.assertGreater(event['object_matched_kept'], 0)
 
 
 class AttentionTests(unittest.TestCase):

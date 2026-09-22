@@ -95,6 +95,20 @@ if [ -n "${CACHE_TUM_ZIP:-}" ]; then
     cp "$WORK/extracted/manifest.json" "$WORK/source_manifest.json"
     extra=(--manifest "$WORK/extracted/manifest.json")
 fi
+if [ -n "${CACHE_ARCTIC_SCENE:-}" ]; then
+    test -z "${CACHE_TUM_ZIP:-}" && test -z "${CACHE_INPUT_TAR:-}"
+    PREPARED="$ROOT/kvt_arctic_out/prepared.tar"
+    KVT="$ROOT/kvt_arctic_out/arctic_r518_20260915T152911Z.tar"
+    test -f "$PREPARED" && test -f "$KVT"
+    podman run --rm --network=none -v /mnt:/mnt:ro -v /tmp:/tmp:rw -w "$REPO" \
+        -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONUNBUFFERED=1 "$IMAGE" \
+        python tools/stream_cache_arctic.py --prepared "$PREPARED" --kvt "$KVT" \
+        --scene "$CACHE_ARCTIC_SCENE" --count "${CACHE_ARCTIC_COUNT:-241}" \
+        --out "$WORK/extracted"
+    sha256sum "$PREPARED" "$KVT" > "$WORK/input_archive.sha256"
+    cp "$WORK/extracted/manifest.json" "$WORK/source_manifest.json"
+    extra=(--manifest "$WORK/extracted/manifest.json")
+fi
 podman run --rm --network=host --device="nvidia.com/gpu=$CUDA_VISIBLE_DEVICES" \
     -v /mnt:/mnt:ro -v /tmp:/tmp:rw -w "$REPO" \
     -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONUNBUFFERED=1 \

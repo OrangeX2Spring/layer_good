@@ -48,6 +48,12 @@ def prepare(args):
         with Image.open(path) as image:
             image = image.convert('RGB')
             width, height = image.size
+            if source.get('mask_input'):
+                mask_path = args.manifest.parent / frame['mask']
+                with Image.open(mask_path) as source_mask:
+                    assert source_mask.size == image.size
+                    binary = np.asarray(source_mask.convert('L')) > 127
+                image = Image.fromarray(np.asarray(image) * binary[..., None])
             resized = (args.width, max(14, round(height * args.width / width / 14) * 14))
             top = max(0, (resized[1] - args.width) // 2)
             crop = (0, top, args.width, top + min(resized[1], args.width))
@@ -74,7 +80,8 @@ def prepare(args):
                                        np.asarray(frame['intrinsics'])).tolist()
         records.append(row)
     write_json(args.out / 'manifest.json', dict(source, frames=records,
-               preprocessing='shared RGB width resize / center-height crop, patch 14; no input masking'))
+               preprocessing=('object-masked source RGB' if source.get('mask_input') else 'source RGB')
+               + '; shared width resize / center-height crop, patch 14'))
     print(f'PREPARED {len(records)} frames: {args.out}', flush=True)
 
 
@@ -241,9 +248,18 @@ def run_condition(args, model, root, frames, name, config):
                 torch.cuda.synchronize()
                 prediction_end = time.perf_counter()
                 confidence = pool_confidence(output['depth_conf'][0].float().cpu(), grid, 0)[0]
-                token_mask = None if mask is None else pool_mask(mask[None], grid, 0)[0]
+                threshold = .5 if config.patch_policy == 'semantic_correspondence' else 0.
+                token_mask = None if mask is None else pool_mask(mask[None], grid, 0,
+                                                                  threshold)[0]
+                points = None
+                if config.patch_policy in ('correspondence', 'semantic_correspondence'):
+                    pointmap = output['world_points']
+                    assert pointmap.shape == (1, 1, *image.shape[-2:], 3)
+                    centre = adapter.patch_size // 2
+                    points = pointmap[0, 0, centre::adapter.patch_size,
+                                      centre::adapter.patch_size].reshape(-1, 3).float().cpu()
                 picked, kept, event = policy.update(index, adapter.features.float().cpu(), grid,
-                                                    confidence, token_mask)
+                                                    confidence, token_mask, points)
                 if event['score'] is not None:
                     admission_scores.append(event['score'])
                     admitted += int(event['accepted'])
@@ -261,8 +277,13 @@ def run_condition(args, model, root, frames, name, config):
                     policy.clear()
                     replay = adapter.forward(image, index, reference_self=True)
                     confidence = pool_confidence(replay['depth_conf'][0].float().cpu(), grid, 0)[0]
+                    if config.patch_policy in ('correspondence', 'semantic_correspondence'):
+                        pointmap = replay['world_points']
+                        assert pointmap.shape == (1, 1, *image.shape[-2:], 3)
+                        points = pointmap[0, 0, centre::adapter.patch_size,
+                                          centre::adapter.patch_size].reshape(-1, 3).float().cpu()
                     picked, kept, refresh_event = policy.update(
-                        index, adapter.features.float().cpu(), grid, confidence, token_mask)
+                        index, adapter.features.float().cpu(), grid, confidence, token_mask, points)
                     adapter.prune(picked, kept)
                     event['refresh_seed'] = refresh_event
                     event['post_refresh_memory'] = adapter.memory()
@@ -386,7 +407,7 @@ def run(args):
         assert digest(args.inputs / frame['rgb']) == frame['rgb_sha256']
         if 'mask' in frame:
             assert digest(args.inputs / frame['mask']) == frame['mask_sha256']
-    if any(config.patch_policy == 'mask' for _, config in configs):
+    if any(config.patch_policy in ('mask', 'semantic_correspondence') for _, config in configs):
         assert all('mask' in frame for frame in frames)
     if args.worker is not None:
         model = load_model(args)
@@ -435,6 +456,49 @@ def run(args):
     else:
         write_json(args.out / 'camera_metrics.json',
                    {'status': 'not evaluated: no camera GT supplied in manifest'})
+    if specification.get('correspondence_gate'):
+        object_gate = specification['correspondence_gate'] == 'object'
+        expected = ['recent8', 'spatial_uniform_p50', 'correspondence_p50']
+        if object_gate:
+            expected.append('semantic_correspondence_p50')
+            assert manifest['mask_input'] and all('mask' in row for row in frames)
+        assert names == expected
+        events = {name: [json.loads(line) for line in
+                 (args.out / name / 'events.jsonl').read_text().splitlines()] for name in names}
+        assert all(len(rows) == len(frames) for rows in events.values())
+        dense = events['recent8']
+        uniform = events['spatial_uniform_p50']
+        geometric = events['correspondence_p50']
+        full_patches = len(dense[0]['patch_indices'])
+        half_patches = (full_patches + 1) // 2
+        semantic = events['semantic_correspondence_p50'] if object_gate else None
+        for index, (a, b, c) in enumerate(zip(dense, uniform, geometric)):
+            rows = [a, b, c] + ([semantic[index]] if object_gate else [])
+            assert all(row['retained_frames'] == a['retained_frames'] for row in rows)
+            assert len(c['retained_frames']) <= 8
+            assert len(a['patch_indices']) == full_patches
+            expected_count = (full_patches if index == 0 or
+                              (index > 0 and 'refresh_seed' in dense[index - 1])
+                              else half_patches)
+            assert all(len(row['patch_indices']) == expected_count for row in rows[1:])
+            if a['refresh']:
+                assert all(len(row['refresh_seed']['patch_indices']) == full_patches for row in rows)
+        checks = dict(frames=len(frames), host=args.host,
+            fidelity_file=(args.out / 'fidelity.json').exists(),
+            fifo_active=any(row['evicted'] for row in geometric),
+            matches_active=sum(row['matched_kept'] for row in geometric) > 0,
+            choices_differ=any(a['patch_indices'] != b['patch_indices']
+                               for a, b in zip(uniform, geometric)),
+            cache_smaller=any(a['aggregator_bytes'] < b['aggregator_bytes']
+                              for a, b in zip(geometric, dense)),
+            refresh_active=args.host != 'longstream' or any(row['refresh'] for row in geometric))
+        if object_gate:
+            checks['object_matches_active'] = sum(row['object_matched_kept'] for row in semantic) > 0
+            checks['semantic_choices_differ'] = any(a['patch_indices'] != b['patch_indices']
+                                                     for a, b in zip(geometric, semantic))
+        write_json(args.out / 'correspondence_gate.json', checks)
+        assert all(value for key, value in checks.items() if key not in ('frames', 'host')), checks
+        print('CORRESPONDENCE GATE OK', json.dumps(checks), flush=True)
     print('SWEEP OK', flush=True)
 
 
