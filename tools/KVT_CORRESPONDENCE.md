@@ -24,7 +24,16 @@ frame retains exactly ceil(N/2) ordinary patches. Previously removed patches do
 not reappear after a dense rebuild. Dense eight-frame FIFO is the matched accuracy
 baseline; the earlier adaptive-keyframe ARCTIC results are contextual only.
 
-`sbatch tools/kvt_correspondence.sbatch gate box_grab_01` runs remote CPU tests, a
+The preferred first submission is the **combined gate**:
+`sbatch tools/kvt_tum.sbatch correspondence-gates`. It starts the existing image
+once and runs both gate protocols sequentially in one container. The ARCTIC and
+TUM reports and run archives remain separate. `both_gate_processes.json` records
+both stage return codes; a failure in ARCTIC does not skip the TUM gate. The job
+does not start either full-sequence evaluation. The standalone ARCTIC gate,
+`sbatch tools/kvt_correspondence.sbatch gate box_grab_01`, remains available for
+an isolated rerun.
+
+The ARCTIC gate runs remote CPU tests, a
 200-frame native interval control, and all four conditions at 200 and 240 frames.
 Dense must reproduce native poses exactly before the first eviction. Each longer
 condition must reproduce its own first 200 poses and cache choices and show the
@@ -60,9 +69,10 @@ uniform half, and geometric correspondence half are meaningful here; no semantic
 result can be claimed without object or entity labels. The scene task tests
 transfer of the geometric selector, not the target-aware variant.
 
-`sbatch tools/kvt_tum.sbatch correspondence
-freiburg3_long_office_household gate` runs the native/dense 128-frame identity
+The combined gate runs the TUM native/dense 128-frame identity
 check and 1100/1150-frame matched prefix checks across several replacements.
+The isolated command is `sbatch tools/kvt_tum.sbatch correspondence
+freiburg3_long_office_household gate`.
 Review its complete evidence before `sbatch tools/kvt_tum.sbatch correspondence
 freiburg3_long_office_household full`, which evaluates all three policies over all
 2585 RGB frames. The two industrial sequences can be run later with the same
@@ -116,8 +126,10 @@ submitted by the editing assistant. Use the field notes' exact rsync command fro
 the Mac repo root and extract every archive separately. Never advance to a full
 evaluation behind an unreviewed gate.
 
-ARCTIC writes per-condition archives and job-owned `inputs`, `context`, `review`
-TARs under `/mnt/projects/gr/3DRecon/kvt_arctic_out/`. Context records source
+ARCTIC writes per-condition archives and job-owned `inputs`, `review` TARs under
+`/mnt/projects/gr/3DRecon/kvt_arctic_out/`. The combined job's shared context
+TAR is under `kvt_tum_out/`; the standalone ARCTIC job writes its context under
+`kvt_arctic_out/`. Context records source
 revisions/diffs, Pi3 source, input hash and exit status; full result archives
 contain masks, trajectories, cache events, final geometry and configs. TUM uses
 the existing `kvt_tum_out` context/input/run archives, including exact source,

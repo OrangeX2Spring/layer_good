@@ -11,7 +11,8 @@
 #SBATCH --output=/mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log
 set -euo pipefail
 MODE=${1:-sweep}
-case "$MODE" in sweep|combined|correspondence) ;; *) echo "Unknown mode: $MODE" >&2; exit 2 ;; esac
+case "$MODE" in sweep|combined|correspondence|correspondence-gates) ;;
+    *) echo "Unknown mode: $MODE" >&2; exit 2 ;; esac
 test "$(uname -s)" = Linux
 test "$(hostname)" != head
 ROOT=/mnt/projects/gr/3DRecon
@@ -31,6 +32,10 @@ finish() {
         wait "$MONITOR_PID" || test "$?" -eq 143
     fi
     echo "$status" > "$WORK/context/exit_status.txt"
+    if [ "$MODE" = correspondence-gates ] && [ -d "$WORK/arctic_review" ]; then
+        tar -C "$WORK/arctic_review" \
+            -cf "$ROOT/kvt_arctic_out/${TAG}_review.tar" .
+    fi
     # Completed runs and inputs already have their own archives. Preserve any
     # failed/partial run as well, without duplicating all source images here.
     if [ -d "$WORK/runs" ]; then
@@ -40,6 +45,13 @@ finish() {
         tar -C "$WORK" --exclude='*/final_scene.npz' --exclude='*/viz' \
             -cf "$OUT/${TAG}_all_runs.tar.partial" runs
         mv "$OUT/${TAG}_all_runs.tar.partial" "$OUT/${TAG}_all_runs.tar"
+    fi
+    if [ "$MODE" = correspondence-gates ] && [ "$status" -ne 0 ]; then
+        arctic_data=/tmp/data/arctic_data/data/cropped_images_grab_only_subset/s01/box_grab_01
+        if [ -d "$arctic_data" ]; then
+            find "$arctic_data" -mindepth 1 -maxdepth 1 -type d -name "${TAG}_*" -print0 \
+                | tar --null -T - -cf "$ROOT/kvt_arctic_out/${TAG}_partial.tar"
+        fi
     fi
     tar --exclude=./inputs --exclude=./runs -C "$WORK" \
         -cf "$OUT/${TAG}_context.tar.partial" .
@@ -80,10 +92,22 @@ if [ "$MODE" = combined ]; then
        "$REPO/tools/test_kvt_combined.py" "$REPO/tools/STREAM_CACHE_COMBINED.md" \
        "$WORK/context/"
 fi
-if [ "$MODE" = correspondence ]; then
+if [ "$MODE" = correspondence ] || [ "$MODE" = correspondence-gates ]; then
     cp "$REPO/tools/kvt_tum_combined.py" "$REPO/tools/kvt_tum_correspondence.py" \
        "$REPO/tools/kvt_correspondence_tum.py" "$REPO/tools/test_kvt_correspondence.py" \
        "$REPO/tools/KVT_CORRESPONDENCE.md" "$WORK/context/"
+fi
+if [ "$MODE" = correspondence-gates ]; then
+    cp "$REPO/tools/kvt_correspondence_both_gates.py" \
+       "$REPO/tools/kvt_correspondence_pilot.py" \
+       "$REPO/tools/kvt_correspondence_selector.py" \
+       "$REPO/tools/kvt_arctic_run.py" "$REPO/tools/kvt_online_selector.py" \
+       "$REPO/tools/kvt_correspondence.sbatch" "$WORK/context/"
+    sha256sum "$ROOT/kvt_arctic_out/prepared.tar" > "$WORK/context/arctic_inputs.sha256"
+    cp "$ROOT/kvt_arctic_out/prepared.tar" \
+       "$ROOT/kvt_arctic_out/${TAG}_inputs.tar"
+    test -f "$HOME/.hf_env"
+    source "$HOME/.hf_env"
 fi
 sha256sum "$ROOT/kvt.tar" > "$WORK/context/container_tar.sha256"
 
@@ -92,16 +116,32 @@ if ! podman image exists localhost/kvt; then
 fi
 podman image inspect localhost/kvt > "$WORK/context/container.json"
 THIRDPARTY="$REPO/kv_tracker/thirdparty"
+EXTRA_ENV=()
+OFFLINE_ENV=(-e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1)
+if [ "$MODE" = correspondence-gates ]; then
+    EXTRA_ENV=(-e HF_TOKEN -e HF_XET_HIGH_PERFORMANCE=1)
+    OFFLINE_ENV=()
+fi
 CONTAINER=(podman run --rm --network=host
     -v /mnt:/mnt:rw -v /tmp:/tmp:rw -w "$REPO/kv_tracker"
     --device="nvidia.com/gpu=${CUDA_VISIBLE_DEVICES:?GPU allocation required}"
     -e "PYTHONPATH=$THIRDPARTY/Pi3:$THIRDPARTY/segment-anything-2-real-time:$REPO/kv_tracker"
     -e PYTHONUNBUFFERED=1 -e MPLBACKEND=Agg -e "HF_HOME=$ROOT/.hf_cache"
-    -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 localhost/kvt)
+    "${OFFLINE_ENV[@]}"
+    "${EXTRA_ENV[@]}" localhost/kvt)
 
 nvidia-smi --query-gpu=timestamp,uuid,memory.used,memory.total,utilization.gpu \
     --format=csv -l 1 > "$WORK/context/gpu_samples.csv" &
 MONITOR_PID=$!
+if [ "$MODE" = correspondence-gates ]; then
+    "${CONTAINER[@]}" python "$REPO/tools/kvt_correspondence_both_gates.py" \
+        --work "$WORK" --tum-out "$OUT" --arctic-out "$ROOT/kvt_arctic_out" \
+        --tag "$TAG" 2>&1 | tee "$WORK/context/both_gates.log"
+    test -f "$WORK/both_gates.json"
+    test -f "$WORK/JOB_OK"
+    echo 'BOTH GATES JOB OK'
+    exit 0
+fi
 "${CONTAINER[@]}" python -m pip list --format=json > "$WORK/context/packages.json"
 "${CONTAINER[@]}" python "$REPO/tools/test_kvt_tum.py" 2>&1 | tee "$WORK/context/tests.log"
 if [ "$MODE" = combined ]; then
