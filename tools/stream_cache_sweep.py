@@ -477,9 +477,9 @@ def run(args):
             assert all(row['retained_frames'] == a['retained_frames'] for row in rows)
             assert len(c['retained_frames']) <= 8
             assert len(a['patch_indices']) == full_patches
-            expected_count = (full_patches if index == 0 or
-                              (index > 0 and 'refresh_seed' in dense[index - 1])
-                              else half_patches)
+            # Refresh seeds the current frame densely; the following frame
+            # already has that seed in history and must use the half budget.
+            expected_count = full_patches if index == 0 else half_patches
             assert all(len(row['patch_indices']) == expected_count for row in rows[1:])
             if a['refresh']:
                 assert all(len(row['refresh_seed']['patch_indices']) == full_patches for row in rows)

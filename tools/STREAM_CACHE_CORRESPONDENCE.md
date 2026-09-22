@@ -50,7 +50,11 @@ wrapper's normal three-scene array. The single `correspondence-gates` positional
 argument selects all three hosts internally; do not split the host list and
 stage across shell lines. Job 25826's supplied log ran the wrapper's default
 `full` stage, and `scontrol` showed the stage argument on a new line; its
-2,585-frame `pooled_encoder_*` workers are not correspondence-gate evidence:
+2,585-frame `pooled_encoder_*` workers are not correspondence-gate evidence.
+
+The wrapper now refuses a comma-separated host list without an explicit stage
+and prints `WRAPPER stage=correspondence-gates hosts=...` before any preparation.
+This prevents an omitted stage from silently starting the multi-host full sweep.
 
 ```bash
 sbatch -A students --qos=students_normal -p 24g -w muenchen \

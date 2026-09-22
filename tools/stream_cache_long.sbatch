@@ -24,11 +24,16 @@ ROOT=/mnt/projects/gr/3DRecon
 REPO="$ROOT/layer_good"
 HOSTS=${1:?Choose streamvggt, longstream or stream3r}
 STAGE=${2:-full}
+if [[ "$HOSTS" == *,* && $# -lt 2 ]]; then
+    echo "Multi-host runs require an explicit stage; use correspondence-gates for all correspondence gates" >&2
+    exit 2
+fi
 if [ "$HOSTS" = correspondence-gates ]; then
     HOSTS=stream3r,streamvggt,longstream
     STAGE=correspondence-gates
 fi
 case "$STAGE" in full|calibrate|coverage|combined|combined-pilot|correspondence-gates) ;; *) echo "Unknown stage: $STAGE" >&2; exit 2 ;; esac
+echo "WRAPPER stage=$STAGE hosts=$HOSTS commit=$(git -C "$REPO" rev-parse --short HEAD)"
 case "$SLURM_ARRAY_TASK_ID" in
     0) ARRAY_SCENE=freiburg3_long_office_household; ARRAY_COUNT=2585 ;;
     1) ARRAY_SCENE=freiburg2_large_with_loop; ARRAY_COUNT=5182 ;;
