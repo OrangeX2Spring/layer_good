@@ -51,8 +51,20 @@ class CorrespondenceSelector(OnlineSelector):
         self.initialized = True
 
     def select(self, frame, centre, pose, cached_poses, cached_ids, original):
-        selected = super().select(frame, centre, pose, cached_poses, cached_ids, original)
-        assert self.cache_policy.select(int(frame['idx']), cached_ids) == selected
+        index = int(frame['idx'])
+        assert index == self.last_index + 1
+        assert sorted(set(cached_ids)) == list(self.cache_policy.records)
+        self.last_index = index
+        selected = self.cache_policy.select(index, cached_ids)
+        row = dict(frame=index, policy='interval', cache_frame_ids=sorted(set(cached_ids)),
+                   cache_bytes_before=self.cache_policy.cache_bytes(), angle_degrees=None,
+                   novelty=None, object_patches=None, original_decision=bool(original),
+                   candidate=bool(selected), capped=False, selected=bool(selected),
+                   evicted=list(self.cache_policy.evicted) if selected else [])
+        self.log.write(json.dumps(row, allow_nan=False) + '\n')
+        self.log.flush()
+        if selected:
+            self.inserted.append(index)
         return selected
 
     def close(self):

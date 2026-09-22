@@ -70,7 +70,7 @@ class CorrespondenceTests(unittest.TestCase):
             points = torch.stack((xx, yy, torch.ones_like(xx)), dim=-1).float()
             ids = [0, 0]
             previous = None
-            for index in (0, 2, 4):
+            for index in (0, 2, 4, 6):
                 policy.tokens = F.pad(torch.eye(64), (0, 960))
                 if index:
                     self.assertTrue(policy.select(index, ids))
@@ -85,8 +85,12 @@ class CorrespondenceTests(unittest.TestCase):
                     masks=(xx < 56).numpy()[None].repeat(len(ids), axis=0))
                 picked = policy.records[index]['indices']
                 self.assertEqual(len(picked), 64 if index == 0 or mode == 'dense' else 32)
-                if previous is not None:
+                if previous is not None and index == 4:
                     torch.testing.assert_close(policy.records[2]['indices'], previous)
+                if index == 6:
+                    self.assertEqual(ids, [0, 4, 6])
+                    self.assertEqual(policy.events[-1]['evicted'], [2])
+                    self.assertNotIn(2, policy.records)
                 if index == 2:
                     previous = picked.clone()
                 indices = torch.cat([torch.cat((torch.arange(5), policy.records[i]['indices'] + 5))
@@ -104,10 +108,20 @@ class CorrespondenceTests(unittest.TestCase):
                     torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-5)
                 if mode == 'dense':
                     self.assertEqual(policy.cache_bytes(), policy.events[-1]['dense_cache_bytes'])
-            self.assertFalse(policy.select(6, ids))
-            policy.begin_query(6)
-            self.assertFalse(policy.capture_enabled)
+            self.assertTrue(policy.select(8, ids))
+            self.assertEqual(policy.evicted, [4])
+            self.assertEqual(policy.keep_frame_ids, [0, 6])
+            policy.begin_query(8)
+            self.assertTrue(policy.capture_enabled)
             policy.close()
+
+    def test_tum_interval_phase_and_bounded_replacement(self):
+        policy = CorrespondenceCache('dense', budget=3, interval=50, phase=1)
+        policy.records = {0: {}, 49: {}, 99: {}}
+        self.assertFalse(policy.select(148, [0, 49, 99]))
+        self.assertTrue(policy.select(149, [0, 49, 99]))
+        self.assertEqual(policy.evicted, [49])
+        self.assertEqual(policy.keep_frame_ids, [0, 99])
 
 
 if __name__ == '__main__':

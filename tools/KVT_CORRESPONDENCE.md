@@ -1,116 +1,126 @@
-# Object-first correspondence KV pilot
+# Long-sequence correspondence KV comparison
 
-Prepared 2026-09-22. User selected both geometric and semantic variants, with
-object-level evaluation the priority. This is a new exploratory pilot, not a
-restart of the completed confidence/novelty plus redundancy sweep. No CoMe-style
-merging is used. Method novelty and accuracy are unverified.
+Updated 2026-09-22 after the user's scope correction: test **complete sequences**
+on both the object and scene tasks. The previously prepared 160-frame ARCTIC pilot
+did not exercise the cache budget and is superseded; it was never submitted. Do
+not use `a64f3ec`'s wrapper. No CoMe-style token merging is involved. Novelty and
+accuracy remain unverified.
 
-## Fixed scope
+## Object task: complete ARCTIC sequences
 
-First host: KV-Tracker on ARCTIC `box_grab_01`, offset 2, resolution 518, the
-reviewed initial SAM mask and existing online mask propagation. Both proposed
-variants run on the same object task. Model input remains the native target-masked
-RGB. Consequently this tests target-aware retention *within an already object-aware
-tracker*, not segmentation, multi-object association, or novel semantic identity.
-Non-target patches here are masked context, not full scene/background imagery.
+Use KV-Tracker at 518 on the three prepared S01 object sequences, 730 / 652 / 661
+tracked frames (box / ketchup / espresso). Inputs and ground truth follow
+`KVT_ARCTIC.md`. The reviewed initial mask and native online SAM mask propagation
+remain. All variants insert at frames 0, 30, 60, ... into a budget of eight
+simultaneously retained keyframes. The anchor stays; on overflow, evict the oldest
+non-anchor keyframe and continue inserting. On box, the first eviction is frame
+240, so the gate reaches one replacement and the full run covers many. This fixed
+policy isolates patch selection from keyframe admission and eviction.
 
-All conditions insert at frame indices 0, 30, 60, ... and stop at 32 unique
-keyframes; no eviction, redundancy score or pose-dependent insertion. Full anchor
-and five special tokens remain. Every other frame keeps exactly ceil(N/2) ordinary
-patches in each sparse condition. Persistent old selections never regain discarded
-tokens after a rebuild. The bootstrap's duplicated frame is unchanged.
+Four conditions share the schedule: dense K/V, spatial uniform half patches,
+geometric correspondence half patches, and target-aware correspondence half
+patches. The anchor and five special tokens per frame stay complete. Every other
+frame retains exactly ceil(N/2) ordinary patches. Previously removed patches do
+not reappear after a dense rebuild. Dense eight-frame FIFO is the matched accuracy
+baseline; the earlier adaptive-keyframe ARCTIC results are contextual only.
 
-Four conditions: dense cache, spatial uniform half, geometric correspondence half,
-and target-aware correspondence half. The first two are necessary matched controls;
-the archived default/adaptive-keyframe runs do not share this schedule. There is
-no threshold grid. Dense/native full retention is a separate correctness check.
+`sbatch tools/kvt_correspondence.sbatch gate box_grab_01` runs remote CPU tests, a
+200-frame native interval control, and all four conditions at 200 and 240 frames.
+Dense must reproduce native poses exactly before the first eviction. Each longer
+condition must reproduce its own first 200 poses and cache choices and show the
+expected frame-240 eviction. The job stops after archiving its gate results. Review
+the result before submitting `sbatch tools/kvt_correspondence.sbatch full
+box_grab_01`. The full stage evaluates all four conditions on every frame of box;
+after reviewing that run, use the same full command for ketchup and espresso.
+The `full` stage does not chain from the gate inside one submission.
 
-## Proposed retention rule
+The object runner verifies insertion IDs, retained frame IDs, selected patch
+counts, SAM mask identity, correspondence links, finite trajectories and artifact
+archives. `gates.json` records whether geometric matches survive, whether matched
+target patches survive in the semantic arm, and whether the two arms actually
+make different choices. Inactive mechanisms invalidate the scientific comparison
+even if all structural checks pass. `review.json` and pose-error NPZs report ATE,
+native translation and rotation-part RPE, added angular rotation RPE in degrees,
+99th-percentile pose errors, actual cache/metadata bytes, peak allocated/reserved
+GPU memory, measured query-forward times and synchronous total tracking time.
+The reported ATE/RPE use full-trajectory Sim(3) alignment; they do not establish
+fixed-gauge metric object pose. Native `rpe_rot` is a dimensionless norm, while
+`rpe_rotation_deg` is an angular metric.
 
-- Capture frame-local encoder descriptors on insertion candidates; no extra forward.
-- Use points at patch centres from the **same current dense rebuild** for all retained
-  observations. This avoids comparing 3D positions from different predicted gauges.
-- Match to surviving historical patches by reciprocal cosine nearest neighbours,
-  restricted to a 3D distance within twice the median positive neighbouring patch
-  spacing of the current pointmap. Fixed cosine floor 0.9; no tuning in this pilot.
-  Zero geometric spacing yields no matches. These are tentative model-derived
-  correspondences, not verified physical tracks.
-- Divide the image into 4x4 cells and distribute the exact token budget proportional
-  to cell population using largest-remainder rounding. Prefer matched distinct
-  track IDs within each cell, then fill the remainder uniformly.
-- The semantic variant additionally requires target/non-target label agreement and
-  splits each cell's quota into those two strata. This preserves proportional target
-  support without granting extra tokens. Target labels are majority SAM-mask patches.
-  It changes both matching eligibility and quota allocation; a later ablation is
-  needed to attribute an improvement to either mechanism independently.
-- Gather original post-RoPE K/V pairs after the native dense rebuild. No feature
-  averaging, merge predictor, new network, cache quantization or pose smoothing.
+The target-aware variant uses the existing SAM mask within an already object-
+masked tracker. It tests target-guided cache retention, not segmentation or
+multi-object identity. Non-target pixels in this mode are masked context; do not
+describe them as unmasked background information.
 
-The selector lives in the model fork's `kv_tracker/correspondence_cache.py`.
-`main.py` passes the already computed rebuild pointmaps/masks to the cache hook;
-the old combined cache accepts but does not use them. Object mode is explicitly
-enabled only for the new policy. Optional Sim(3), manual keyframes and crop mode
-remain outside this pilot's contract.
+## Scene task: complete long TUM sequences
 
-## Pilot and gates
+Use the existing TUM input/evaluation path at 308, interval 50, budget 20,
+anchor plus FIFO replacement. Scene masks are all true. Only dense, spatial
+uniform half, and geometric correspondence half are meaningful here; no semantic
+result can be claimed without object or entity labels. The scene task tests
+transfer of the geometric selector, not the target-aware variant.
 
-`kvt_correspondence.sbatch` runs remote CPU contract tests, then a 160-frame native
-fixed-interval reference and dense adapter. Their poses must match exactly. Each
-sparse condition gets a 128-frame prefix and a 160-frame run. Verify identical SAM
-masks, insertion IDs, exact patch budgets, prefix poses and selections, and that
-every match points to an older retained token. The CPU contracts cover known
-correspondences, geometry rejection, label-disambiguated matches, reciprocity,
-spatial/semantic quotas, exact gather/masked-attention equivalence, cap behaviour,
-and persistence of old patch choices. They are **not executed on the Mac**.
+`sbatch tools/kvt_tum.sbatch correspondence
+freiburg3_long_office_household gate` runs the native/dense 128-frame identity
+check and 1100/1150-frame matched prefix checks across several replacements.
+Review its complete evidence before `sbatch tools/kvt_tum.sbatch correspondence
+freiburg3_long_office_household full`, which evaluates all three policies over all
+2585 RGB frames. The two industrial sequences can be run later with the same
+mode after reviewing office. GT is sparse on those scenes, so report coverage,
+ATE and both local RPE measures separately; never pool all three into one score.
+TUM runs use the existing `kvt_tum_out` archive, failure and GPU sampling workflow.
 
-`gates.json` distinguishes structural checks from measured mechanism activity:
-whether generic matches survive, whether target matches survive in the semantic
-arm, and whether the two proposed selectors make different choices. An inactive
-mechanism is a review failure even if the executable exits successfully.
+## Selector and measured mechanism
 
-`review.json` reports ATE and native translation/rotation-part RPE, adds angular
-rotation RPE in degrees and translation/rotation 99th percentiles, and reports
-cache payload, selector metadata, peak allocated/reserved bytes, query-forward
-median time and synchronous total tracking/export time. Saved error arrays support
-inspection around insertion events. Metrics use the existing full-prefix Sim(3)
-alignment: this is not fixed-gauge metric 6D pose accuracy. Native `rpe_rot` is a
-dimensionless rotation-part norm; `rpe_rotation_deg` is the added angular metric.
+Capture arrival-time encoder descriptors only at fixed insertion events. Native
+dense rebuilds provide pointmaps for all surviving frames in one current coordinate
+system. Match the new frame to *surviving historical patches* by reciprocal cosine
+nearest neighbour within twice the median positive adjacent-patch 3D spacing, at
+a fixed cosine floor of 0.9. These are tentative model-derived correspondences,
+not independently validated feature tracks. A zero geometric spacing yields no
+matches. The scene and object implementations share this rule; TUM uses its native
+phase (first insertion 49) while ARCTIC starts at frame 30.
 
-For a later full-sequence screen, the proposed tolerance is at most 5% degradation
-in ATE, translation RPE and angular rotation RPE relative to matched dense, with no
-material worsening of error tails, plus actual cache and end-to-end savings. This
-is a screening target, not statistical equivalence. The short box prefix cannot
-establish it. Review all metrics, including selector overhead, before extending
-to the three complete ARCTIC sequences or scene-mode streaming hosts.
+Each frame gets 4x4 spatial quotas with exact largest-remainder allocation.
+Matching distinct surviving tracks have priority inside a cell, with uniform fill
+for the remaining quota. On ARCTIC, the target-aware variant also enforces
+target/non-target label agreement and splits each cell's quota by majority-mask
+label. It changes both matching and quota allocation, so any improvement needs a
+later ablation to attribute those effects separately. K/V entries are gathered
+after the existing dense rebuild; no feature averaging, extra model, quantization,
+pose smoothing or token merging is introduced.
 
-KV-Tracker's native dense rebuild still sets peak memory. Half query memory need
-not reduce peak GPU memory or wall time. `selector_host_seconds` includes CPU
-selection and GPU gather launch, not synchronized GPU gather completion; total
-tracking time includes completion, model load and snapshot export. Query-forward
-time excludes mask generation, pruning and export. No geometry-quality claim is
-made from the exported final **dense-rebuild** point cloud.
+The model code is in the KV-Tracker fork's `kv_tracker/correspondence_cache.py`.
+`main.py` passes the already computed pointmaps and masks to the policy. Existing
+combined-cache calls accept these parameters without changing their selection.
+The CPU contract suite checks geometry rejection, mask disambiguation, reciprocal
+matches, exact spatial quotas, sparse K/V gather against dense masked attention,
+retention through insertion, FIFO replacement and TUM's insertion phase. These
+tests must run remotely in the existing image; Mac checks are static only.
 
-## Publication, execution and artifacts
+The screening target for full sequences is no more than 5% degradation in ATE and
+both RPE measures against matched dense, with no material increase in large-error
+tails, plus lower *measured* memory and end-to-end cost. This is a proposed screen,
+not proof of statistical equivalence. A shortened prefix cannot establish it.
+KV-Tracker's native dense rebuild sets peak memory, so smaller persistent query
+K/V may not lower peak GPU use or total time. Reports separate allocator peaks,
+query-forward time, selector CPU time and total wall time. Dense-rebuild geometry
+exports do not establish a sparse-cache geometry gain.
 
-Publish the tracker fork first, then update/publish the parent's gitlink and tools.
-The wrapper pulls only inside its allocation, then checks out the published pin.
-It reuses `kvt.tar` read-only through `kvt_run.sh`; no dependencies or weights change.
-After those revisions are available on CAMP, the user submits from `layer_good`:
+## Publication, execution and provenance
 
-```bash
-sbatch tools/kvt_correspondence.sbatch
-```
+Publish the fork revision first, then the parent gitlink and tracked tools. Both
+wrappers pull only within Slurm allocations. `kvt.tar` and existing model weights
+are borrowed read-only. The user submits and transfers results; no cluster job is
+submitted by the editing assistant. Use the field notes' exact rsync command from
+the Mac repo root and extract every archive separately. Never advance to a full
+evaluation behind an unreviewed gate.
 
-This is **pilot only**; it never starts full evaluation. Expected evidence is remote
-CPU tests passing, `FULL RETENTION GATE OK`, mask/prefix gates, `CORRESPONDENCE PILOT
-GATES OK`, `JOB OK` and Slurm `COMPLETED 0:0`, plus review of `gates.json` activity
-flags and `review.json`. Do not advance based on the log footer alone.
-
-Under `/mnt/projects/gr/3DRecon/kvt_arctic_out/`, the job writes
-`correspondence_<job>_{inputs,context,review}.tar` and per-run
-`arctic_correspondence_<job>_<condition>[_prefix]_<timestamp>.tar`. Context records
-source revisions/diffs, scripts, Pi3 model/attention sources, input hash and exit
-status. Per-run archives preserve trajectories, selected indices, tentative links,
-SAM masks, reviewed initialization, configs and final keyframe geometry. A failure
-also archives partial result directories. Prepared inputs and transient runs stay
-under allocation-local `/tmp`; no archives exist until the user runs the pilot.
+ARCTIC writes per-condition archives and job-owned `inputs`, `context`, `review`
+TARs under `/mnt/projects/gr/3DRecon/kvt_arctic_out/`. Context records source
+revisions/diffs, Pi3 source, input hash and exit status; full result archives
+contain masks, trajectories, cache events, final geometry and configs. TUM uses
+the existing `kvt_tum_out` context/input/run archives, including exact source,
+timestamp association and evaluation arrays. Failed stages preserve partial
+results. These paths are expected outputs, not evidence of existence until the
+user runs and transfers the jobs.

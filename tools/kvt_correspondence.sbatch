@@ -1,5 +1,5 @@
 #!/bin/bash
-# Pilot only. Publish fork and parent pin first; no full evaluation is chained.
+# Each gate or full stage is a separate submission after reviewing the prior gate.
 #SBATCH --job-name=kvt-correspond
 #SBATCH --partition=24g
 #SBATCH --nodelist=muenchen
@@ -11,8 +11,10 @@ set -euo pipefail
 ROOT=/mnt/projects/gr/3DRecon
 REPO="$ROOT/layer_good"
 OUT="$ROOT/kvt_arctic_out"
-TAG="correspondence_${SLURM_JOB_ID}"
-SCENE="${1:-box_grab_01}"
+STAGE="${1:-gate}"
+case "$STAGE" in gate|full) ;; *) echo "Unknown stage: $STAGE" >&2; exit 2 ;; esac
+TAG="correspondence_${SLURM_JOB_ID}_${STAGE}"
+SCENE="${2:-box_grab_01}"
 case "$SCENE" in
     box_grab_01|ketchup_grab_01|espressomachine_grab_01) ;;
     *) echo "Unknown ARCTIC scene: $SCENE" >&2; exit 2 ;;
@@ -62,5 +64,5 @@ sha256sum "$OUT/prepared.tar" > "$CONTEXT/inputs.sha256"
 cp "$OUT/prepared.tar" "$OUT/${TAG}_inputs.tar"
 bash "$REPO/tools/kvt_run.sh" correspondence-check
 bash "$REPO/tools/kvt_run.sh" correspondence-pilot --tag "$TAG" \
-    --scene "$SCENE" --out "/tmp/${TAG}_review"
-echo "JOB OK: pilot only; review gates and metrics before full evaluation"
+    --scene "$SCENE" --out "/tmp/${TAG}_review" --stage "$STAGE"
+echo "JOB OK: $STAGE $SCENE"

@@ -204,12 +204,15 @@ def run(config_path):
         if config['policy'] == 'combined':
             from kvt_tum_combined import CombinedSelector
             selector = CombinedSelector(config, decisions, inference)
+        elif config['policy'] == 'correspondence':
+            from kvt_tum_correspondence import TUMCorrespondenceSelector
+            selector = TUMCorrespondenceSelector(config, decisions, inference)
         else:
             selector = None if config['policy'] == 'bare' else TumSelector(config, decisions, inference)
         recorder = FinalScene()
         try:
             cache_args = ({'keyframe_cache': selector.cache_policy}
-                          if config['policy'] == 'combined' else {})
+                          if config['policy'] in ('combined', 'correspondence') else {})
             tracker.run_track3r(cfg=dict(results_path=str(result), que_size=1),
                 args=['--cam_only', '--resize_dim', str(config['resize_dim']),
                       '--kf_auto', str(config['interval'])], frame_source=source,
@@ -221,7 +224,8 @@ def run(config_path):
                 np.savez(result / 'final_scene.npz', **recorder.data)
         torch.cuda.synchronize()
         elapsed = time.perf_counter() - started
-        insertion_file = 'inserted_kf_idx.npy' if config['policy'] == 'combined' else 'kf_idx.npy'
+        insertion_file = ('inserted_kf_idx.npy'
+                          if config['policy'] in ('combined', 'correspondence') else 'kf_idx.npy')
         if selector is not None:
             assert selector.last_index == length - 1
             if len(selector.inserted) == 1:
@@ -269,7 +273,7 @@ def run(config_path):
             value.numel() * value.element_size() for value in selector.retained)
         metrics['diagnostic_cpu_feature_bytes'] = 0 if selector is None else sum(
             value.nbytes for value in selector.frame_features + selector.patch_maps)
-        if config['policy'] == 'combined':
+        if config['policy'] in ('combined', 'correspondence'):
             events = selector.cache_policy.events
             metrics.update(retained_keyframes=len(selector.cache_policy.records),
                 keyframes=len(selector.cache_policy.records), insertions=len(selected),
@@ -277,7 +281,9 @@ def run(config_path):
                 final_feature_bytes=selector.cache_policy.feature_bytes(),
                 final_query_cache_bytes=events[-1]['query_cache_bytes'],
                 max_query_cache_bytes=max(event['query_cache_bytes'] for event in events),
-                cache_policy='redundancy eviction + confidence/novelty half patches',
+                cache_policy=('redundancy eviction + confidence/novelty half patches'
+                              if config['policy'] == 'combined' else
+                              f"FIFO + {config['patch_policy']} patch retention"),
                 keyframes_meaning='simultaneous retained frames; insertions counted separately')
         write_json(result / 'environment.json', dict(torch=torch.__version__,
             cuda=torch.version.cuda, gpu=torch.cuda.get_device_name(),

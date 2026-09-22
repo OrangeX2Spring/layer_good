@@ -192,7 +192,11 @@ def track(scene, manifest, results_name, resize_dim, keyframe_indices=None,
         # Upstream only writes kf_idx.npy after its first insertion.
         if len(selector.inserted) == 1:
             np.save(results_dir / "kf_idx.npy", np.array([0]))
-        assert np.load(results_dir / "kf_idx.npy").tolist() == selector.inserted
+        if cache_policy is None:
+            assert np.load(results_dir / "kf_idx.npy").tolist() == selector.inserted
+        else:
+            assert np.load(results_dir / "kf_idx.npy").tolist() == list(cache_policy.records)
+            assert np.load(results_dir / "inserted_kf_idx.npy").tolist() == selector.inserted
         print(f"ONLINE {scene}: {len(selector.inserted)} keyframes, decisions verified", flush=True)
     assert recorder.count, f"{scene}: no keyframe reconstruction was recorded"
 

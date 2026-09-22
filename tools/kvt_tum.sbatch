@@ -11,7 +11,7 @@
 #SBATCH --output=/mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log
 set -euo pipefail
 MODE=${1:-sweep}
-case "$MODE" in sweep|combined) ;; *) echo "Unknown mode: $MODE" >&2; exit 2 ;; esac
+case "$MODE" in sweep|combined|correspondence) ;; *) echo "Unknown mode: $MODE" >&2; exit 2 ;; esac
 test "$(uname -s)" = Linux
 test "$(hostname)" != head
 ROOT=/mnt/projects/gr/3DRecon
@@ -80,6 +80,11 @@ if [ "$MODE" = combined ]; then
        "$REPO/tools/test_kvt_combined.py" "$REPO/tools/STREAM_CACHE_COMBINED.md" \
        "$WORK/context/"
 fi
+if [ "$MODE" = correspondence ]; then
+    cp "$REPO/tools/kvt_tum_combined.py" "$REPO/tools/kvt_tum_correspondence.py" \
+       "$REPO/tools/kvt_correspondence_tum.py" "$REPO/tools/test_kvt_correspondence.py" \
+       "$REPO/tools/KVT_CORRESPONDENCE.md" "$WORK/context/"
+fi
 sha256sum "$ROOT/kvt.tar" > "$WORK/context/container_tar.sha256"
 
 if ! podman image exists localhost/kvt; then
@@ -106,6 +111,13 @@ if [ "$MODE" = combined ]; then
         --work "$WORK" --out "$OUT" --tag "$TAG" \
         --scene "${2:?Choose a TUM scene}" --stage "${3:-pilot}" \
         2>&1 | tee "$WORK/context/sweep.log"
+elif [ "$MODE" = correspondence ]; then
+    "${CONTAINER[@]}" python "$REPO/tools/test_kvt_correspondence.py" \
+        2>&1 | tee "$WORK/context/correspondence_tests.log"
+    "${CONTAINER[@]}" python "$REPO/tools/kvt_correspondence_tum.py" \
+        --work "$WORK" --out "$OUT" --tag "$TAG" \
+        --scene "${2:?Choose a TUM scene}" --stage "${3:-gate}" \
+        2>&1 | tee "$WORK/context/correspondence.log"
 else
     "${CONTAINER[@]}" python "$REPO/tools/kvt_tum_sweep.py" \
         --work "$WORK" --out "$OUT" --tag "$TAG" 2>&1 | tee "$WORK/context/sweep.log"
