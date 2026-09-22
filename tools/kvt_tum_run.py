@@ -201,13 +201,19 @@ def run(config_path):
         started = time.perf_counter()
         source = Frames('cuda:0', scene_dir=scene_dir, obj_mode=False,
                         resize_dim=config['resize_dim'], offset=0)
-        selector = None if config['policy'] == 'bare' else TumSelector(config, decisions, inference)
+        if config['policy'] == 'combined':
+            from kvt_tum_combined import CombinedSelector
+            selector = CombinedSelector(config, decisions, inference)
+        else:
+            selector = None if config['policy'] == 'bare' else TumSelector(config, decisions, inference)
         recorder = FinalScene()
         try:
+            cache_args = ({'keyframe_cache': selector.cache_policy}
+                          if config['policy'] == 'combined' else {})
             tracker.run_track3r(cfg=dict(results_path=str(result), que_size=1),
                 args=['--cam_only', '--resize_dim', str(config['resize_dim']),
                       '--kf_auto', str(config['interval'])], frame_source=source,
-                keyframe_selector=selector, snapshot_callback=recorder)
+                keyframe_selector=selector, snapshot_callback=recorder, **cache_args)
         finally:
             if selector is not None:
                 selector.close(result)
@@ -215,14 +221,15 @@ def run(config_path):
                 np.savez(result / 'final_scene.npz', **recorder.data)
         torch.cuda.synchronize()
         elapsed = time.perf_counter() - started
+        insertion_file = 'inserted_kf_idx.npy' if config['policy'] == 'combined' else 'kf_idx.npy'
         if selector is not None:
             assert selector.last_index == length - 1
             if len(selector.inserted) == 1:
                 np.save(result / 'kf_idx.npy', np.array([0]))
-            assert np.load(result / 'kf_idx.npy').tolist() == selector.inserted
+            assert np.load(result / insertion_file).tolist() == selector.inserted
         trajectory = np.load(result / 'traj.npy')
         assert trajectory.shape == (length, 4, 4)
-        selected = np.load(result / 'kf_idx.npy').tolist()
+        selected = np.load(result / insertion_file).tolist()
         if config['policy'] in ('bare', 'original', 'periodic'):
             cap = 20 if config['policy'] in ('bare', 'original') else config['cap']
             assert selected == periodic_indices(length, config['interval'], cap)
@@ -262,6 +269,16 @@ def run(config_path):
             value.numel() * value.element_size() for value in selector.retained)
         metrics['diagnostic_cpu_feature_bytes'] = 0 if selector is None else sum(
             value.nbytes for value in selector.frame_features + selector.patch_maps)
+        if config['policy'] == 'combined':
+            events = selector.cache_policy.events
+            metrics.update(retained_keyframes=len(selector.cache_policy.records),
+                keyframes=len(selector.cache_policy.records), insertions=len(selected),
+                evictions=sum(len(event['evicted']) for event in events),
+                final_feature_bytes=selector.cache_policy.feature_bytes(),
+                final_query_cache_bytes=events[-1]['query_cache_bytes'],
+                max_query_cache_bytes=max(event['query_cache_bytes'] for event in events),
+                cache_policy='redundancy eviction + confidence/novelty half patches',
+                keyframes_meaning='simultaneous retained frames; insertions counted separately')
         write_json(result / 'environment.json', dict(torch=torch.__version__,
             cuda=torch.version.cuda, gpu=torch.cuda.get_device_name(),
             seed=0, timing='synchronous instrumented wall times, no FPS benchmark',

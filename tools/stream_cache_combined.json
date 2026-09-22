@@ -1,0 +1,17 @@
+{
+  "description": "Single combined policy: redundancy eviction and confidence-novelty half patches. Three TUM sequences per host; compare to existing results. Exploratory reuse, not held-out validation.",
+  "max_frames": 5182,
+  "isolate_conditions": true,
+  "geometry_export": "final",
+  "conditions": [
+    {
+      "name": "redundancy_confidence_novelty_p50",
+      "policy": {
+        "eviction": "redundancy",
+        "frame_budget": 8,
+        "patch_policy": "confidence_novelty",
+        "patch_fraction": 0.5
+      }
+    }
+  ]
+}

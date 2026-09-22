@@ -10,6 +10,8 @@
 #SBATCH --propagate=NONE
 #SBATCH --output=/mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log
 set -euo pipefail
+MODE=${1:-sweep}
+case "$MODE" in sweep|combined) ;; *) echo "Unknown mode: $MODE" >&2; exit 2 ;; esac
 test "$(uname -s)" = Linux
 test "$(hostname)" != head
 ROOT=/mnt/projects/gr/3DRecon
@@ -73,6 +75,11 @@ cp "$REPO/tools/kvt_tum.sbatch" "$REPO/tools/kvt_tum_run.py" \
 git -C "$REPO/kv_tracker" archive HEAD > "$WORK/context/tracker_source.tar"
 git -C "$REPO/kv_tracker/thirdparty/Pi3" archive HEAD > "$WORK/context/pi3_source.tar"
 cp "$REPO/kv_tracker/thirdparty/Pi3/pi3/models/pi3.py" "$WORK/context/pi3.py"
+if [ "$MODE" = combined ]; then
+    cp "$REPO/tools/kvt_tum_combined.py" "$REPO/tools/kvt_combined_run.py" \
+       "$REPO/tools/test_kvt_combined.py" "$REPO/tools/STREAM_CACHE_COMBINED.md" \
+       "$WORK/context/"
+fi
 sha256sum "$ROOT/kvt.tar" > "$WORK/context/container_tar.sha256"
 
 if ! podman image exists localhost/kvt; then
@@ -92,7 +99,16 @@ nvidia-smi --query-gpu=timestamp,uuid,memory.used,memory.total,utilization.gpu \
 MONITOR_PID=$!
 "${CONTAINER[@]}" python -m pip list --format=json > "$WORK/context/packages.json"
 "${CONTAINER[@]}" python "$REPO/tools/test_kvt_tum.py" 2>&1 | tee "$WORK/context/tests.log"
-"${CONTAINER[@]}" python "$REPO/tools/kvt_tum_sweep.py" \
-    --work "$WORK" --out "$OUT" --tag "$TAG" 2>&1 | tee "$WORK/context/sweep.log"
+if [ "$MODE" = combined ]; then
+    "${CONTAINER[@]}" python "$REPO/tools/test_kvt_combined.py" \
+        2>&1 | tee "$WORK/context/combined_tests.log"
+    "${CONTAINER[@]}" python "$REPO/tools/kvt_combined_run.py" \
+        --work "$WORK" --out "$OUT" --tag "$TAG" \
+        --scene "${2:?Choose a TUM scene}" --stage "${3:-pilot}" \
+        2>&1 | tee "$WORK/context/sweep.log"
+else
+    "${CONTAINER[@]}" python "$REPO/tools/kvt_tum_sweep.py" \
+        --work "$WORK" --out "$OUT" --tag "$TAG" 2>&1 | tee "$WORK/context/sweep.log"
+fi
 test -f "$WORK/JOB_OK"
 echo 'JOB OK'

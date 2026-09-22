@@ -2,6 +2,7 @@
 # One host per array, one full TUM sequence per task. Submit --array=0-2%1.
 # Usage: sbatch tools/stream_cache_long.sbatch streamvggt|longstream|stream3r
 # StreamVGGT calibration: sbatch --array=0 tools/stream_cache_long.sbatch streamvggt calibrate
+# Combined policy: use combined-pilot first, then combined; one array task per job.
 #SBATCH --job-name=cache-long
 #SBATCH --account=students
 #SBATCH --qos=students_normal
@@ -20,7 +21,7 @@ ROOT=/mnt/projects/gr/3DRecon
 REPO="$ROOT/layer_good"
 export CACHE_HOST=${1:?Choose streamvggt, longstream or stream3r}
 STAGE=${2:-full}
-case "$STAGE" in full|calibrate|coverage) ;; *) echo "Unknown stage: $STAGE" >&2; exit 2 ;; esac
+case "$STAGE" in full|calibrate|coverage|combined|combined-pilot) ;; *) echo "Unknown stage: $STAGE" >&2; exit 2 ;; esac
 case "$CACHE_HOST" in
     streamvggt) export CACHE_CHECKPOINT="$ROOT/streamvggt_ckpt/checkpoints.pth" ;;
     longstream) export CACHE_CHECKPOINT="$ROOT/longstream_ckpt/50_longstream.pt" ;;
@@ -40,13 +41,20 @@ fi
 if [ "$CACHE_HOST" = longstream ]; then
     export CACHE_SWEEP="$REPO/tools/stream_cache_long_longstream.json"
 fi
-if [ "$STAGE" != full ]; then
+if [ "$STAGE" = calibrate ] || [ "$STAGE" = coverage ]; then
     test "$CACHE_HOST" = streamvggt
     test "$SLURM_ARRAY_TASK_ID" = 0
     COUNT=256
 fi
 if [ "$STAGE" = coverage ]; then
     export CACHE_SWEEP="$REPO/tools/stream_cache_streamvggt_coverage.json"
+fi
+if [ "$STAGE" = combined ] || [ "$STAGE" = combined-pilot ]; then
+    test "$CACHE_HOST" = streamvggt || test "$CACHE_HOST" = longstream
+    export CACHE_SWEEP="$REPO/tools/stream_cache_combined.json"
+    if [ "$STAGE" = combined-pilot ]; then
+        COUNT=256
+    fi
 fi
 export CACHE_TUM_ZIP="/mnt/datasets/tum-rgbd/rgbd_dataset_${SCENE}.zip"
 export CACHE_TUM_COUNT="$COUNT" CACHE_TUM_START=0 CACHE_TUM_STRIDE=1
