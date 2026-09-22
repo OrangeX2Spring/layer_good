@@ -166,16 +166,23 @@ def track(scene, manifest, results_name, resize_dim, keyframe_indices=None,
         source.length = expected = prefix_frames
     torch.cuda.reset_peak_memory_stats()
     selector = None
+    cache_policy = None
     if online_config is not None:
         (results_dir / "online_config.json").write_text(json.dumps(online_config, indent=2) + "\n")
         decision_log = (results_dir / "decisions.jsonl").open("w")
-        selector = OnlineSelector(online_config, decision_log)
+        if 'cache_policy' in online_config:
+            from kvt_correspondence_selector import CorrespondenceSelector
+            selector = CorrespondenceSelector(online_config, decision_log, results_dir)
+            cache_policy = selector.cache_policy
+        else:
+            selector = OnlineSelector(online_config, decision_log)
     recorder = LatestKeyframes(results_dir / "keyframes.npz")
     started = time.perf_counter()
     tracker.run_track3r(cfg={"results_path": str(results_dir), "que_size": 1},
                         args=["--obj_mode", "--resize_dim", str(resize_dim)],
                         frame_source=source, snapshot_callback=recorder,
-                        keyframe_indices=keyframe_indices, keyframe_selector=selector)
+                        keyframe_indices=keyframe_indices, keyframe_selector=selector,
+                        keyframe_cache=cache_policy)
     torch.cuda.synchronize()
     elapsed = time.perf_counter() - started
     if selector is not None:
@@ -208,7 +215,8 @@ def track(scene, manifest, results_name, resize_dim, keyframe_indices=None,
     return {"frames": expected, "seconds": round(elapsed, 1),
             "frames_per_second": round(expected / elapsed, 2),
             "keyframes": int(len(np.load(results_dir / "kf_idx.npy"))),
-            "peak_allocated_bytes": torch.cuda.max_memory_allocated()}
+            "peak_allocated_bytes": torch.cuda.max_memory_allocated(),
+            "peak_reserved_bytes": torch.cuda.max_memory_reserved()}
 
 
 def evaluate(scenes, results_name, prefix_frames=None):
@@ -292,9 +300,13 @@ def main():
     parser.add_argument("--compare-prefix", help="Earlier results name, same policy/config on a prefix")
     parser.add_argument("--expect-baseline", action="store_true")
     parser.add_argument("--check-masks-from", help="Earlier results name; compare every saved mask")
+    parser.add_argument("--cache-policy", choices=["dense", "uniform", "correspondence",
+                                                  "semantic_correspondence"],
+                        help="Correspondence pilot; requires online interval selection")
     args = parser.parse_args()
     assert not (args.online_policy and args.keyframes_from)
     assert not (args.online_policy and args.only_eval), "Online provenance requires a fresh run"
+    assert not args.cache_policy or (args.online_policy == 'interval' and args.no_viz)
     assert args.interval > 0 and 0 < args.angle_degrees < 180
     assert 0 <= args.novelty_threshold <= 2
     assert args.max_keyframes >= 2 or (args.online_policy == "original" and args.max_keyframes == 0)
@@ -304,6 +316,8 @@ def main():
         online_config = dict(policy=args.online_policy, max_keyframes=args.max_keyframes,
                              angle_degrees=args.angle_degrees, novelty_threshold=args.novelty_threshold,
                              interval=args.interval, seed=args.seed)
+        if args.cache_policy:
+            online_config['cache_policy'] = args.cache_policy
 
     assert torch.cuda.is_available(), "Tracking needs the GPU allocation"
 

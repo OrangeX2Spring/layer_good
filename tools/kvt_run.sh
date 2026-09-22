@@ -34,6 +34,13 @@ case "$MODE" in
     test -f "$HOME/.hf_env"
     source "$HOME/.hf_env"
     ;;
+  correspondence-pilot)
+    SCRIPT=kvt_correspondence_pilot.py
+    GPU_ARGS=(--device="nvidia.com/gpu=${CUDA_VISIBLE_DEVICES:?GPU allocation required}")
+    test -f "$HOME/.hf_env"
+    source "$HOME/.hf_env"
+    ;;
+  correspondence-check) SCRIPT=test_kvt_correspondence.py ;;
   arctic-viz) SCRIPT=kvt_arctic_viz.py ;;
   # CPU-only: derives keyframe sets from a finished run. In the container purely so
   # it does not depend on numpy being present in the node's system python3.
