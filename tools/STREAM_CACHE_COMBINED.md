@@ -26,19 +26,25 @@ is used, and no object-pose or semantic-understanding claim follows.
 admission, encoder features, unchanged native heads. LongStream retains native
 refresh; StreamVGGT's camera-head cache continues growing. The long wrapper selects
 this JSON explicitly with `combined-pilot` (256 frames) or `combined` (full scene).
-Both stages accept only StreamVGGT and LongStream. Submit one array task at a time
-using `--array=0`, `--array=1`, or `--array=2` for office, with-loop, or no-loop.
-Existing full/calibration modes retain their previous configurations.
+Both stages accept only StreamVGGT and LongStream, and both are submitted with
+`--array=0`; the wrapper no longer selects the scene from the array index. Host is
+one name or several comma separated, `combined` runs office, with-loop and no-loop
+sequentially for each host in the same job, and `combined-pilot` runs the office
+pilot for each host. Slurm's MaxSubmitPU counts submissions, not loops, so the six
+full streaming runs fit in two jobs. Each run still prepares, executes and archives
+separately. Existing full/calibration modes retain their previous configurations
+and their array-selected scene.
 
-After publication and a pull inside an allocation, the office pilot interface is:
+After publication and a pull inside an allocation, the pilot interface for both
+hosts in one job is:
 
 ```bash
-sbatch --array=0 tools/stream_cache_long.sbatch longstream combined-pilot
+sbatch --array=0 tools/stream_cache_long.sbatch longstream,streamvggt combined-pilot
 ```
 
-Use `streamvggt` for the other host. Review exit status, native fidelity, complete
-events, bounded retention, half-patch selection and memory before `combined` full
-runs. The pilot includes LongStream refresh; it does not establish full-run memory
+Review exit status, native fidelity, complete events, bounded retention, half-patch
+selection and memory before the `combined` full runs, which are one job per host.
+The pilot includes LongStream refresh; it does not establish full-run memory
 safety for StreamVGGT's growing native camera-head cache.
 
 ## KV-Tracker adaptation
@@ -89,7 +95,8 @@ must run in the existing cluster image; nothing here asserts runtime success.
 cache gathering, full-retention identity, known rank-fusion choices, interval phase,
 repeated eviction and preservation of anchor/latest and historical patch IDs.
 
-`kvt_combined_run.py` stages one scene and runs fresh subprocesses:
+`kvt_combined_run.py` takes one scene or several comma separated, stages each in
+turn, and runs fresh subprocesses per scene:
 
 1. A 128-frame periodic/native reference and full-retention adapter fidelity gate.
 2. A 1,100-frame combined prefix (past the first evictions).
@@ -109,8 +116,14 @@ allocation, the interface from head is:
 sbatch tools/kvt_tum.sbatch combined freiburg3_long_office_household pilot
 ```
 
-`full` replaces `pilot` only after successful pilot review. The same interface
-accepts freiburg2_large_with_loop and freiburg2_large_no_loop, one sequence per job.
+`full` replaces `pilot` only after successful pilot review. Several sequences run in
+one job when the scene argument is a comma-separated list, each with its own inputs,
+gates and archives, and the gates repeat per scene:
+
+```bash
+sbatch tools/kvt_tum.sbatch combined freiburg2_large_with_loop,freiburg2_large_no_loop full
+```
+
 The existing broad `kvt_tum.sbatch` invocation without arguments is unchanged.
 
 All cluster execution/transfers remain user-operated. Preserve exact prepared
