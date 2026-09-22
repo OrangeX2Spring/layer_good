@@ -12,17 +12,27 @@ def main():
     parser.add_argument('--tum-out', type=Path, required=True)
     parser.add_argument('--arctic-out', type=Path, required=True)
     parser.add_argument('--tag', required=True)
+    parser.add_argument('--arctic-only', action='store_true')
     args = parser.parse_args()
     tools = Path(__file__).resolve().parent
 
     with (args.work / 'context' / 'packages.json').open('w') as stream:
         subprocess.run([sys.executable, '-m', 'pip', 'list', '--format=json'],
                        stdout=stream, check=True)
-    subprocess.run([sys.executable, str(tools / 'test_kvt_tum.py')], check=True)
+    if not args.arctic_only:
+        subprocess.run([sys.executable, str(tools / 'test_kvt_tum.py')], check=True)
     subprocess.run([sys.executable, str(tools / 'test_kvt_correspondence.py')], check=True)
     arctic_run = subprocess.run([sys.executable, str(tools / 'kvt_correspondence_pilot.py'),
         '--tag', args.tag, '--scene', 'box_grab_01', '--stage', 'gate',
         '--out', str(args.work / 'arctic_review')])
+    if args.arctic_only:
+        arctic_run.check_returncode()
+        arctic = json.loads((args.work / 'arctic_review' / 'gates.json').read_text())
+        assert arctic['evictions_after_budget'] and arctic['full_retention_exact']
+        (args.work / 'arctic_gate.json').write_text(json.dumps(arctic, indent=2) + '\n')
+        (args.work / 'JOB_OK').write_text('ARCTIC correspondence gate completed\n')
+        print('ARCTIC CORRESPONDENCE GATE COMPLETED', flush=True)
+        return
 
     tum_run = subprocess.run([sys.executable, str(tools / 'kvt_correspondence_tum.py'),
         '--work', str(args.work), '--out', str(args.tum_out), '--tag', args.tag,

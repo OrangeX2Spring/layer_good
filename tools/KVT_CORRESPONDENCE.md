@@ -14,7 +14,7 @@ tracked frames (box / ketchup / espresso). Inputs and ground truth follow
 remain. All variants insert at frames 0, 30, 60, ... into a budget of eight
 simultaneously retained keyframes. The anchor stays; on overflow, evict the oldest
 non-anchor keyframe and continue inserting. On box, the first eviction is frame
-240, so the gate reaches one replacement and the full run covers many. This fixed
+240, so the 241-frame gate includes one replacement and the full run covers many. This fixed
 policy isolates patch selection from keyframe admission and eviction.
 
 Four conditions share the schedule: dense K/V, spatial uniform half patches,
@@ -31,10 +31,11 @@ TUM reports and run archives remain separate. `both_gate_processes.json` records
 both stage return codes; a failure in ARCTIC does not skip the TUM gate. The job
 does not start either full-sequence evaluation. The standalone ARCTIC gate,
 `sbatch tools/kvt_correspondence.sbatch gate box_grab_01`, remains available for
-an isolated rerun.
+an isolated rerun. `bash tools/kvt_tum.sbatch correspondence-gates arctic-only`
+inside a Slurm allocation uses one container session for just the ARCTIC gate.
 
 The ARCTIC gate runs remote CPU tests, a
-200-frame native interval control, and all four conditions at 200 and 240 frames.
+200-frame native interval control, and all four conditions at 200 and 241 frames.
 Dense must reproduce native poses exactly before the first eviction. Each longer
 condition must reproduce its own first 200 poses and cache choices and show the
 expected frame-240 eviction. The job stops after archiving its gate results. Review

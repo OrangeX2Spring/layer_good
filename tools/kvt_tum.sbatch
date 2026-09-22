@@ -134,12 +134,21 @@ nvidia-smi --query-gpu=timestamp,uuid,memory.used,memory.total,utilization.gpu \
     --format=csv -l 1 > "$WORK/context/gpu_samples.csv" &
 MONITOR_PID=$!
 if [ "$MODE" = correspondence-gates ]; then
+    case "${2:-both}" in
+        both) GATE_ARGS=() ;;
+        arctic-only) GATE_ARGS=(--arctic-only) ;;
+        *) echo "Unknown correspondence gate selection: $2" >&2; exit 2 ;;
+    esac
     "${CONTAINER[@]}" python "$REPO/tools/kvt_correspondence_both_gates.py" \
         --work "$WORK" --tum-out "$OUT" --arctic-out "$ROOT/kvt_arctic_out" \
-        --tag "$TAG" 2>&1 | tee "$WORK/context/both_gates.log"
-    test -f "$WORK/both_gates.json"
+        --tag "$TAG" "${GATE_ARGS[@]}" 2>&1 | tee "$WORK/context/both_gates.log"
+    if [ "${2:-both}" = both ]; then
+        test -f "$WORK/both_gates.json"
+    else
+        test -f "$WORK/arctic_gate.json"
+    fi
     test -f "$WORK/JOB_OK"
-    echo 'BOTH GATES JOB OK'
+    echo "CORRESPONDENCE ${2:-both} GATES JOB OK"
     exit 0
 fi
 "${CONTAINER[@]}" python -m pip list --format=json > "$WORK/context/packages.json"

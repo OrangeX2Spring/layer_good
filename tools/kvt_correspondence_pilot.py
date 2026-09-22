@@ -25,9 +25,9 @@ def main():
     os.chdir(CHECKOUT)
     manifest = json.loads((OUT / 'initial_frames' / 'manifest.json').read_text())
     length = manifest['scenes'][args.scene]['tracking_frames']
-    assert length > 240, (args.scene, length)
+    assert length > 241, (args.scene, length)
     specification = dict(scene=args.scene, interval=30, cap=8, resolution=518,
-        gate_prefix_frames=200, gate_frames=240, full_frames=length,
+        gate_prefix_frames=200, gate_frames=241, full_frames=length,
         stage=args.stage, ordinary_patch_fraction=.5,
         spatial_bins=[4, 4], match_cosine_floor=.9, geometry_patch_spacing_multiplier=2.,
         variants=['dense', 'uniform', 'correspondence', 'semantic_correspondence'],
@@ -39,7 +39,7 @@ def main():
     reference_name = f'{args.tag}_native'
     modes = ['native'] + specification['variants'] if args.stage == 'gate' else specification['variants']
     for mode in modes:
-        lengths = ([200] if mode == 'native' else [200, 240]) if args.stage == 'gate' else [length]
+        lengths = ([200] if mode == 'native' else [200, 241]) if args.stage == 'gate' else [length]
         for run_length in lengths:
             name = f'{args.tag}_{mode}' + ('_prefix' if run_length == 200 and mode != 'native' else '')
             command = [sys.executable, str(ROOT / 'tools/kvt_arctic_run.py'),
@@ -56,7 +56,7 @@ def main():
                         command += ['--check-masks-from', f'{args.tag}_dense']
                 elif mode != 'dense':
                     command += ['--check-masks-from', f'{args.tag}_dense']
-            if args.stage == 'gate' and mode != 'native' and run_length == 240:
+            if args.stage == 'gate' and mode != 'native' and run_length == 241:
                 command += ['--compare-prefix', f'{args.tag}_{mode}_prefix']
             print(f'{args.stage.upper()} {mode} frames={run_length}', flush=True)
             subprocess.run(command, check=True)
@@ -149,6 +149,7 @@ def main():
                       a['patch_indices'] != b['patch_indices'] for a, b in zip(
                           events_by_mode['correspondence'], events_by_mode['semantic_correspondence'])))
     (args.out / 'gates.json').write_text(json.dumps(checks, indent=2) + '\n')
+    assert checks['evictions_after_budget'], 'Gate must include the frame-240 insertion and eviction'
     print('CORRESPONDENCE GATES OK', json.dumps(checks), flush=True)
     print('Review mechanism activity, errors and resources.', flush=True)
 
