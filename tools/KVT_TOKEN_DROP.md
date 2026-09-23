@@ -49,10 +49,16 @@ Each run archives to `kvt_arctic_out/arctic_token_drop_<job>_{original,dropped}_
 
 ## Submit (CAMP head)
 
+The pull happens inside the allocation, so the script's `#SBATCH` lines are
+given on the command line:
+
 ```bash
 cd /mnt/projects/gr/3DRecon/layer_good
-git pull --ff-only
-sbatch tools/kvt_token_drop.sbatch
+W='git -c fetch.recurseSubmodules=false pull --ff-only'
+W="$W && bash tools/kvt_token_drop.sbatch"
+Q="-A students --qos=students_normal -p 24g -w muenchen"
+LOG=/mnt/projects/gr/3DRecon/kvt_token_drop-%j.log
+sbatch $Q --gres=gpu:1 --propagate=NONE -o $LOG --wrap="$W"
 ```
 
 Expected evidence in `/mnt/projects/gr/3DRecon/kvt_token_drop-<job>.log`: the
