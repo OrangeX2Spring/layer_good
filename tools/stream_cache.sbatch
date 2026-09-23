@@ -103,7 +103,7 @@ if [ -n "${CACHE_ARCTIC_SCENE:-}" ]; then
     podman run --rm --network=none -v /mnt:/mnt:ro -v /tmp:/tmp:rw -w "$REPO" \
         -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONUNBUFFERED=1 "$IMAGE" \
         python tools/stream_cache_arctic.py --prepared "$PREPARED" --kvt "$KVT" \
-        --scene "$CACHE_ARCTIC_SCENE" --count "${CACHE_ARCTIC_COUNT:-241}" \
+        --scene "$CACHE_ARCTIC_SCENE" --count "${CACHE_ARCTIC_COUNT:-121}" \
         --out "$WORK/extracted"
     sha256sum "$PREPARED" "$KVT" > "$WORK/input_archive.sha256"
     cp "$WORK/extracted/manifest.json" "$WORK/source_manifest.json"

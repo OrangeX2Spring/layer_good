@@ -55,10 +55,10 @@ run_scene() {
     bash "$REPO/tools/stream_cache.sbatch"
 }
 run_object() {
-    export CACHE_ARCTIC_SCENE=box_grab_01 CACHE_ARCTIC_COUNT=241
+    export CACHE_ARCTIC_SCENE=box_grab_01 CACHE_ARCTIC_COUNT=121
     export CACHE_WIDTH=308 CACHE_IMAGE=localhost/optpose CACHE_IMAGE_TAR="$ROOT/optpose.tar"
     unset CACHE_TUM_ZIP CACHE_TUM_COUNT CACHE_INPUT_TAR CACHE_MANIFEST
-    echo "SWEEP stage=$STAGE host=$CACHE_HOST scene=box_grab_01 frames=241 config=$CACHE_SWEEP"
+    echo "SWEEP stage=$STAGE host=$CACHE_HOST scene=box_grab_01 frames=121 config=$CACHE_SWEEP"
     bash "$REPO/tools/stream_cache.sbatch"
 }
 
@@ -86,7 +86,7 @@ for CACHE_HOST in ${HOSTS//,/ }; do
             FAILURES=$((FAILURES + 1))
         fi
         export CACHE_SWEEP="$REPO/tools/stream_cache_correspondence_scene_gate.json"
-        if ! run_scene freiburg3_long_office_household 256; then
+        if ! run_scene freiburg3_long_office_household 128; then
             echo "GATE FAILED host=$CACHE_HOST task=scene" >&2
             FAILURES=$((FAILURES + 1))
         fi

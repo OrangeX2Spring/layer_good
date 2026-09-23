@@ -16,7 +16,7 @@ def main():
     parser.add_argument('--prepared', type=Path, required=True)
     parser.add_argument('--kvt', type=Path, required=True)
     parser.add_argument('--scene', default='box_grab_01')
-    parser.add_argument('--count', type=int, default=241)
+    parser.add_argument('--count', type=int, default=121)
     parser.add_argument('--out', type=Path, required=True)
     args = parser.parse_args()
     assert args.count >= 2

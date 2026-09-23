@@ -1,6 +1,6 @@
 {
   "description": "ARCTIC box structural gate: dense, spatial-uniform half, geometric correspondence half, and object-aware semantic correspondence half, all with FIFO budget 8.",
-  "max_frames": 241,
+  "max_frames": 121,
   "isolate_conditions": true,
   "geometry_export": "final",
   "correspondence_gate": "object",

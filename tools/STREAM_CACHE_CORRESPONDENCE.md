@@ -2,15 +2,19 @@
 
 The user selected the KV-Tracker correspondence comparison for STream3R,
 StreamVGGT and LongStream on both long-sequence tasks. This is a structural
-gate, not a full accuracy result. The ARCTIC box gate uses 241 consecutive
+gate, not a full accuracy result. The ARCTIC box gate uses 121 consecutive
 post-offset frames from `kvt_arctic_out/prepared.tar`, with the exact saved SAM
 masks from `kvt_arctic_out/arctic_r518_20260915T152911Z.tar`. Its four matched
 conditions are dense, spatial-uniform half, geometric correspondence half and
 object-mask-aware correspondence half. Input RGB is object-masked before the
 common width-308 resize, as in the KV-Tracker object comparison. The TUM
-long-office gate uses the first 256 consecutive frames and three conditions:
+long-office gate uses the first 128 consecutive frames and three conditions:
 dense, spatial-uniform half and geometric correspondence half. TUM has no
 object masks, so it cannot establish a semantic result.
+
+The user halved these gate lengths on 2026-09-23 to reduce waiting. Both still
+cross FIFO eviction at budget eight and LongStream's 24-frame refresh multiple
+times. Native fidelity prefixes and all gate assertions remain unchanged.
 
 All conditions keep the first frame dense, retain at most eight frames with
 the same FIFO schedule, and preserve special tokens and the hosts' native head
