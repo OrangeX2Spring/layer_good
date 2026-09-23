@@ -145,3 +145,11 @@ explicitly sets `policy='semantic'`; AST and whitespace checks pass. Rerun the
 command above; no fidelity tracking ran in the failed attempt.
 No model-fork change or selection transfer has occurred. Do not repeat
 packet preparation/selection or submit the historical sweep. API remains deferred.
+
+
+Job **25855** completed and its context archive was transferred and reviewed:
+exit status 0, 17 tests OK, parent `ba0def8`, tracker `3330f54`, clean recorded
+diffs and matching container archive SHA with packet job 25851. Stock-ID fidelity
+passed; see FINDINGS for results and limitations. This supersedes the retry and
+pending-fidelity instructions above. Next is comparison-driver implementation
+and frozen-selection packaging; do not rerun fidelity or packet preparation.
