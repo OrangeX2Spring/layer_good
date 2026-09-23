@@ -11,7 +11,7 @@
 #SBATCH --output=/mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log
 set -euo pipefail
 MODE=${1:-sweep}
-case "$MODE" in sweep|combined|correspondence|correspondence-gates) ;;
+case "$MODE" in sweep|combined|correspondence|correspondence-gates|llm-packet) ;;
     *) echo "Unknown mode: $MODE" >&2; exit 2 ;; esac
 test "$(uname -s)" = Linux
 test "$(hostname)" != head
@@ -87,6 +87,10 @@ cp "$REPO/tools/kvt_tum.sbatch" "$REPO/tools/kvt_tum_run.py" \
 git -C "$REPO/kv_tracker" archive HEAD > "$WORK/context/tracker_source.tar"
 git -C "$REPO/kv_tracker/thirdparty/Pi3" archive HEAD > "$WORK/context/pi3_source.tar"
 cp "$REPO/kv_tracker/thirdparty/Pi3/pi3/models/pi3.py" "$WORK/context/pi3.py"
+if [ "$MODE" = llm-packet ]; then
+    cp "$REPO/tools/kvt_tum_llm_packet.py" "$REPO/tools/KVT_TUM_LLM_PROMPT.md" \
+       "$REPO/tools/KVT_LLM_REFERENCE.md" "$WORK/context/"
+fi
 if [ "$MODE" = combined ]; then
     cp "$REPO/tools/kvt_tum_combined.py" "$REPO/tools/kvt_combined_run.py" \
        "$REPO/tools/test_kvt_combined.py" "$REPO/tools/STREAM_CACHE_COMBINED.md" \
@@ -133,6 +137,14 @@ CONTAINER=(podman run --rm --network=host
 nvidia-smi --query-gpu=timestamp,uuid,memory.used,memory.total,utilization.gpu \
     --format=csv -l 1 > "$WORK/context/gpu_samples.csv" &
 MONITOR_PID=$!
+if [ "$MODE" = llm-packet ]; then
+    "${CONTAINER[@]}" python "$REPO/tools/kvt_tum_llm_packet.py" \
+        --work "$WORK" --out "$OUT" --tag "$TAG" \
+        2>&1 | tee "$WORK/context/llm_packet.log"
+    test -f "$WORK/JOB_OK"
+    echo 'LLM PACKET JOB OK'
+    exit 0
+fi
 if [ "$MODE" = correspondence-gates ]; then
     case "${2:-both}" in
         both) GATE_ARGS=() ;;
