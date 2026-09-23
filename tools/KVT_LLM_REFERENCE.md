@@ -48,17 +48,22 @@ are allowed beforehand, retaining the original response.
 
 ## Preparation job
 
-After task files are published, from the CAMP checkout on head. The bootstrap
+After task files are published, from any directory on CAMP head. The bootstrap
 pull runs inside the allocation, before invoking the new mode (the old checkout
 does not yet recognize it):
 
 ```bash
 sbatch -A students --qos=students_normal -p 24g -w muenchen \
+  --chdir=/mnt/projects/gr/3DRecon/layer_good \
   --gres=gpu:1 --propagate=NONE \
   -o /mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log \
   --wrap='git -c fetch.recurseSubmodules=false pull --ff-only &&
 bash tools/kvt_tum.sbatch llm-packet'
 ```
+
+Job 25850 failed before preparation because the original bootstrap inherited the
+submission directory and `git pull` reported "not a git repository". The explicit
+`--chdir` above fixes that dependency; no packet was produced by that invocation.
 
 The wrapper pulls inside its allocation, borrows `localhost/kvt` read-only and
 uses the existing GPU memory grant. This mode only prepares inputs: no tracker
