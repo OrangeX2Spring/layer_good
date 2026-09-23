@@ -30,7 +30,8 @@ def main():
         gate_prefix_frames=200, gate_frames=241, full_frames=length,
         stage=args.stage, ordinary_patch_fraction=.5,
         spatial_bins=[4, 4], match_cosine_floor=.9, geometry_patch_spacing_multiplier=2.,
-        variants=['dense', 'uniform', 'correspondence', 'semantic_correspondence'],
+        variants=(['dense', 'uniform', 'correspondence', 'semantic_correspondence']
+                  if args.stage == 'gate' else ['correspondence', 'semantic_correspondence']),
         scope='target-masked ARCTIC object tracking; full sequence follows reviewed gate',
         novelty='unverified; no merging or newly inferred object identities')
     (args.out / 'protocol.json').write_text(json.dumps(specification, indent=2) + '\n')
@@ -54,8 +55,8 @@ def main():
                         command += ['--check-masks-from', reference_name]
                     elif mode != 'dense':
                         command += ['--check-masks-from', f'{args.tag}_dense']
-                elif mode != 'dense':
-                    command += ['--check-masks-from', f'{args.tag}_dense']
+                elif mode == 'semantic_correspondence':
+                    command += ['--check-masks-from', f'{args.tag}_correspondence']
             if args.stage == 'gate' and mode != 'native' and run_length == 241:
                 command += ['--compare-prefix', f'{args.tag}_{mode}_prefix']
             print(f'{args.stage.upper()} {mode} frames={run_length}', flush=True)

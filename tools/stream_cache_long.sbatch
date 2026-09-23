@@ -28,11 +28,11 @@ if [[ "$HOSTS" == *,* && $# -lt 2 ]]; then
     echo "Multi-host runs require an explicit stage; use correspondence-gates for all correspondence gates" >&2
     exit 2
 fi
-if [ "$HOSTS" = correspondence-gates ]; then
+if [ "$HOSTS" = correspondence-gates ] || [ "$HOSTS" = correspondence-full ]; then
+    STAGE=$HOSTS
     HOSTS=stream3r,streamvggt,longstream
-    STAGE=correspondence-gates
 fi
-case "$STAGE" in full|calibrate|coverage|combined|combined-pilot|correspondence-gates) ;; *) echo "Unknown stage: $STAGE" >&2; exit 2 ;; esac
+case "$STAGE" in full|calibrate|coverage|combined|combined-pilot|correspondence-gates|correspondence-full) ;; *) echo "Unknown stage: $STAGE" >&2; exit 2 ;; esac
 echo "WRAPPER stage=$STAGE hosts=$HOSTS commit=$(git -C "$REPO" rev-parse --short HEAD)"
 case "$SLURM_ARRAY_TASK_ID" in
     0) ARRAY_SCENE=freiburg3_long_office_household; ARRAY_COUNT=2585 ;;
@@ -55,10 +55,10 @@ run_scene() {
     bash "$REPO/tools/stream_cache.sbatch"
 }
 run_object() {
-    export CACHE_ARCTIC_SCENE=box_grab_01 CACHE_ARCTIC_COUNT=121
+    export CACHE_ARCTIC_SCENE=${1:-box_grab_01} CACHE_ARCTIC_COUNT=${2:-121}
     export CACHE_WIDTH=308 CACHE_IMAGE=localhost/optpose CACHE_IMAGE_TAR="$ROOT/optpose.tar"
     unset CACHE_TUM_ZIP CACHE_TUM_COUNT CACHE_INPUT_TAR CACHE_MANIFEST
-    echo "SWEEP stage=$STAGE host=$CACHE_HOST scene=box_grab_01 frames=121 config=$CACHE_SWEEP"
+    echo "SWEEP stage=$STAGE host=$CACHE_HOST scene=$CACHE_ARCTIC_SCENE frames=$CACHE_ARCTIC_COUNT config=$CACHE_SWEEP"
     bash "$REPO/tools/stream_cache.sbatch"
 }
 
@@ -90,6 +90,16 @@ for CACHE_HOST in ${HOSTS//,/ }; do
             echo "GATE FAILED host=$CACHE_HOST task=scene" >&2
             FAILURES=$((FAILURES + 1))
         fi
+    elif [ "$STAGE" = correspondence-full ]; then
+        test "$SLURM_ARRAY_TASK_ID" = 0
+        export CACHE_SWEEP="$REPO/tools/stream_cache_correspondence_object_full.json"
+        run_object box_grab_01 730
+        run_object ketchup_grab_01 652
+        run_object espressomachine_grab_01 661
+        export CACHE_SWEEP="$REPO/tools/stream_cache_correspondence_scene_full.json"
+        run_scene freiburg3_long_office_household 2585
+        run_scene freiburg2_large_with_loop 5182
+        run_scene freiburg2_large_no_loop 3359
     elif [ "$STAGE" = calibrate ] || [ "$STAGE" = coverage ]; then
         test "$CACHE_HOST" = streamvggt
         test "$SLURM_ARRAY_TASK_ID" = 0
@@ -115,4 +125,6 @@ done
 test "$FAILURES" -eq 0
 if [ "$STAGE" = correspondence-gates ]; then
     echo "ALL CORRESPONDENCE GATES OK"
+elif [ "$STAGE" = correspondence-full ]; then
+    echo "ALL STREAMING CORRESPONDENCE FULL RUNS OK"
 fi

@@ -1,5 +1,18 @@
 # Long-sequence correspondence KV comparison
 
+**2026-09-23 full-run scope supersedes the four/three-condition full stages below.**
+The user selected geometric and semantic correspondence only for all three
+ARCTIC objects, and geometric correspondence only for all three TUM sequences.
+SAM3/TUM semantics are deferred. Full mode no longer runs dense FIFO or uniform
+controls. ARCTIC checks semantic-run masks against the geometric run; gate mode
+keeps its original controls and identity/prefix checks. Original implementations,
+not these custom controls, are the requested baselines; reuse compatible original
+artifacts from jobs 25632/25680 after a provenance/evaluation check. New method
+outputs alone do not establish improvement over original. See
+`STREAM_CACHE_CORRESPONDENCE.md` for the single all-four-model launch and its
+evidence limits. The older scene-by-scene full-run instructions are superseded by
+the user's explicit all-data authorization.
+
 Updated 2026-09-22 after the user's scope correction: test **complete sequences**
 on both the object and scene tasks. The previously prepared 160-frame ARCTIC pilot
 did not exercise the cache budget and is superseded; it was never submitted. Do

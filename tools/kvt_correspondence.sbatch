@@ -13,12 +13,12 @@ REPO="$ROOT/layer_good"
 OUT="$ROOT/kvt_arctic_out"
 STAGE="${1:-gate}"
 case "$STAGE" in gate|full) ;; *) echo "Unknown stage: $STAGE" >&2; exit 2 ;; esac
-TAG="correspondence_${SLURM_JOB_ID}_${STAGE}"
 SCENE="${2:-box_grab_01}"
 case "$SCENE" in
     box_grab_01|ketchup_grab_01|espressomachine_grab_01) ;;
     *) echo "Unknown ARCTIC scene: $SCENE" >&2; exit 2 ;;
 esac
+TAG="correspondence_${SLURM_JOB_ID}_${STAGE}_${SCENE}"
 hostname
 test "$(hostname)" != head
 nvidia-smi

@@ -456,9 +456,10 @@ def run(args):
     else:
         write_json(args.out / 'camera_metrics.json',
                    {'status': 'not evaluated: no camera GT supplied in manifest'})
-    if specification.get('correspondence_gate'):
-        object_gate = specification['correspondence_gate'] == 'object'
-        expected = ['recent8', 'spatial_uniform_p50', 'correspondence_p50']
+    if specification.get('correspondence_gate') or specification.get('correspondence_full'):
+        full = bool(specification.get('correspondence_full'))
+        object_gate = specification.get('correspondence_full' if full else 'correspondence_gate') == 'object'
+        expected = ['correspondence_p50'] if full else ['recent8', 'spatial_uniform_p50', 'correspondence_p50']
         if object_gate:
             expected.append('semantic_correspondence_p50')
             assert manifest['mask_input'] and all('mask' in row for row in frames)
@@ -466,39 +467,41 @@ def run(args):
         events = {name: [json.loads(line) for line in
                  (args.out / name / 'events.jsonl').read_text().splitlines()] for name in names}
         assert all(len(rows) == len(frames) for rows in events.values())
-        dense = events['recent8']
-        uniform = events['spatial_uniform_p50']
         geometric = events['correspondence_p50']
-        full_patches = len(dense[0]['patch_indices'])
+        full_patches = len(geometric[0]['patch_indices'])
         half_patches = (full_patches + 1) // 2
         semantic = events['semantic_correspondence_p50'] if object_gate else None
-        for index, (a, b, c) in enumerate(zip(dense, uniform, geometric)):
-            rows = [a, b, c] + ([semantic[index]] if object_gate else [])
-            assert all(row['retained_frames'] == a['retained_frames'] for row in rows)
+        for index, c in enumerate(geometric):
+            rows = [events[name][index] for name in names]
+            assert all(row['retained_frames'] == c['retained_frames'] for row in rows)
             assert len(c['retained_frames']) <= 8
-            assert len(a['patch_indices']) == full_patches
+            if not full:
+                assert len(events['recent8'][index]['patch_indices']) == full_patches
             # Refresh seeds the current frame densely; the following frame
             # already has that seed in history and must use the half budget.
             expected_count = full_patches if index == 0 else half_patches
-            assert all(len(row['patch_indices']) == expected_count for row in rows[1:])
-            if a['refresh']:
+            sparse_rows = rows if full else rows[1:]
+            assert all(len(row['patch_indices']) == expected_count for row in sparse_rows)
+            if c['refresh']:
                 assert all(len(row['refresh_seed']['patch_indices']) == full_patches for row in rows)
         checks = dict(frames=len(frames), host=args.host,
             fidelity_file=(args.out / 'fidelity.json').exists(),
             fifo_active=any(row['evicted'] for row in geometric),
             matches_active=sum(row['matched_kept'] for row in geometric) > 0,
-            choices_differ=any(a['patch_indices'] != b['patch_indices']
-                               for a, b in zip(uniform, geometric)),
-            cache_smaller=any(a['aggregator_bytes'] < b['aggregator_bytes']
-                              for a, b in zip(geometric, dense)),
             refresh_active=args.host != 'longstream' or any(row['refresh'] for row in geometric))
+        if not full:
+            checks['choices_differ'] = any(a['patch_indices'] != b['patch_indices']
+                for a, b in zip(events['spatial_uniform_p50'], geometric))
+            checks['cache_smaller'] = any(a['aggregator_bytes'] < b['aggregator_bytes']
+                for a, b in zip(geometric, events['recent8']))
         if object_gate:
             checks['object_matches_active'] = sum(row['object_matched_kept'] for row in semantic) > 0
             checks['semantic_choices_differ'] = any(a['patch_indices'] != b['patch_indices']
                                                      for a, b in zip(geometric, semantic))
-        write_json(args.out / 'correspondence_gate.json', checks)
+        write_json(args.out / ('correspondence_full.json' if full else 'correspondence_gate.json'), checks)
         assert all(value for key, value in checks.items() if key not in ('frames', 'host')), checks
-        print('CORRESPONDENCE GATE OK', json.dumps(checks), flush=True)
+        print('CORRESPONDENCE FULL OK' if full else 'CORRESPONDENCE GATE OK',
+              json.dumps(checks), flush=True)
     print('SWEEP OK', flush=True)
 
 

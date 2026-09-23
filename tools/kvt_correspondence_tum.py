@@ -31,8 +31,9 @@ def run_scene(args, scene):
     base = dict(scene=scene, scene_dir=str(inputs), resize_dim=308, interval=50,
                 cap=20, layer='encoder', max_gt_difference=.02,
                 evaluate_trajectory=False)
+    variants = ['dense', 'uniform', 'correspondence'] if args.stage == 'gate' else ['correspondence']
     write_json(args.work / f'protocol_{scene}.json', dict(base=base, stage=args.stage,
-        variants=['dense', 'uniform', 'correspondence'], eviction='anchor + FIFO',
+        variants=variants, eviction='anchor + FIFO',
         masks='all true; no target or entity identity on TUM',
         geometry='model pointmaps from same dense rebuild',
         gate='native identity through 128 frames; prefix across replacements'))
@@ -65,7 +66,7 @@ def run_scene(args, scene):
         np.testing.assert_array_equal(a, b)
         print('FULL RETENTION GATE OK', scene, flush=True)
     reports = {}
-    for mode in ('dense', 'uniform', 'correspondence'):
+    for mode in variants:
         if args.stage == 'gate':
             prefix = run_one(f'{mode}_prefix', 'correspondence', 1100, mode)
             length = 1150

@@ -74,6 +74,35 @@ class WorkerTests(unittest.TestCase):
         self.dispatch.assert_not_called()
         self.assertEqual((self.args.out / 'sentinel').read_text(), 'keep')
 
+    def test_full_scene_checks_methods_without_control_workers(self):
+        specification = dict(isolate_conditions=True, geometry_export='final',
+            correspondence_full='scene', conditions=[dict(name='correspondence_p50',
+                policy=dict(patch_policy='correspondence', patch_fraction=.5))])
+        self.args.sweep.write_text(json.dumps(specification))
+
+        def complete_worker(command, check):
+            worker = command[-1]
+            if worker == '__fidelity__':
+                (self.args.out / 'fidelity.json').write_text('{}')
+                return
+            self.assertEqual(worker, 'correspondence_p50')
+            result = self.args.out / worker
+            result.mkdir()
+            rows = [dict(retained_frames=[0], patch_indices=[0, 1, 2, 3],
+                         evicted=[], matched_kept=0, refresh=False),
+                    dict(retained_frames=[0, 9], patch_indices=[0, 2],
+                         evicted=[1], matched_kept=1, refresh=False)]
+            (result / 'events.jsonl').write_text('\n'.join(json.dumps(row) for row in rows))
+
+        self.dispatch.side_effect = complete_worker
+        sweep.run(self.args)
+        report = json.loads((self.args.out / 'correspondence_full.json').read_text())
+        self.assertTrue(report['matches_active'])
+        self.assertTrue(report['fifo_active'])
+        self.assertNotIn('cache_smaller', report)
+        self.assertEqual([call.args[0][-1] for call in self.dispatch.call_args_list],
+                         ['__fidelity__', 'correspondence_p50'])
+
 
 if __name__ == '__main__':
     unittest.main()

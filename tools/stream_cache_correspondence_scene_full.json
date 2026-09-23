@@ -1,0 +1,9 @@
+{
+  "description": "Full TUM sequences: geometric correspondence only; SAM3 and semantic TUM are deferred. Original baselines are separate existing results, not recent8 or uniform pruning.",
+  "isolate_conditions": true,
+  "geometry_export": "final",
+  "correspondence_full": "scene",
+  "conditions": [
+    {"name": "correspondence_p50", "policy": {"patch_policy": "correspondence", "patch_fraction": 0.5}}
+  ]
+}

@@ -1,5 +1,55 @@
 # Streaming-host correspondence gates
 
+## Full runs selected 2026-09-23
+
+The user authorized all four models (including KV-Tracker) on the three prepared
+ARCTIC objects and three TUM sequences, and deferred SAM3 mask generation.
+`tools/correspondence_full.sbatch` runs 36 method conditions sequentially:
+geometric and target-aware correspondence on each ARCTIC object, geometric only
+on each TUM sequence, for each model. Full configs contain no recent8, dense FIFO,
+uniform-half, or old sweep conditions. Native fidelity prefixes still run.
+The gate protocol below is historical preparation and retains its original controls.
+
+Streaming ARCTIC lengths are box 730, ketchup 652, espresso 661; TUM lengths are
+office 2585, with-loop 5182, no-loop 3359. Streaming width remains 308. KV-Tracker
+uses 518 on ARCTIC and 308 on TUM, with the existing tested insertion schedules.
+Each streaming pair gets its own archive; KV-Tracker ARCTIC tags include the scene
+to prevent collisions within one allocation. The job stops at the first failure;
+completed archives remain. It does not generate SAM3 masks or modify saved images.
+TUM runs score camera trajectories. Streaming ARCTIC still exports predictions,
+cache events and final geometry without object-pose scoring; KV-Tracker ARCTIC
+retains its object trajectory evaluator. No new accuracy metric is implied.
+
+Original implementations are the scientific baselines. Reuse compatible archived
+original results after checking inputs, checkpoints, preprocessing and evaluation;
+do not relabel custom controls as original. KV-Tracker originals are recorded in
+jobs 25632/25680; LongStream's native-retention TUM results in 25709/25714/25728.
+Complete original results for every streaming host/task are not established.
+Missing baselines remain an analysis dependency, not a reason to claim a win
+against recent8. The full launch computes the requested methods only.
+
+Job 25829: the user reports all six gates passed; the supplied log directly
+verifies LongStream/TUM, including fidelity, mechanism checks and JOB OK. Other
+gate archives have not been independently reviewed here. The user subsequently
+authorized the complete run scope. Full-run orchestration is locally static-checked,
+not runtime-verified. Submit from CAMP head after publication:
+
+```bash
+CORR_WRAP='git -c fetch.recurseSubmodules=false pull --ff-only'
+CORR_WRAP="$CORR_WRAP && bash tools/correspondence_full.sbatch"
+sbatch -A students --qos=students_normal -p 24g -w muenchen \
+  --gres=gpu:1 --propagate=NONE \
+  --chdir=/mnt/projects/gr/3DRecon/layer_good \
+  -o /mnt/projects/gr/3DRecon/correspondence_full-%j.log \
+  --wrap="$CORR_WRAP"
+```
+
+Expect `CORRESPONDENCE FULL models=4 method_runs=36 sam3=deferred` at startup.
+The final marker is `ALL FOUR MODEL CORRESPONDENCE FULL RUNS OK`; review archive
+exit statuses and reports as well before concluding successful evaluation.
+
+## Historical six-pair gates
+
 The user selected the KV-Tracker correspondence comparison for STream3R,
 StreamVGGT and LongStream on both long-sequence tasks. This is a structural
 gate, not a full accuracy result. The ARCTIC box gate uses 121 consecutive

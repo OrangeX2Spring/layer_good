@@ -1,0 +1,10 @@
+{
+  "description": "Full ARCTIC object sequences: geometric and target-aware correspondence only. Original baselines are separate existing results, not recent8 or uniform pruning.",
+  "isolate_conditions": true,
+  "geometry_export": "final",
+  "correspondence_full": "object",
+  "conditions": [
+    {"name": "correspondence_p50", "policy": {"patch_policy": "correspondence", "patch_fraction": 0.5}},
+    {"name": "semantic_correspondence_p50", "policy": {"patch_policy": "semantic_correspondence", "patch_fraction": 0.5}}
+  ]
+}
