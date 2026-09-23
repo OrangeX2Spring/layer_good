@@ -139,5 +139,9 @@ archives contain configs, IDs, trajectories, metrics and logs. Inputs are archiv
 as `tum_JOBID_inputs_freiburg3_long_office_household.tar`. These paths are planned,
 not yet observed. Review the gate evidence before the LLM/uniform/random comparison;
 that comparison driver and frozen-selection packaging remain subsequent work.
-No model-fork change, selection transfer or new job has occurred. Do not repeat
+First fidelity attempt (job ID not supplied) stopped in preflight: 17 tests,
+one error because the encoder/decoder fixture lacked `policy`. That fixture now
+explicitly sets `policy='semantic'`; AST and whitespace checks pass. Rerun the
+command above; no fidelity tracking ran in the failed attempt.
+No model-fork change or selection transfer has occurred. Do not repeat
 packet preparation/selection or submit the historical sweep. API remains deferred.

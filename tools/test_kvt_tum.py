@@ -208,7 +208,8 @@ class TumTests(unittest.TestCase):
 
     def test_encoder_and_decoder_contract(self):
         for layer in ('encoder', 'decoder0'):
-            selector = TumSelector(dict(layer=layer, score='cosine'), io.StringIO(), io.StringIO())
+            selector = TumSelector(dict(policy='semantic', layer=layer, score='cosine'),
+                                   io.StringIO(), io.StringIO())
             selector.model = SimpleNamespace(patch_start_idx=5)
             selector.kind = 'query'
             patches = torch.randn(1, 2, 1024)
