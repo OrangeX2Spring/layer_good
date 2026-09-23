@@ -74,10 +74,10 @@ Work stays in `/tmp/tum_JOBID`; packet output is
 `LLM PACKET JOB OK`, context exit status 0 and complete coverage after transfer.
 Use canonical rsync; extract to its own local directory. Review before selection.
 
-## Replay and evaluation gate (next implementation)
+## Replay and evaluation gate
 
-TUM uses `TumSelector`; ARCTIC's `--keyframes-from` CLI does not apply. Add fixed
-selection to TUM after the packet gate, preserving timestamp-valid evaluation.
+TUM uses `TumSelector`; ARCTIC's `--keyframes-from` CLI does not apply. TUM configs now accept `policy: fixed` and sorted `insertion_indices` excluding
+bootstrap, with exact count/range validation and unchanged timestamp-valid evaluation.
 Insert selected frames only when tracking reaches them; never preload future RGB.
 Verify exact requested/actual insertion IDs and full trajectory length.
 
@@ -101,7 +101,43 @@ generalization or proof that causal selection works.
 
 ## Completion state
 
-Packet implementation and prompt prepared; static checks only. No job submitted,
-packet created, images inspected by a selector or LLM tracking run completed.
-Next gate: preparation job and archive review. Replay integration and remote
-fidelity remain pending; do not submit the historical sweep.
+2026-09-24: packet job 25851 completed and archives were transferred and reviewed.
+The local packet at
+`cluster_results/kvt_tum/tum_25851_llm_packet/llm_packet/` now contains
+`selection.json` (19 insertion indices plus implicit bootstrap 0) and
+`inspection_log.md` recording all 216 sheets and individual selected-frame review.
+The log reports format, count, manifest and coverage checks; coordinating-session
+review confirmed the artifacts exist and read their contents, without repeating
+the visual inspection. User reports `gpt-6-astra low`; originals record
+`GPT-6 (Codex)`. Preserve originals and record this distinction in provenance.
+The saved selection is frozen before scoring; no LLM tracking result exists.
+
+Fixed-index replay and the `replay-fidelity` job are implemented. The job runs
+full-office stock (no selector) and fixed replay of its actual saved IDs in fresh
+processes. It requires 20 identical IDs, full trajectories and elementwise pose
+agreement (`atol=rtol=1e-4`, matching the existing hook-fidelity tolerance).
+`replay_verified.json` records requested/actual IDs; `fidelity.json` records the
+maximum pose difference and both runs' metrics. Unit contracts cover arrival-time
+selection, ignoring stock candidates, and malformed indices; they run on CAMP.
+Local Python AST, bash syntax and whitespace checks passed; runtime is pending.
+
+From CAMP head, after publication:
+
+```bash
+sbatch -A students --qos=students_normal -p 24g -w muenchen \
+  --chdir=/mnt/projects/gr/3DRecon/layer_good \
+  --gres=gpu:1 --propagate=NONE \
+  -o /mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log \
+  --wrap='git -c fetch.recurseSubmodules=false pull --ff-only &&
+bash tools/kvt_tum.sbatch replay-fidelity'
+```
+
+Require tests passing, `STOCK-ID FIDELITY GATE OK`, final `JOB OK`, and context
+exit status 0. The context archive contains `fidelity.json`, protocol and source;
+individual `tum_JOBID_freiburg3_long_office_household_{stock,stock_replay}.tar`
+archives contain configs, IDs, trajectories, metrics and logs. Inputs are archived
+as `tum_JOBID_inputs_freiburg3_long_office_household.tar`. These paths are planned,
+not yet observed. Review the gate evidence before the LLM/uniform/random comparison;
+that comparison driver and frozen-selection packaging remain subsequent work.
+No model-fork change, selection transfer or new job has occurred. Do not repeat
+packet preparation/selection or submit the historical sweep. API remains deferred.

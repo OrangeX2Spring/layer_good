@@ -71,6 +71,13 @@ class TumSelector:
         self.hooks = []
         self.frame_features = []
         self.patch_maps = []
+        if config['policy'] == 'fixed':
+            indices = config['insertion_indices']
+            assert isinstance(indices, list) and all(type(i) is int for i in indices)
+            assert indices == sorted(set(indices))
+            assert all(0 < i < config['frames'] for i in indices)
+            assert len(indices) + 1 == config['cap']
+            self.fixed_indices = set(indices)
 
     def attach(self, model):
         self.model = model
@@ -149,6 +156,8 @@ class TumSelector:
         feature_export_seconds = 0.
         if config['policy'] == 'original':
             candidate = bool(original)
+        elif config['policy'] == 'fixed':
+            candidate = index in self.fixed_indices
         elif config['policy'] == 'periodic':
             # Preserve upstream's internal counter phase for every interval.
             candidate = (index + 1) % config['interval'] == 0

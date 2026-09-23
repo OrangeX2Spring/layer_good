@@ -11,7 +11,7 @@
 #SBATCH --output=/mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log
 set -euo pipefail
 MODE=${1:-sweep}
-case "$MODE" in sweep|combined|correspondence|correspondence-gates|llm-packet) ;;
+case "$MODE" in sweep|combined|correspondence|correspondence-gates|llm-packet|replay-fidelity) ;;
     *) echo "Unknown mode: $MODE" >&2; exit 2 ;; esac
 test "$(uname -s)" = Linux
 test "$(hostname)" != head
@@ -91,6 +91,10 @@ if [ "$MODE" = llm-packet ]; then
     cp "$REPO/tools/kvt_tum_llm_packet.py" "$REPO/tools/KVT_TUM_LLM_PROMPT.md" \
        "$REPO/tools/KVT_LLM_REFERENCE.md" "$WORK/context/"
 fi
+if [ "$MODE" = replay-fidelity ]; then
+    cp "$REPO/tools/kvt_tum_replay.py" "$REPO/tools/KVT_LLM_REFERENCE.md" \
+       "$WORK/context/"
+fi
 if [ "$MODE" = combined ]; then
     cp "$REPO/tools/kvt_tum_combined.py" "$REPO/tools/kvt_combined_run.py" \
        "$REPO/tools/test_kvt_combined.py" "$REPO/tools/STREAM_CACHE_COMBINED.md" \
@@ -165,7 +169,12 @@ if [ "$MODE" = correspondence-gates ]; then
 fi
 "${CONTAINER[@]}" python -m pip list --format=json > "$WORK/context/packages.json"
 "${CONTAINER[@]}" python "$REPO/tools/test_kvt_tum.py" 2>&1 | tee "$WORK/context/tests.log"
-if [ "$MODE" = combined ]; then
+if [ "$MODE" = replay-fidelity ]; then
+    "${CONTAINER[@]}" python "$REPO/tools/kvt_tum_replay.py" \
+        --work "$WORK" --out "$OUT" --tag "$TAG" \
+        2>&1 | tee "$WORK/context/replay_fidelity.log"
+    test -f "$WORK/fidelity.json"
+elif [ "$MODE" = combined ]; then
     "${CONTAINER[@]}" python "$REPO/tools/test_kvt_combined.py" \
         2>&1 | tee "$WORK/context/combined_tests.log"
     "${CONTAINER[@]}" python "$REPO/tools/kvt_combined_run.py" \

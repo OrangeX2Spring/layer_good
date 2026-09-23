@@ -234,6 +234,11 @@ def run(config_path):
         trajectory = np.load(result / 'traj.npy')
         assert trajectory.shape == (length, 4, 4)
         selected = np.load(result / insertion_file).tolist()
+        if config['policy'] == 'fixed':
+            assert selected == [0] + config['insertion_indices']
+            write_json(result / 'replay_verified.json', dict(
+                requested=[0] + config['insertion_indices'], actual=selected,
+                frames=length, passed=True))
         if config['policy'] in ('bare', 'original', 'periodic'):
             cap = 20 if config['policy'] in ('bare', 'original') else config['cap']
             assert selected == periodic_indices(length, config['interval'], cap)

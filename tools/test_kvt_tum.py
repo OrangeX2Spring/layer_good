@@ -38,6 +38,24 @@ class TumTests(unittest.TestCase):
         self.assertEqual(periodic_indices(2600, 50, 64)[-1], 2599)
         self.assertEqual(len(periodic_indices(2600, 50, 64)), 53)
 
+    def test_fixed_arrival_replay(self):
+        selector = TumSelector(dict(policy='fixed', insertion_indices=[2, 5],
+                                    frames=7, cap=3), io.StringIO(), io.StringIO())
+        selector.model = SimpleNamespace(cache={})
+        with patch('torch.cuda.synchronize'):
+            for index in range(1, 7):
+                chosen = selector.select(dict(idx=index), None, None, None,
+                                         list(selector.inserted), original=True)
+                self.assertEqual(chosen, index in (2, 5))
+        self.assertEqual(selector.inserted, [0, 2, 5])
+        self.assertEqual(selector.last_index, 6)
+
+    def test_fixed_rejects_invalid_selection(self):
+        for indices in ([0, 2], [2, 2], [5, 2], [2, 7], [2.0, 5], [True, 5], [2]):
+            with self.subTest(indices=indices), self.assertRaises(AssertionError):
+                TumSelector(dict(policy='fixed', insertion_indices=indices,
+                                 frames=7, cap=3), io.StringIO(), io.StringIO())
+
     def test_gt_gap_rejected(self):
         rgb = np.array([.001, .034, .067, 1., 9.999])
         gt = np.array([0., .033, .066, 10.])
