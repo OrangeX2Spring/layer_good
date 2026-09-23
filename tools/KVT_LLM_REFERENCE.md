@@ -146,10 +146,56 @@ command above; no fidelity tracking ran in the failed attempt.
 No model-fork change or selection transfer has occurred. Do not repeat
 packet preparation/selection or submit the historical sweep. API remains deferred.
 
-
 Job **25855** completed and its context archive was transferred and reviewed:
 exit status 0, 17 tests OK, parent `ba0def8`, tracker `3330f54`, clean recorded
 diffs and matching container archive SHA with packet job 25851. Stock-ID fidelity
 passed; see FINDINGS for results and limitations. This supersedes the retry and
-pending-fidelity instructions above. Next is comparison-driver implementation
-and frozen-selection packaging; do not rerun fidelity or packet preparation.
+pending-fidelity instructions above. Next is the comparison job below; do not
+rerun fidelity or packet preparation.
+
+## LLM / uniform / random comparison
+
+`tools/kvt_tum_compare.py` runs six conditions in isolated processes against the
+same staged inputs, all with 20 keyframes (including bootstrap frame 0):
+
+| Condition | Keyframe source |
+|---|---|
+| `stock` | Instrumented stock interval-50/cap-20 decisions |
+| `llm` | Frozen LLM selection (19 indices embedded in source) |
+| `uniform` | Full-clip uniform spacing |
+| `random_s0` | Random 20 frames, seed 0 |
+| `random_s1` | Random 20 frames, seed 1 |
+| `random_s2` | Random 20 frames, seed 2 |
+
+The LLM selection indices are frozen in `kvt_tum_compare.py` (the `LLM_SELECTION`
+constant). Source: `selection.json` from the job 25851 packet, model label
+"GPT-6 (Codex)", date 2026-09-24. This avoids requiring any file transfer to CAMP
+beyond `git pull`.
+
+From CAMP head, after publication:
+
+```bash
+sbatch -A students --qos=students_normal -p 24g -w muenchen \
+  --chdir=/mnt/projects/gr/3DRecon/layer_good \
+  --gres=gpu:1 --propagate=NONE \
+  -o /mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log \
+  --wrap='git -c fetch.recurseSubmodules=false pull --ff-only &&
+bash tools/kvt_tum.sbatch llm-compare'
+```
+
+Expected evidence in the log:
+
+1. `PREPARED` with frame count
+2. `LLM SELECTION 19 frozen indices`
+3. `RUN stock` / `RUN OK stock` through `RUN random_s2` / `RUN OK random_s2`
+4. `COMPARISON {...}` with ATE for all six conditions
+5. `LLM COMPARE JOB OK`
+6. Final `JOB OK`
+
+Require `comparison.json` in the context archive. Per-condition archives are
+`tum_JOBID_freiburg3_long_office_household_{stock,llm,uniform,random_s0,random_s1,random_s2}.tar`,
+each containing `metrics.json` with `ate_m`, `rpe_translation_m`, `rpe_rotation_deg`.
+
+Estimated runtime: ~6 × 2.5 min = ~15 min (each condition runs 2585 frames;
+stock_replay in job 25855 took 146 s). Transfer all archives and extract into
+separate directories under `cluster_results/kvt_tum/` before analysis.
