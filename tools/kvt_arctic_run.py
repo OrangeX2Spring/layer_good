@@ -32,6 +32,7 @@ CHECKOUT = ROOT / "kv_tracker"
 sys.path.insert(0, str(CHECKOUT))
 from kv_tracker.dataloaders.arctic_loader import arcticLoader
 from kv_tracker.eval_tools.evo_utils import align_pair
+from kv_tracker import token_drop
 import eval as kvt_eval
 import main as tracker
 import kvt_arctic_viz
@@ -138,7 +139,7 @@ def stage_dataset(manifest):
 
 
 def track(scene, manifest, results_name, resize_dim, keyframe_indices=None,
-          online_config=None, prefix_frames=None):
+          online_config=None, prefix_frames=None, tracker_args=None):
     scene_dir = DATASET_DIR / scene
     reviewed = OUT / "masks" / scene / "init_mask.png"
     assert reviewed.is_file(), f"No reviewed initial mask for {scene}: {reviewed}"
@@ -165,6 +166,7 @@ def track(scene, manifest, results_name, resize_dim, keyframe_indices=None,
         assert 2 <= prefix_frames <= expected
         source.length = expected = prefix_frames
     torch.cuda.reset_peak_memory_stats()
+    token_drop.stats.update(calls=0, kept=0, total=0)
     selector = None
     cache_policy = None
     if online_config is not None:
@@ -179,7 +181,7 @@ def track(scene, manifest, results_name, resize_dim, keyframe_indices=None,
     recorder = LatestKeyframes(results_dir / "keyframes.npz")
     started = time.perf_counter()
     tracker.run_track3r(cfg={"results_path": str(results_dir), "que_size": 1},
-                        args=["--obj_mode", "--resize_dim", str(resize_dim)],
+                        args=tracker_args,
                         frame_source=source, snapshot_callback=recorder,
                         keyframe_indices=keyframe_indices, keyframe_selector=selector,
                         keyframe_cache=cache_policy)
@@ -220,7 +222,9 @@ def track(scene, manifest, results_name, resize_dim, keyframe_indices=None,
             "frames_per_second": round(expected / elapsed, 2),
             "keyframes": int(len(np.load(results_dir / "kf_idx.npy"))),
             "peak_allocated_bytes": torch.cuda.max_memory_allocated(),
-            "peak_reserved_bytes": torch.cuda.max_memory_reserved()}
+            "peak_reserved_bytes": torch.cuda.max_memory_reserved(),
+            # Patches computed / patches in the frames, over every model call (0 calls: all computed).
+            "token_drop": dict(token_drop.stats)}
 
 
 def evaluate(scenes, results_name, prefix_frames=None):
@@ -307,6 +311,8 @@ def main():
     parser.add_argument("--cache-policy", choices=["dense", "uniform", "correspondence",
                                                   "semantic_correspondence"],
                         help="Correspondence pilot; requires online interval selection")
+    parser.add_argument("--token-drop", action="store_true",
+                        help="Compute only patches touching the SAM mask (kv_tracker/token_drop.py)")
     args = parser.parse_args()
     assert not (args.online_policy and args.keyframes_from)
     assert not (args.online_policy and args.only_eval), "Online provenance requires a fresh run"
@@ -315,6 +321,8 @@ def main():
     assert 0 <= args.novelty_threshold <= 2
     assert args.max_keyframes >= 2 or (args.online_policy == "original" and args.max_keyframes == 0)
     assert not args.prefix_frames or args.no_viz
+    assert not (args.token_drop and args.cache_policy)
+    tracker_args = ["--obj_mode", "--resize_dim", str(args.resize_dim)] + (["--token_drop"] if args.token_drop else [])
     online_config = None
     if args.online_policy:
         online_config = dict(policy=args.online_policy, max_keyframes=args.max_keyframes,
@@ -353,7 +361,8 @@ def main():
             timings[scene] = track(
                 scene, manifest, args.results, args.resize_dim,
                 keyframe_indices=None if keyframe_sets is None else keyframe_sets[scene],
-                online_config=online_config, prefix_frames=args.prefix_frames)
+                online_config=online_config, prefix_frames=args.prefix_frames,
+                tracker_args=tracker_args)
     metrics = {"rows": evaluate(args.scenes, args.results, args.prefix_frames), "timings": timings,
                "articulation_degrees": articulation}
 
@@ -364,7 +373,7 @@ def main():
         "scenes": args.scenes,
         "results": args.results,
         "resize_dim": args.resize_dim,
-        "tracker_args": ["--obj_mode", "--resize_dim", str(args.resize_dim)],
+        "tracker_args": tracker_args,
         "offset": 2,
         "keyframe_policy": args.online_policy or args.policy,
         "online_config": online_config,
