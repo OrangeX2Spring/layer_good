@@ -57,11 +57,13 @@ and prints `WRAPPER stage=correspondence-gates hosts=...` before any preparation
 This prevents an omitted stage from silently starting the multi-host full sweep.
 
 ```bash
+CORR_WRAP='git -c fetch.recurseSubmodules=false pull --ff-only'
+CORR_WRAP="$CORR_WRAP && bash tools/stream_cache_long.sbatch correspondence-gates"
 sbatch -A students --qos=students_normal -p 24g -w muenchen \
   --gres=gpu:1 --propagate=NONE --array=0 \
   --chdir=/mnt/projects/gr/3DRecon/layer_good \
   -o /mnt/projects/gr/3DRecon/stream_corr_gates-%j.log \
-  --wrap='git -c fetch.recurseSubmodules=false pull --ff-only && bash tools/stream_cache_long.sbatch correspondence-gates'
+  --wrap="$CORR_WRAP"
 ```
 
 Check `sacct` completion and the six archives' `exit_status.txt`, `run/fidelity.json`,
