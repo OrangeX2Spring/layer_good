@@ -204,3 +204,9 @@ each containing `metrics.json` with `ate_m`, `rpe_translation_m`, `rpe_rotation_
 Estimated runtime: ~6 × 2.5 min = ~15 min (each condition runs 2585 frames;
 stock_replay in job 25855 took 146 s). Transfer all archives and extract into
 separate directories under `cluster_results/kvt_tum/` before analysis.
+
+Job **25856** completed and was reviewed (parent `fc4f8e5`, packet input hashes
+matched, all fixed replays verified). The frozen LLM selection failed the API
+gate above: stock had the lowest ATE and translation RPE, and the LLM beat only
+one random seed. Per the gate, no API integration or second selection follows.
+Results and limitations: FINDINGS, job 25856. Do not resubmit this comparison.
