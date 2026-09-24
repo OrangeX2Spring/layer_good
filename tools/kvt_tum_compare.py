@@ -51,7 +51,16 @@ LLM_PROVENANCE = dict(
     packet_job=25851,
     fidelity_job=25855,
     local_path='cluster_results/kvt_tum/tum_25851_llm_packet/llm_packet/selection.json',
+    selection_json_sha256='0b27ac5d97738745eda22761208e176d06c730453ed8ab997c1da049bd6fecde',
+    inspection_log_sha256='ef399e0d28bccb0e96607cb8a348fc8515ca93957c32d7d1e2a7019b22682ba3',
     note='Score-blind subscription session; indices frozen before scoring')
+
+# Inputs the selector saw, from the job 25851 packet manifest. The RGB digest is
+# sha256 over the concatenated per-frame rgb_sha256 hex strings in index order;
+# rgb_sha256 there is prepare()'s model_rgb_sha256.
+PACKET_SOURCE_ZIP_SHA256 = 'fc7a09a2748f03c8329aee4b6694ba599129d85eb656738ce490e569bf56dc01'
+PACKET_RGB_DIGEST = 'e2f8703186c8d3385dedfbceaee9357992e4e8e1bd93206c0aa79f1847a68b1e'
+PACKET_FRAMES = 2585
 
 assert LLM_SELECTION == sorted(set(LLM_SELECTION))
 assert all(0 < i for i in LLM_SELECTION)
@@ -108,6 +117,15 @@ def main():
     # Record source ZIP hash for provenance.
     source_sha = sha256_file(source)
     (staged / 'archive.sha256').write_text(f'{source_sha}  {source}\n')
+
+    # Staged model inputs must be the pixels the LLM selected from.
+    assert [r['index'] for r in manifest['inputs']] == list(range(length))
+    rgb_digest = hashlib.sha256(''.join(
+        r['model_rgb_sha256'] for r in manifest['inputs']).encode()).hexdigest()
+    assert length == PACKET_FRAMES, (length, PACKET_FRAMES)
+    assert source_sha == PACKET_SOURCE_ZIP_SHA256, source_sha
+    assert rgb_digest == PACKET_RGB_DIGEST, rgb_digest
+    print('PACKET INPUT HASHES OK', length, flush=True)
 
     # Archive the inputs (metadata + model_rgb, not source PNGs).
     inputs_archive = args.out / f'{args.tag}_inputs_{SCENE}.tar'
@@ -191,7 +209,9 @@ def main():
     write_json(args.work / 'input_provenance.json', dict(
         source_zip=str(source), source_zip_sha256=source_sha,
         staged_frames=length, resize_dim=308,
-        note='Per-frame pixel hashes verified inside each run by kvt_tum_run.py'))
+        packet_job=25851, packet_rgb_digest=rgb_digest, packet_inputs_match=True,
+        note='Staged model-input hashes match the LLM packet; per-frame pixel '
+             'hashes verified inside each run by kvt_tum_run.py'))
 
     # --- Write comparison summary ---
     comparison = {}
@@ -212,9 +232,10 @@ def main():
         scene=SCENE, frames=length, budget=BUDGET,
         conditions=comparison,
         provenance=dict(llm=LLM_PROVENANCE,
-                        source_zip_sha256=source_sha,
-                        note='Stock-ID fidelity passed in job 25855; this comparison '
-                             'uses the same revision and container')))
+                        source_zip_sha256=source_sha, packet_rgb_digest=rgb_digest,
+                        note='Stock-ID fidelity passed in job 25855. Revisions and '
+                             'container SHA of this job are in the context archive; '
+                             'compare them with 25855 at review')))
 
     print('COMPARISON', json.dumps(
         {name: f"ATE={v['ate_m']:.4f}" for name, v in comparison.items()}), flush=True)

@@ -169,8 +169,10 @@ same staged inputs, all with 20 keyframes (including bootstrap frame 0):
 
 The LLM selection indices are frozen in `kvt_tum_compare.py` (the `LLM_SELECTION`
 constant). Source: `selection.json` from the job 25851 packet, model label
-"GPT-6 (Codex)", date 2026-09-24. This avoids requiring any file transfer to CAMP
-beyond `git pull`.
+"GPT-6 (Codex)", date 2026-09-24; SHA-256 of the local `selection.json` and
+`inspection_log.md` is recorded with them. This avoids requiring any file
+transfer to CAMP beyond `git pull`. Uniform and random indices are derived from
+the frame count and written to `protocol.json` before any run starts.
 
 From CAMP head, after publication:
 
@@ -185,12 +187,15 @@ bash tools/kvt_tum.sbatch llm-compare'
 
 Expected evidence in the log:
 
-1. `PREPARED` with frame count
+1. `test_kvt_tum.py` tests OK (preflight)
 2. `LLM SELECTION 19 frozen indices`
-3. `RUN stock` / `RUN OK stock` through `RUN random_s2` / `RUN OK random_s2`
-4. `COMPARISON {...}` with ATE for all six conditions
-5. `LLM COMPARE JOB OK`
-6. Final `JOB OK`
+3. `PREPARED` with 2585 frames, then `PACKET INPUT HASHES OK 2585`: source ZIP
+   SHA and the digest of all per-frame model-input hashes equal the job 25851
+   packet the LLM selected from (constants in `kvt_tum_compare.py`)
+4. `RUN stock` / `RUN OK stock` through `RUN random_s2` / `RUN OK random_s2`
+5. `COMPARISON {...}` with ATE for all six conditions
+6. `LLM COMPARE JOB OK`
+7. Final `JOB OK`
 
 Require `comparison.json` in the context archive. Per-condition archives are
 `tum_JOBID_freiburg3_long_office_household_{stock,llm,uniform,random_s0,random_s1,random_s2}.tar`,
