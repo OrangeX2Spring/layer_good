@@ -209,18 +209,28 @@ def run(config_path):
             selector = TUMCorrespondenceSelector(config, decisions, inference)
         else:
             selector = None if config['policy'] == 'bare' else TumSelector(config, decisions, inference)
-        recorder = FinalScene()
+        recorder = FinalScene() if config.get('save_final_scene', True) else None
+        append_cache = None
+        if config.get('append_only', False):
+            from kv_tracker.append_cache import AppendOnlyCache
+            assert config['policy'] == 'fixed' and recorder is None
+            append_cache = AppendOnlyCache(config['insertion_indices'],
+                                           verify=config['verify_append'])
         try:
             cache_args = ({'keyframe_cache': selector.cache_policy}
                           if config['policy'] in ('combined', 'correspondence') else {})
             tracker.run_track3r(cfg=dict(results_path=str(result), que_size=1),
                 args=['--cam_only', '--resize_dim', str(config['resize_dim']),
                       '--kf_auto', str(config['interval'])], frame_source=source,
-                keyframe_selector=selector, snapshot_callback=recorder, **cache_args)
+                keyframe_selector=selector, snapshot_callback=recorder,
+                keyframe_append=append_cache, **cache_args)
         finally:
             if selector is not None:
                 selector.close(result)
-            if recorder.data is not None:
+            if append_cache is not None:
+                append_cache.close()
+                write_json(result / 'append_events.json', append_cache.events)
+            if recorder is not None and recorder.data is not None:
                 np.savez(result / 'final_scene.npz', **recorder.data)
         torch.cuda.synchronize()
         elapsed = time.perf_counter() - started
@@ -244,7 +254,7 @@ def run(config_path):
             assert selected == periodic_indices(length, config['interval'], cap)
         free, total = torch.cuda.mem_get_info()
         metrics = dict(frames=length, keyframes=len(selected), last_keyframe=selected[-1],
-                       snapshot_copy_seconds=recorder.seconds,
+                       snapshot_copy_seconds=0. if recorder is None else recorder.seconds,
                        tail_frames=length - 1 - selected[-1],
                        tail_seconds=manifest['inputs'][length-1]['timestamp']
                            - manifest['inputs'][selected[-1]]['timestamp'],
@@ -278,6 +288,15 @@ def run(config_path):
             value.numel() * value.element_size() for value in selector.retained)
         metrics['diagnostic_cpu_feature_bytes'] = 0 if selector is None else sum(
             value.nbytes for value in selector.frame_features + selector.patch_maps)
+        if append_cache is not None:
+            assert [e['frame'] for e in append_cache.events] == selected[1:]
+            assert append_cache.frame_ids == [0] + selected
+            assert metrics['rebuild_calls'] == 0
+            metrics.update(append_calls=len(append_cache.events),
+                append_commit_seconds=sum(e['commit_seconds'] for e in append_cache.events),
+                physical_cache_frames=len(append_cache.frame_ids),
+                append_prefix_checks=config['verify_append'],
+                gauge='frozen bootstrap first-camera normalization; sim3 disabled')
         if config['policy'] in ('combined', 'correspondence'):
             events = selector.cache_policy.events
             metrics.update(retained_keyframes=len(selector.cache_policy.records),

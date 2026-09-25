@@ -11,7 +11,7 @@
 #SBATCH --output=/mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log
 set -euo pipefail
 MODE=${1:-sweep}
-case "$MODE" in sweep|combined|correspondence|correspondence-gates|llm-packet|replay-fidelity|llm-compare) ;;
+case "$MODE" in sweep|combined|correspondence|correspondence-gates|llm-packet|replay-fidelity|llm-compare|append) ;;
     *) echo "Unknown mode: $MODE" >&2; exit 2 ;; esac
 test "$(uname -s)" = Linux
 test "$(hostname)" != head
@@ -99,6 +99,10 @@ if [ "$MODE" = llm-compare ]; then
     cp "$REPO/tools/kvt_tum_compare.py" "$REPO/tools/KVT_LLM_REFERENCE.md" \
        "$WORK/context/"
 fi
+if [ "$MODE" = append ]; then
+    cp "$REPO/tools/kvt_tum_append.py" "$REPO/tools/test_kvt_append.py" \
+       "$REPO/tools/KVT_APPEND.md" "$WORK/context/"
+fi
 if [ "$MODE" = combined ]; then
     cp "$REPO/tools/kvt_tum_combined.py" "$REPO/tools/kvt_combined_run.py" \
        "$REPO/tools/test_kvt_combined.py" "$REPO/tools/STREAM_CACHE_COMBINED.md" \
@@ -182,6 +186,17 @@ elif [ "$MODE" = llm-compare ]; then
     "${CONTAINER[@]}" python "$REPO/tools/kvt_tum_compare.py" \
         --work "$WORK" --out "$OUT" --tag "$TAG" \
         2>&1 | tee "$WORK/context/compare.log"
+    test -f "$WORK/comparison.json"
+elif [ "$MODE" = append ]; then
+    "${CONTAINER[@]}" python "$REPO/tools/test_kvt_append.py" \
+        2>&1 | tee "$WORK/context/append_tests.log"
+    APPEND_ARGS=(--stage "${2:-pilot}")
+    if [ "${2:-pilot}" = full ]; then
+        APPEND_ARGS+=(--reviewed-pilot "${3:?Supply the reviewed pilot context tar}")
+    fi
+    "${CONTAINER[@]}" python "$REPO/tools/kvt_tum_append.py" \
+        --work "$WORK" --out "$OUT" --tag "$TAG" "${APPEND_ARGS[@]}" \
+        2>&1 | tee "$WORK/context/append.log"
     test -f "$WORK/comparison.json"
 elif [ "$MODE" = combined ]; then
     "${CONTAINER[@]}" python "$REPO/tools/test_kvt_combined.py" \
