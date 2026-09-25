@@ -173,3 +173,46 @@ The shared-scale window diagnostics live under each condition's
 `refresh_diagnostic` in comparison.json. Expected context/all-runs/input archives
 follow existing naming, with per-condition suffixes `append_only` and
 `append_refresh`. No artifacts exist until the user runs the published revision.
+
+
+## A1 follow-up: refresh with frame-0 re-anchoring (`refresh-anchor`)
+
+Selected 2026-09-26 after the 25885 crossing inspection. Job 25885's refresh
+kept the bootstrap `origin_offset` while the refreshed cache predicted in a new
+raw frame, producing a 61.8-degree 699→700 crossing. Every native rebuild instead
+sets `origin_offset = inv(T_wc_raw[0, 0])` from its own output
+(`kv_tracker/pi3_utilts.py`). `append refresh-anchor` repeats `append refresh`
+exactly, except that the refresh arm applies that native convention to the
+refresh forward's camera-only output (`refresh_gauge='keyframe0'`). No GT is used.
+`scene_origin`, sim3 (disabled) and saved arrival poses are unchanged; scale is
+not corrected, as in native rebuilds without `--sim3`. The refresh event now
+records `raw_keyframe_poses`, `bootstrap_origin_offset` and the new
+`origin_offset`, so the normalization is reconstructible from archives.
+
+Contracts: all `append refresh` contracts, except that append events after 699
+must carry the refresh event's new offset while events up to 699 and the refresh
+event's `bootstrap_origin_offset` must equal bootstrap's. `refresh_gate.json`
+records `refresh_gauge` and `frozen_bootstrap_gauge=false`.
+
+Expected, checkable after transfer: re-anchoring is a constant rigid left
+transform on post-refresh poses, so non-insertion RPE over 700–949 should
+reproduce 25885's `append_refresh` values. The outcomes are the 699→700 crossing
+and global position accuracy: whole-run ATE per arm, and 750–949 position/
+orientation RMSE under the unchanged-append arm's alignment, compared with
+25885's append 17.39 cm and same-frame anchor 20.41 cm (FINDINGS.md). One scene,
+one retrospective refresh frame; no frequency sweep or full run follows.
+
+After publishing the fork and parent, user submits on CAMP head:
+
+```bash
+sbatch -A students --qos=students_normal -p 24g -w stuttgart \
+  --chdir=/mnt/projects/gr/3DRecon/layer_good \
+  --gres=gpu:1 --propagate=NONE \
+  -o /mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log \
+  --wrap='git -c fetch.recurseSubmodules=false pull --ff-only &&
+bash tools/kvt_tum.sbatch append refresh-anchor'
+```
+
+Review seven append tests, both RUN OK records, REFRESH DIAGNOSTIC records,
+APPEND REFRESH CONTRACT GATE OK, JOB OK and archived exit status/provenance.
+Archive names match `append refresh`; `append_refresh` is the re-anchored arm.

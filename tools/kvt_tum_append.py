@@ -67,7 +67,8 @@ def main():
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--tag', required=True)
-    parser.add_argument('--stage', choices=('pilot', 'full', 'refresh'), default='pilot')
+    parser.add_argument('--stage', choices=('pilot', 'full', 'refresh', 'refresh-anchor'),
+                        default='pilot')
     parser.add_argument('--reviewed-pilot', type=Path,
                         help='Successful pilot context tar, explicitly reviewed before full run')
     args = parser.parse_args()
@@ -110,7 +111,9 @@ def main():
     inputs_archive = args.out / f'{args.tag}_inputs_{scene}.tar'
     archive_inputs(staged, inputs_archive)
     release_page_cache(staged, inputs_archive)
-    length = {'pilot': 256, 'refresh': 950}.get(args.stage, manifest['frames'])
+    refresh = args.stage in ('refresh', 'refresh-anchor')
+    gauge = 'keyframe0' if args.stage == 'refresh-anchor' else 'frozen'
+    length = 256 if args.stage == 'pilot' else 950 if refresh else manifest['frames']
     ids = periodic_indices(length, 50, 20)
     base = dict(scene=scene, scene_dir=str(staged), frames=length, resize_dim=308,
                 interval=50, cap=len(ids), max_gt_difference=.02, evaluate_trajectory=True,
@@ -118,18 +121,20 @@ def main():
     conditions = [('stock_replay', dict(policy='fixed', insertion_indices=ids[1:])),
                   ('append_only', dict(policy='fixed', insertion_indices=ids[1:],
                                        append_only=True, verify_append=args.stage == 'pilot'))]
-    if args.stage == 'refresh':
+    if refresh:
         conditions = [(name, dict(policy='fixed', insertion_indices=ids[1:],
                        append_only=True, verify_append=True, **options))
-                      for name, options in [('append_only', {}),
-                                            ('append_refresh', dict(refresh_frame=699))]]
+                      for name, options in [('append_only', {}), ('append_refresh',
+                          dict(refresh_frame=699, refresh_gauge=gauge))]]
     if args.stage == 'pilot':
         conditions.insert(0, ('stock_native', dict(policy='original', cap=20)))
     write_json(args.work / 'protocol.json', dict(stage=args.stage, base=base,
         ids=ids, conditions=[dict(name=name, **options) for name, options in conditions],
         code_sha256=code_hashes, container_sha256=container_sha,
         source_zip_sha256=source_sha, rgb_digest=rgb_digest,
-        gauge='Both arms sim3=False; append freezes bootstrap origin_offset and scene_origin',
+        gauge='Both arms sim3=False; append freezes bootstrap origin_offset and scene_origin'
+              + ('; refresh re-anchors origin_offset on refreshed frame 0'
+                 if gauge == 'keyframe0' else ''),
         bootstrap='Native duplicate retained in append: one extra physical slot, same unique IDs',
         reviewed_pilot=str(args.reviewed_pilot) if args.reviewed_pilot else None,
         next_gate='Human review; no automatic full run or accuracy acceptance'))
@@ -168,17 +173,23 @@ def main():
             assert [r['frame'] for r in inference if r['kind'] == 'rebuild'] == expected_refresh
             assert metrics[name]['bootstrap_calls'] == 1
             assert metrics[name]['rebuild_calls'] == len(expected_refresh)
+            offset_after = events[0]['origin_offset']
             for event in refreshes:
                 assert event['cache_frame_ids'] == [0] + [i for i in ids if i <= 699]
                 assert event['cache_shapes_preserved'] and event['changed_layers']
-                assert event['origin_offset'] == events[0]['origin_offset']
+                assert event['gauge'] == gauge
+                assert event['bootstrap_origin_offset'] == events[0]['origin_offset']
                 assert event['scene_origin'] == events[0]['scene_origin']
+                if gauge == 'frozen':
+                    assert event['origin_offset'] == events[0]['origin_offset']
+                offset_after = event['origin_offset']
             assert metrics[name]['query_calls'] == length - 1
             for event in events:
-                assert event['origin_offset'] == events[0]['origin_offset']
+                assert event['origin_offset'] == (events[0]['origin_offset']
+                    if event['frame'] <= 699 else offset_after)
                 assert event['scene_origin'] == events[0]['scene_origin']
                 assert not event['sim3_enabled']
-                if args.stage in ('pilot', 'refresh'):
+                if args.stage != 'full':
                     assert event['old_cache_prefix_verified'] and event['old_pose_prefix_verified']
             updates = [dict(frame=e['frame'], update_seconds=e['commit_seconds'],
                             query_plus_update_seconds=query_seconds[e['frame']] + e['commit_seconds'])
@@ -195,14 +206,16 @@ def main():
         print('RUN OK', name, json.dumps(metrics[name]), flush=True)
 
     append = np.load(results['append_only'] / 'traj.npy')
-    if args.stage == 'refresh':
+    if refresh:
         refreshed = np.load(results['append_refresh'] / 'traj.npy')
         np.testing.assert_allclose(refreshed[:700], append[:700], atol=1e-4, rtol=1e-4)
         baseline_events = json.loads((results['append_only'] / 'append_events.json').read_text())
         refreshed_events = json.loads((results['append_refresh'] / 'append_events.json').read_text())
         for baseline, refreshed_event in zip(baseline_events, refreshed_events):
-            for key in ('cache_frame_ids', 'tokens_per_frame', 'origin_offset', 'scene_origin'):
+            for key in ('cache_frame_ids', 'tokens_per_frame', 'scene_origin'):
                 assert baseline[key] == refreshed_event[key]
+            if gauge == 'frozen' or baseline['frame'] <= 699:
+                assert baseline['origin_offset'] == refreshed_event['origin_offset']
         common_scale = metrics['append_only']['alignment_scale']
         for name in results:
             metrics[name]['refresh_diagnostic'] = refresh_metrics(results[name], common_scale)
@@ -210,7 +223,8 @@ def main():
                   json.dumps(metrics[name]['refresh_diagnostic']), flush=True)
         write_json(args.work / 'refresh_gate.json', dict(passed=True,
             prefix_through_frame=699, refresh_frame=699, frames=length,
-            same_physical_history=True, frozen_bootstrap_gauge=True,
+            same_physical_history=True, frozen_bootstrap_gauge=gauge == 'frozen',
+            refresh_gauge=gauge,
             code_sha256=code_hashes, container_sha256=container_sha,
             source_zip_sha256=source_sha, rgb_digest=rgb_digest,
             accuracy_gate='Review post-refresh non-insertion rotation RPE; no automatic acceptance'))

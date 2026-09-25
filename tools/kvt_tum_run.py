@@ -216,7 +216,8 @@ def run(config_path):
             assert config['policy'] == 'fixed' and recorder is None
             append_cache = AppendOnlyCache(config['insertion_indices'],
                                            verify=config['verify_append'],
-                                           refresh_frame=config.get('refresh_frame'))
+                                           refresh_frame=config.get('refresh_frame'),
+                                           refresh_gauge=config.get('refresh_gauge', 'frozen'))
         try:
             cache_args = ({'keyframe_cache': selector.cache_policy}
                           if config['policy'] in ('combined', 'correspondence') else {})
@@ -301,7 +302,10 @@ def run(config_path):
                 append_commit_seconds=sum(e['commit_seconds'] for e in append_cache.events),
                 physical_cache_frames=len(append_cache.frame_ids),
                 append_prefix_checks=config['verify_append'],
-                gauge='frozen bootstrap first-camera normalization; sim3 disabled')
+                gauge=('frozen bootstrap first-camera normalization'
+                       if append_cache.refresh_gauge == 'frozen' else
+                       'bootstrap normalization, re-anchored on refreshed frame 0')
+                      + '; sim3 disabled')
         if config['policy'] in ('combined', 'correspondence'):
             events = selector.cache_policy.events
             metrics.update(retained_keyframes=len(selector.cache_policy.records),
