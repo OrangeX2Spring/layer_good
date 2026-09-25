@@ -10,7 +10,7 @@ import torch
 from kv_tracker.append_cache import AppendOnlyCache
 from pi3.models.layers.attention import FlashAttentionRope
 from pi3.models.layers.block import BlockRope
-from kvt_tum_append import insertion_metrics
+from kvt_tum_append import insertion_metrics, refresh_metrics
 
 
 class AppendTests(unittest.TestCase):
@@ -78,6 +78,50 @@ class AppendTests(unittest.TestCase):
         self.policy.begin_query(49)
         with self.assertRaises(AssertionError):
             self.policy.commit(49)
+
+    def test_refresh_forward_bypasses_capture_and_allows_next_append(self):
+        self.policy.begin_query(49)
+        self.query(torch.randn(1, 9, 16))
+        self.policy.commit(49)
+        # Actual uncached BlockRope calls replace history with equal-sized K/V.
+        hidden = torch.randn(1, 27, 16)
+        for i, block in enumerate(self.model.decoder):
+            if i % 2:
+                hidden, k, v = block(hidden, ret_kv=True)
+                self.model.cache[i] = dict(k=k, v=v)
+            else:
+                hidden = block(hidden)
+        self.assertFalse(self.policy.pending)
+        before = {i: dict(layer) for i, layer in self.model.cache.items()}
+        self.policy.begin_query(99)
+        self.query(torch.randn(1, 9, 16))
+        self.policy.commit(99)
+        for i in (1, 3):
+            for name in ('k', 'v'):
+                torch.testing.assert_close(self.model.cache[i][name][:, :, :27],
+                                           before[i][name], atol=0, rtol=0)
+
+    def test_refresh_metrics_share_scale_and_isolate_crossing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            result = Path(temporary)
+            poses = np.tile(np.eye(4), (950, 1, 1))
+            poses[:, 0, 3] = np.arange(950) * 2.
+            reference = poses.copy()
+            reference[:, 0, 3] /= 2.
+            poses[700:, 0, 3] += 20.
+            rotations = np.zeros(949)
+            rotations[699] = 7.
+            np.save(result / 'kf_idx.npy', np.r_[0, np.arange(49, 950, 50)])
+            np.savez(result / 'evaluation.npz', rgb_indices=np.arange(950),
+                     timestamps=np.arange(950) * .03, aligned=poses, reference=reference,
+                     rpe_pair_start_indices=np.arange(949), alignment_scale=2.,
+                     rpe_rotation_per_pair_deg=rotations)
+            values = refresh_metrics(result, 1.)
+            self.assertEqual(values['refresh_crossing_translation_m'], 10.)
+            self.assertEqual(values['refresh_crossing_rotation_deg'], 7.)
+            for window in values['noninsertion_windows']:
+                self.assertEqual(window['translation_rpe_m'], 0.)
+                self.assertEqual(window['rotation_rpe_deg'], 0.)
 
     def test_insertion_diagnostic_uses_first_query_after_insertion(self):
         with tempfile.TemporaryDirectory() as temporary:

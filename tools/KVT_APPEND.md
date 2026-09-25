@@ -119,3 +119,57 @@ Planned archives, outside the checkout under `/mnt/projects/gr/3DRecon/kvt_tum_o
 The native arm exists only in the pilot. Context includes the comparison, gate,
 protocol, exact source archives, hashes and test logs. Failed/partial results are
 preserved by the existing exit trap. These paths are planned, not verified outputs.
+
+
+## A1 follow-up: one cache refresh at frame 699
+
+Implemented after review of job 25884. Fork `fd89eec` is published on
+`codex/token-drop`; the parent commit carrying this protocol pins that revision.
+CAMP verification remains pending. This is a targeted, retrospective intervention, not a frequency
+sweep. `append refresh` runs 950 frames in two fresh processes: `append_only`
+and `append_refresh`, with identical fixed IDs `[0,49,...,949]` and seed 0.
+Both retain duplicate frame 0 and enable append prefix checks.
+
+After querying and appending frame 699, the intervention jointly recomputes K/V
+from exactly `[0,0,49,...,699]`. It discards predicted poses and leaves bootstrap
+`origin_offset`, `scene_origin`, and all saved poses unchanged. Later insertions
+resume normal append. Saved poses are not inputs to camera-only inference, so
+this tests cached history rather than a pose-record feedback loop.
+
+Correctness requires trajectory equality through frame 699 inclusive
+(atol=rtol=1e-4), identical physical frame IDs/token counts and gauges, one
+refresh at 699 versus zero, unchanged K/V shapes/dtypes with at least one
+changed layer, and the existing arrival-pose and append-prefix contracts.
+`refresh_events.json` records the intervention; `refresh_gate.json` records the
+paired gate. Holding old K/V temporarily for equality checks increases measured
+peak memory: this diagnostic is not a production speed/memory benchmark.
+
+Primary outcome: non-insertion rotation RPE for pairs wholly within frames
+700–949, with 50-frame subwindows and 450–699 as a pre-intervention control.
+Translation RPE is recomputed with the unchanged-append arm's single global
+scale shared by both arms; per-arm whole-run metrics remain descriptive.
+The 699→700 crossing is reported separately. No per-window fitting, success
+threshold selected from results, automatic full run, or timing sweep.
+Recovery supports cache-history involvement, not a particular layer or type of
+accumulated error. An incoherent refreshed raw gauge under frozen normalization
+can create a crossing discontinuity; within-segment relative rotation cancels
+constant rigid output transforms. Lack of recovery is not proof against all
+cache-error explanations.
+
+After publishing the fork and parent gitlink/tools, user submits on CAMP head:
+
+```bash
+sbatch -A students --qos=students_normal -p 24g -w stuttgart \
+  --chdir=/mnt/projects/gr/3DRecon/layer_good \
+  --gres=gpu:1 --propagate=NONE \
+  -o /mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log \
+  --wrap='git -c fetch.recurseSubmodules=false pull --ff-only &&
+bash tools/kvt_tum.sbatch append refresh'
+```
+
+Review tests, both RUN OK records, APPEND REFRESH CONTRACT GATE OK, JOB OK,
+archived exit status/provenance and `comparison.json` before any further run.
+The shared-scale window diagnostics live under each condition's
+`refresh_diagnostic` in comparison.json. Expected context/all-runs/input archives
+follow existing naming, with per-condition suffixes `append_only` and
+`append_refresh`. No artifacts exist until the user runs the published revision.

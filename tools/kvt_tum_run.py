@@ -215,7 +215,8 @@ def run(config_path):
             from kv_tracker.append_cache import AppendOnlyCache
             assert config['policy'] == 'fixed' and recorder is None
             append_cache = AppendOnlyCache(config['insertion_indices'],
-                                           verify=config['verify_append'])
+                                           verify=config['verify_append'],
+                                           refresh_frame=config.get('refresh_frame'))
         try:
             cache_args = ({'keyframe_cache': selector.cache_policy}
                           if config['policy'] in ('combined', 'correspondence') else {})
@@ -230,6 +231,7 @@ def run(config_path):
             if append_cache is not None:
                 append_cache.close()
                 write_json(result / 'append_events.json', append_cache.events)
+                write_json(result / 'refresh_events.json', append_cache.refresh_events)
             if recorder is not None and recorder.data is not None:
                 np.savez(result / 'final_scene.npz', **recorder.data)
         torch.cuda.synchronize()
@@ -291,8 +293,11 @@ def run(config_path):
         if append_cache is not None:
             assert [e['frame'] for e in append_cache.events] == selected[1:]
             assert append_cache.frame_ids == [0] + selected
-            assert metrics['rebuild_calls'] == 0
-            metrics.update(append_calls=len(append_cache.events),
+            assert metrics['rebuild_calls'] == len(append_cache.refresh_events)
+            assert [e['frame'] for e in append_cache.refresh_events] == (
+                [] if append_cache.refresh_frame is None else [append_cache.refresh_frame])
+            metrics.update(refresh_calls=len(append_cache.refresh_events),
+                append_calls=len(append_cache.events),
                 append_commit_seconds=sum(e['commit_seconds'] for e in append_cache.events),
                 physical_cache_frames=len(append_cache.frame_ids),
                 append_prefix_checks=config['verify_append'],
