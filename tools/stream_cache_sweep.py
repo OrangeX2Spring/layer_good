@@ -17,6 +17,7 @@ import torch
 from kvcache_policy import pool_confidence, pool_mask
 from stream_cache_adapters import StreamAdapter
 from stream_cache_policy import CachePolicy, PolicyConfig
+from stream_cache_structure import StructureExperiment
 
 REPO = Path(__file__).resolve().parents[1]
 PREDICTIONS = ('pose_enc', 'rel_pose_enc', 'depth', 'depth_conf',
@@ -231,6 +232,11 @@ def run_condition(args, model, root, frames, name, config):
     policy = CachePolicy(config)
     adapter = StreamAdapter(model, args.host, feature=config.feature,
                             keyframe_stride=args.keyframe_stride, refresh=args.refresh)
+    structure = StructureExperiment(adapter, config.b_experiment, target) if config.b_experiment else None
+    if structure is not None:
+        write_json(target / 'structure.json', dict(special_tokens=adapter.special,
+                   recent_frames=4, local_threshold=.05, rank_fraction=.5,
+                   profile='b_profile/profile.pt', mode=config.b_experiment))
     torch.manual_seed(config.seed)
     pose_chunks = {}
     latencies = []
@@ -244,6 +250,8 @@ def run_condition(args, model, root, frames, name, config):
             image, mask = load_frame(root, frame)
             grid = tuple(size // adapter.patch_size for size in image.shape[-2:])
             with torch.no_grad():
+                if structure is not None:
+                    structure.current = index
                 output = adapter.forward(image, index)
                 torch.cuda.synchronize()
                 prediction_end = time.perf_counter()
@@ -264,6 +272,10 @@ def run_condition(args, model, root, frames, name, config):
                     admission_scores.append(event['score'])
                     admitted += int(event['accepted'])
                 adapter.prune(picked, kept)
+                if structure is not None:
+                    event.update(structure.after_prune())
+                if config.quant_bits:
+                    event.update(adapter.quantize_current(config.quant_bits))
                 event.update(adapter.memory())
                 event['feature_bytes'] = policy.feature_bytes()
                 torch.cuda.synchronize()
@@ -285,6 +297,8 @@ def run_condition(args, model, root, frames, name, config):
                     picked, kept, refresh_event = policy.update(
                         index, adapter.features.float().cpu(), grid, confidence, token_mask, points)
                     adapter.prune(picked, kept)
+                    if config.quant_bits:
+                        refresh_event.update(adapter.quantize_current(config.quant_bits))
                     event['refresh_seed'] = refresh_event
                     event['post_refresh_memory'] = adapter.memory()
                     del replay
@@ -324,6 +338,8 @@ def run_condition(args, model, root, frames, name, config):
                total_seconds=sum(latencies), inference='single-frame causal, fixed head histories',
                geometry_export=args.geometry_export,
                quality='camera.npz and selected geometry exports; no object-pose claim'))
+    if structure is not None:
+        structure.finish()
     adapter.close()
     print(f'RUN OK {name}', flush=True)
 
@@ -375,6 +391,7 @@ def evaluate(args):
                       rpe_translation_m=translation_error[pairs].tolist(),
                       rpe_rotation_deg=rotation_error[pairs].tolist(),
                       rpe_translation_rmse_m=float(np.sqrt(np.mean(translation_error[pairs] ** 2))) if pairs.any() else None,
+                      rpe_translation_p99_m=float(np.quantile(translation_error[pairs], .99)) if pairs.any() else None,
                       rpe_rotation_rmse_deg=float(np.sqrt(np.mean(rotation_error[pairs] ** 2))) if pairs.any() else None,
                       alignment='full-trajectory camera-centre Sim(3), offline diagnostic; no absolute rotation/object pose claim')
         write_json(args.out / name / 'camera_metrics.json', report)
@@ -394,11 +411,18 @@ def run(args):
     args.geometry_export = specification.get('geometry_export', 'all')
     assert args.geometry_export in ('all', 'final')
     configs = [(row['name'], PolicyConfig(**row['policy'])) for row in specification['conditions']]
+    if any(config.b_experiment for _, config in configs):
+        assert args.host == 'streamvggt'
+    if any(config.quant_bits for _, config in configs):
+        assert args.host in ('streamvggt', 'longstream')
     names = [name for name, _ in configs]
     assert len(names) == len(set(names)) and all(name and Path(name).name == name for name in names)
     assert all(name not in ('.', '..', 'inputs', '__fidelity__') for name in names)
     manifest = json.loads((args.inputs / 'manifest.json').read_text())
     frames = manifest['frames']
+    if any(config.b_experiment for _, config in configs):
+        assert len(frames) == 200, 'B diagnostics are a fixed 200-frame pilot'
+        assert configs[0][0] == 'b_profile' and configs[0][1].b_experiment == 'profile'
     assert len(frames) >= 2
     if 'max_frames' in specification and len(frames) > specification['max_frames']:
         raise ValueError('Prepared clip exceeds this sweep protocol max_frames; no silent truncation')
@@ -430,6 +454,8 @@ def run(args):
     shutil.copy2(Path(__file__).with_name('stream3r_ycbv_metrics.py'), source)
     shutil.copy2(Path(__file__).with_name('test_stream_cache.py'), source)
     shutil.copy2(Path(__file__).with_name('test_stream_cache_workers.py'), source)
+    shutil.copy2(Path(__file__).with_name('test_stream_cache_quantization.py'), source)
+    shutil.copy2(Path(__file__).with_name('test_stream_cache_structure.py'), source)
     shutil.copy2(Path(__file__).with_name('test_kvcache_policy.py'), source)
     checkpoint_files = sorted(args.checkpoint.rglob('*')) if args.checkpoint.is_dir() else [args.checkpoint]
     provenance = dict(host=args.host, checkpoint={str(p): digest(p) for p in checkpoint_files if p.is_file()},
@@ -456,6 +482,82 @@ def run(args):
     else:
         write_json(args.out / 'camera_metrics.json',
                    {'status': 'not evaluated: no camera GT supplied in manifest'})
+    if specification.get('structure_gate'):
+        profile = torch.load(args.out / 'b_profile' / 'profile.pt', map_location='cpu', weights_only=True)
+        assert torch.isfinite(profile['samples']).all()
+        torch.testing.assert_close(profile['mass'].sum(-1), torch.ones_like(profile['mass'][..., 0]))
+        assert torch.isfinite(profile['spectrum']).all() and torch.isfinite(profile['basis']).all()
+        reports = dict(bin_order=['own', 'anchor', 'previous4', 'older'],
+                       profile_frame_budget=32,
+                       sampled_frames=list(range(9, 200, 10)), mass=profile['mass'].tolist(),
+                       local_heads=(profile['mass'][..., 3] < .05).tolist(),
+                       spectrum=profile['spectrum'].tolist(),
+                       caveat='In-sample pilot. Masks and projections keep native storage; no speed claim.')
+        for name, config in configs:
+            events = [json.loads(line) for line in (args.out / name / 'events.jsonl').read_text().splitlines()]
+            assert len(events) == 200 and all(not row['refresh'] for row in events)
+            assert all(row['aggregator_bytes'] > 0 for row in events)
+            if config.b_experiment == 'profile':
+                assert all(len(row['retained_frames']) == min(i + 1, 32)
+                           and row['retained_frames'][0] == 0 for i, row in enumerate(events))
+            if config.b_experiment == 'registers':
+                tokens = events[0]['aggregator_tokens']
+                special = json.loads((args.out / name / 'structure.json').read_text())['special_tokens']
+                assert all(row['aggregator_tokens'] == min(i + 1, 4) * (tokens - special)
+                           + (i + 1) * special for i, row in enumerate(events))
+        write_json(args.out / 'structure_gate.json', reports)
+        print('STRUCTURE CONTRACT GATE OK', flush=True)
+    if specification.get('precision_gate'):
+        reports = {}
+        for name, config in configs:
+            rows = [json.loads(line) for line in
+                    (args.out / name / 'events.jsonl').read_text().splitlines()]
+            assert len(rows) == len(frames)
+            segment_start = 0
+            baseline_ratios = []
+            for index, row in enumerate(rows):
+                assert row['quant_bits'] == config.quant_bits
+                assert row['quantized_current_changed']
+                assert len(row['retained_frames']) == min(index - segment_start + 1, config.frame_budget)
+                assert row['retained_frames'][0] == segment_start
+                assert row['retained_frames'][-1] == index
+                assert len(row['patch_indices']) == len(rows[0]['patch_indices'])
+                assert 0 < row['analytical_packed_aggregator_bytes'] < row['aggregator_bytes']
+                tokens_per_frame = row['aggregator_tokens'] // len(row['retained_frames'])
+                special = tokens_per_frame - len(row['patch_indices'])
+                control_frames = min(index - segment_start + 1, 8)
+                control_tokens = control_frames * tokens_per_frame
+                if config.frame_budget == 8:
+                    # Half-patch controls retain a complete anchor and all special tokens.
+                    control_tokens = tokens_per_frame + (control_frames - 1) * (
+                        special + (len(row['patch_indices']) + 1) // 2)
+                control_bytes = row['aggregator_bytes'] * control_tokens / row['aggregator_tokens']
+                baseline_ratios.append(row['analytical_packed_aggregator_bytes'] / control_bytes)
+                if row['refresh']:
+                    segment_start = index
+                    assert row['refresh_seed']['retained_frames'] == [index]
+                    assert row['refresh_seed']['quantized_current_changed']
+                    assert (row['refresh_seed']['analytical_packed_aggregator_bytes']
+                            < row['post_refresh_memory']['aggregator_bytes'])
+            if args.host == 'longstream':
+                assert any(row['refresh'] for row in rows)
+            reports[name] = dict(
+                frames=len(rows), max_retained_frames=max(len(r['retained_frames']) for r in rows),
+                actual_aggregator_dtypes=sorted({r['aggregator_dtype'] for r in rows}),
+                max_actual_aggregator_bytes=max(r['aggregator_bytes'] for r in rows),
+                max_analytical_packed_aggregator_bytes=max(r['analytical_packed_aggregator_bytes'] for r in rows),
+                max_analytical_total_cache_bytes=max(
+                    r['analytical_packed_aggregator_bytes'] + sum(r[key] for key in (
+                        'camera_bytes', 'relative_pose_bytes', 'reference_bytes',
+                        'position_bytes', 'token_index_bytes', 'feature_bytes')) for r in rows),
+                max_peak_allocated=max(r['peak_allocated'] for r in rows),
+                archived_control='uniform_p50' if config.frame_budget == 8 else 'recent8',
+                packed_to_control_aggregator_byte_ratio_min=min(baseline_ratios),
+                packed_to_control_aggregator_byte_ratio_max=max(baseline_ratios),
+                interpretation='fake quantization; actual native storage and simulation latency; '
+                               'analytical payload includes FP32 scale/minimum, not allocator overhead')
+        write_json(args.out / 'precision_gate.json', reports)
+        print('PRECISION CONTRACT GATE OK', flush=True)
     if specification.get('correspondence_gate') or specification.get('correspondence_full'):
         full = bool(specification.get('correspondence_full'))
         object_gate = specification.get('correspondence_full' if full else 'correspondence_gate') == 'object'

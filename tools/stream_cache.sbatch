@@ -54,7 +54,8 @@ git -C "$REPO" -c fetch.recurseSubmodules=false pull --ff-only
 git -C "$REPO" -c url.https://github.com/.insteadOf=git@github.com: \
     submodule update --init "$HOST" streamvggt
 cp "$REPO/tools/stream_cache.sbatch" "$REPO/tools/stream_cache_job.py" \
-    "$REPO/tools/stream_cache_long.sbatch" "$WORK/"
+    "$REPO/tools/stream_cache_long.sbatch" \
+    "$REPO/tools/stream_cache_overnight.sbatch" "$WORK/"
 git -C "$REPO" rev-parse HEAD > "$WORK/commit.txt"
 git -C "$REPO" submodule status > "$WORK/submodules.txt"
 mkdir "$WORK/git_provenance"

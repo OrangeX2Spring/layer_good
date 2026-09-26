@@ -1,0 +1,12 @@
+{
+  "description": "A3: three frame-entry fake-quantization arms, compared with archived same-host recent8 and half-patch controls. Analytical packed bytes include FP32 metadata; actual storage remains native dtype. No exact byte-match or speed claim.",
+  "max_frames": 5182,
+  "isolate_conditions": true,
+  "geometry_export": "final",
+  "precision_gate": true,
+  "conditions": [
+    {"name": "recent8_int8", "policy": {"frame_budget": 8, "quant_bits": 8}},
+    {"name": "recent16_int8", "policy": {"frame_budget": 16, "quant_bits": 8}},
+    {"name": "recent32_int4", "policy": {"frame_budget": 32, "quant_bits": 4}}
+  ]
+}

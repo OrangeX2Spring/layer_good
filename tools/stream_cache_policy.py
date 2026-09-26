@@ -20,8 +20,18 @@ class PolicyConfig:
     patch_policy: str = 'all'
     patch_fraction: float = 1.0
     seed: int = 0
+    quant_bits: int = 0
+    b_experiment: str = ''
 
     def __post_init__(self):
+        assert self.b_experiment in ('', 'profile', 'heads', 'layers', 'rank', 'registers')
+        if self.b_experiment:
+            assert not self.quant_bits and self.patch_policy == 'all'
+            assert self.admission == 'all' and self.eviction == 'fifo'
+        assert self.quant_bits in (0, 4, 8)
+        if self.quant_bits:
+            assert self.patch_policy == 'all' and self.admission == 'all'
+            assert self.eviction == 'fifo'
         assert self.feature in ('encoder', 'frame0')
         assert self.score in ('pooled', 'centered', 'coverage', 'chamfer', 'q90')
         assert self.admission in ('all', 'novelty')

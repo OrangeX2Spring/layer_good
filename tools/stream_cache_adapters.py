@@ -5,6 +5,8 @@ from types import MethodType
 import torch
 import torch.nn.functional as F
 
+from stream_cache_quantization import fake_quantize
+
 
 def tensor_bytes(tree):
     if isinstance(tree, torch.Tensor):
@@ -40,6 +42,8 @@ def sparse_vggt_attention(self, x, pos=None, attn_mask=None,
     q, k = self.q_norm(q), self.k_norm(k)
     if self.rope is not None:
         q, k = self.rope(q, pos), self.rope(k, key_positions)
+    if hasattr(self, 'structure_experiment'):
+        attn_mask = self.structure_experiment.attend(self.structure_layer, q, k, attn_mask)
     value = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=0.)
     value = value.transpose(1, 2).reshape(batch, tokens, channels)
     return self.proj_drop(self.proj(value)), cache
@@ -91,6 +95,7 @@ class StreamAdapter:
 
     def clear(self):
         self.segment_start = 0
+        self.quantized_frame_bytes = {}
         self.token_frames = torch.empty(0, dtype=torch.long)
         if self.session is not None:
             self.session.clear()
@@ -162,10 +167,41 @@ class StreamAdapter:
         return (self.host == 'longstream' and frame_id > 0
                 and frame_id % (self.keyframe_stride * (self.refresh - 1)) == 0)
 
+    def quantize_current(self, bits):
+        """Quantize only newly admitted aggregator K/V, after current prediction.
+
+        Old dequantized entries stay bit-identical until eviction. Native heads,
+        positional metadata and LongStream refresh/reference state are untouched.
+        """
+        assert self.host in ('streamvggt', 'longstream')
+        current = int(self.token_frames[-1])
+        count = int((self.token_frames == current).sum())
+        cache = (self.aggregator_cache if self.host == 'streamvggt'
+                 else self.session.aggregator_kv_cache_list)
+        packed = 0
+        changed = False
+        for pair in cache:
+            for which, tensor in enumerate(pair):
+                flat = tensor.flatten(2, 3) if self.host == 'streamvggt' else tensor
+                assert flat.ndim == 4 and flat.shape[2] == len(self.token_frames)
+                newest = flat[:, :, -count:]
+                restored, size = fake_quantize(newest, bits, 2 if which == 0 else 3)
+                changed = bool(torch.any(restored != newest)) or changed
+                newest.copy_(restored)
+                packed += size
+        self.quantized_frame_bytes = {
+            frame: size for frame, size in self.quantized_frame_bytes.items()
+            if frame in self.token_frames.tolist()}
+        assert current not in self.quantized_frame_bytes
+        self.quantized_frame_bytes[current] = packed
+        return dict(quant_bits=bits, quantized_current_changed=changed,
+                    analytical_packed_aggregator_bytes=sum(self.quantized_frame_bytes.values()))
+
     def reset_segment(self, frame_id):
         assert self.host == 'longstream'
         self.session.clear_cache_only()
         self.segment_start = frame_id
+        self.quantized_frame_bytes = {}
         self.token_frames = torch.empty(0, dtype=torch.long)
 
     def memory(self):
@@ -179,6 +215,8 @@ class StreamAdapter:
                           if self.host == 'longstream' and self.core.rel_pose_head is not None else None)
         positions = sum(tensor_bytes(a.cache_positions) for a, _ in self.original_attention)
         return dict(aggregator_bytes=tensor_bytes(aggregator), camera_bytes=tensor_bytes(camera),
+                    aggregator_dtype=str(aggregator[0][0].dtype),
+                    aggregator_tokens=len(self.token_frames),
                     relative_pose_bytes=tensor_bytes(relative), reference_bytes=tensor_bytes(references),
                     position_bytes=positions, token_index_bytes=tensor_bytes(self.token_frames))
 

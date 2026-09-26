@@ -1,0 +1,15 @@
+{
+  "description": "B1–B4 fixed 200-frame StreamVGGT office pilots. In-sample profile; no full evaluation authorization.",
+  "max_frames": 200,
+  "isolate_conditions": true,
+  "geometry_export": "final",
+  "structure_gate": true,
+  "conditions": [
+    {"name": "b_profile", "policy": {"frame_budget": 32, "b_experiment": "profile"}},
+    {"name": "b_recent8", "policy": {"frame_budget": 8}},
+    {"name": "b1_heads", "policy": {"frame_budget": 8, "b_experiment": "heads"}},
+    {"name": "b2_layers", "policy": {"frame_budget": 8, "b_experiment": "layers"}},
+    {"name": "b3_rank", "policy": {"frame_budget": 8, "b_experiment": "rank"}},
+    {"name": "b4_registers", "policy": {"frame_budget": 200, "b_experiment": "registers"}}
+  ]
+}

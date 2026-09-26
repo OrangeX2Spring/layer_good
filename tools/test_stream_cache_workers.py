@@ -74,6 +74,48 @@ class WorkerTests(unittest.TestCase):
         self.dispatch.assert_not_called()
         self.assertEqual((self.args.out / 'sentinel').read_text(), 'keep')
 
+    def test_precision_gate_records_payload_and_rejects_inactive_quantization(self):
+        self.args.sweep.write_text(json.dumps(dict(isolate_conditions=True,
+            geometry_export='final', precision_gate=True,
+            conditions=[dict(name='recent8_int8', policy=dict(quant_bits=8))])))
+
+        def complete_worker(command, check):
+            if command[-1] == '__fidelity__':
+                return
+            result = self.args.out / command[-1]
+            result.mkdir()
+            rows = [dict(retained_frames=list(range(i + 1)), patch_indices=[0, 1, 2, 3],
+                quant_bits=8, quantized_current_changed=True, refresh=False,
+                aggregator_tokens=5 * (i + 1), aggregator_bytes=160 * (i + 1),
+                analytical_packed_aggregator_bytes=60 * (i + 1),
+                aggregator_dtype='torch.float32', camera_bytes=40, relative_pose_bytes=0,
+                reference_bytes=0, position_bytes=20, token_index_bytes=40,
+                feature_bytes=16, peak_allocated=1000) for i in range(2)]
+            (result / 'events.jsonl').write_text('\n'.join(json.dumps(row) for row in rows))
+
+        self.dispatch.side_effect = complete_worker
+        sweep.run(self.args)
+        report = json.loads((self.args.out / 'precision_gate.json').read_text())['recent8_int8']
+        self.assertEqual(report['max_analytical_total_cache_bytes'], 236)
+        self.assertEqual(report['packed_to_control_aggregator_byte_ratio_max'], 120 / 256)
+        self.assertEqual([call.args[0][-1] for call in self.dispatch.call_args_list],
+                         ['__fidelity__', 'recent8_int8'])
+
+        original_complete = complete_worker
+
+        def inactive_worker(command, check):
+            original_complete(command, check)
+            if command[-1] != '__fidelity__':
+                path = self.args.out / command[-1] / 'events.jsonl'
+                path.write_text(path.read_text().replace('"quantized_current_changed": true',
+                                                        '"quantized_current_changed": false'))
+
+        self.args.out = self.args.out.parent / 'inactive'
+        self.dispatch.side_effect = inactive_worker
+        with self.assertRaises(AssertionError):
+            sweep.run(self.args)
+        self.assertFalse((self.args.out / 'precision_gate.json').exists())
+
     def test_full_scene_checks_methods_without_control_workers(self):
         specification = dict(isolate_conditions=True, geometry_export='final',
             correspondence_full='scene', conditions=[dict(name='correspondence_p50',

@@ -32,7 +32,7 @@ if [ "$HOSTS" = correspondence-gates ] || [ "$HOSTS" = correspondence-full ]; th
     STAGE=$HOSTS
     HOSTS=stream3r,streamvggt,longstream
 fi
-case "$STAGE" in full|calibrate|coverage|combined|combined-pilot|correspondence-gates|correspondence-full) ;; *) echo "Unknown stage: $STAGE" >&2; exit 2 ;; esac
+case "$STAGE" in full|calibrate|coverage|combined|combined-pilot|precision-pilot|precision|structure-pilot|correspondence-gates|correspondence-full) ;; *) echo "Unknown stage: $STAGE" >&2; exit 2 ;; esac
 echo "WRAPPER stage=$STAGE hosts=$HOSTS commit=$(git -C "$REPO" rev-parse --short HEAD)"
 case "$SLURM_ARRAY_TASK_ID" in
     0) ARRAY_SCENE=freiburg3_long_office_household; ARRAY_COUNT=2585 ;;
@@ -107,6 +107,22 @@ for CACHE_HOST in ${HOSTS//,/ }; do
             export CACHE_SWEEP="$REPO/tools/stream_cache_streamvggt_coverage.json"
         fi
         run_scene "$ARRAY_SCENE" 256
+    elif [ "$STAGE" = structure-pilot ]; then
+        test "$CACHE_HOST" = streamvggt
+        test "$SLURM_ARRAY_TASK_ID" = 0
+        export CACHE_SWEEP="$REPO/tools/stream_cache_structure.json"
+        run_scene freiburg3_long_office_household 200
+    elif [ "$STAGE" = precision ] || [ "$STAGE" = precision-pilot ]; then
+        test "$CACHE_HOST" = streamvggt || test "$CACHE_HOST" = longstream
+        test "$SLURM_ARRAY_TASK_ID" = 0
+        export CACHE_SWEEP="$REPO/tools/stream_cache_precision.json"
+        if [ "$STAGE" = precision-pilot ]; then
+            run_scene freiburg3_long_office_household 256
+        else
+            run_scene freiburg3_long_office_household 2585
+            run_scene freiburg2_large_with_loop 5182
+            run_scene freiburg2_large_no_loop 3359
+        fi
     elif [ "$STAGE" = combined ] || [ "$STAGE" = combined-pilot ]; then
         test "$CACHE_HOST" = streamvggt || test "$CACHE_HOST" = longstream
         test "$SLURM_ARRAY_TASK_ID" = 0
