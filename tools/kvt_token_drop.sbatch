@@ -1,7 +1,8 @@
 #!/bin/bash
 # Object-mode token dropping against the original tracker, three ARCTIC S01 objects.
 # Protocol: tools/KVT_TOKEN_DROP.md. Submit after publishing both repository commits.
-# Mode: drop (default, job 25837) or a2 (kept background, mass bias, attention probe).
+# Mode: drop (default, job 25837), a2 (kept background, mass bias, attention probe),
+# or a2k K (original plus one kept-background arm and its probe, K patches per frame).
 #SBATCH --job-name=kvt-token-drop
 #SBATCH --account=students
 #SBATCH --qos=students_normal
@@ -14,6 +15,7 @@
 set -euo pipefail
 MODE=${1:-drop}
 case "$MODE" in drop) PREFIX=token_drop ;; a2) PREFIX=token_mass ;;
+    a2k) KBG=${2:?a2k needs K}; PREFIX=token_mass_k${KBG} ;;
     *) echo "Unknown mode: $MODE" >&2; exit 2 ;; esac
 test "$(hostname -s)" != head
 : "${SLURM_JOB_ID:?Submit through sbatch}"
@@ -62,6 +64,16 @@ bash "$REPO/tools/kvt_run.sh" token-drop-check -v 2>&1 | tee "$CONTEXT/token_dro
 # Same-allocation original: must reproduce the recorded r518 ATE, and gives the timing baseline.
 bash "$REPO/tools/kvt_run.sh" arctic-run --results "${TAG}_original" --no-viz \
     --online-policy original --max-keyframes 0 --expect-baseline
+if [ "$MODE" = a2k ]; then
+    bash "$REPO/tools/kvt_run.sh" arctic-run --results "${TAG}_bg${KBG}" --no-viz \
+        --online-policy original --max-keyframes 0 --token-drop --keep-background "$KBG" \
+        --check-masks-from "${TAG}_original"
+    bash "$REPO/tools/kvt_run.sh" arctic-run --results "${TAG}_probe_bg${KBG}" --no-viz \
+        --online-policy original --max-keyframes 0 --token-drop --keep-background "$KBG" \
+        --attention-probe --check-masks-from "${TAG}_original"
+    echo "TOKEN MASS K JOB OK"
+    exit 0
+fi
 # Token drop: same frames, same SAM masks (checked byte for byte), fewer patches computed.
 bash "$REPO/tools/kvt_run.sh" arctic-run --results "${TAG}_dropped" --no-viz \
     --online-policy original --max-keyframes 0 --token-drop \

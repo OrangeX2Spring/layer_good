@@ -153,3 +153,32 @@ Expected evidence: `COMMIT`, test `OK` with `ALL-BACKGROUND`, `MASS k=4` and
 `MASK GATE OK` for every later run, per-run
 ATE tables, `PROBE <scene>` summaries for six probe runs, `TOKEN MASS JOB OK`.
 Limits: one run per condition, three objects, synchronous harness timing.
+
+
+## A2 follow-up: one larger K (mode `a2k 64`)
+
+Selected 2026-09-26 after job 25906: bg16 without bias passed box and espresso
+and failed only ketchup RPE_t (+13.7%). One larger K, not a sweep: K=64, the
+largest step for ketchup (~85 object patches) while every object stays far below
+the dense 1,369. No mass bias (it overshot and hurt in 25906).
+
+`bash tools/kvt_token_drop.sbatch a2k 64` runs the tests, the original (same-
+allocation time and memory baseline; on the 4090 it should reproduce 25906's
+original exactly, a cross-job determinism check), timed `bg64`, and untimed
+`probe_bg64`. Tag `token_mass_k64_<job>`; three run archives, ~1.7 GB.
+
+Criterion unchanged (each of ATE, RPE_t, RPE_rot ≤ +5% against the same-job
+original, lower time and peak allocated), with 25906's bg16 as the comparison.
+
+```bash
+cd /mnt/projects/gr/3DRecon/layer_good
+W='git -c fetch.recurseSubmodules=false pull --ff-only'
+W="$W && bash tools/kvt_token_drop.sbatch a2k 64"
+Q="-A students --qos=students_normal -p 24g -w stuttgart"
+LOG=/mnt/projects/gr/3DRecon/kvt_token_drop-%j.log
+sbatch $Q --gres=gpu:1 --propagate=NONE -o $LOG --wrap="$W"
+```
+
+Expected: 12 tests OK, `BASELINE NOT ASSERTED` (deviations as in 25906 if
+deterministic), `MASK GATE OK` x3 for both later runs, a `PROBE` summary per
+object, `TOKEN MASS K JOB OK`.
