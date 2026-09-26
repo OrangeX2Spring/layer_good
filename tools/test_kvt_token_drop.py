@@ -57,7 +57,7 @@ def run(images, keep, query, query_keep, background=None, query_background=None)
 
 
 def configure(test, **options):
-    token_drop.config.update(mass=False, probe=None, **options)
+    token_drop.config.update({"mass": False, "probe": None, **options})
     test.addCleanup(token_drop.config.update, mass=False, probe=None)
 
 
@@ -192,8 +192,10 @@ class ForwardTests(unittest.TestCase):
         keep, background = background_keep(patch_keep(mask), 16)
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "probe.jsonl"
-            configure(self, mass=True, probe=token_drop.Probe(path))
+            probe = token_drop.Probe(path)
+            configure(self, mass=True, probe=probe)
             run(images[:, :3], keep[:3], images[:, 3:], keep[3:], background[:3], background[3:])
+            probe.file.close()
             records = [json.loads(line) for line in path.read_text().splitlines()]
         net = model()
         layers = list(range(1, len(net.decoder), 2))
