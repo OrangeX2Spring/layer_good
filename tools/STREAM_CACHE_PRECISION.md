@@ -103,3 +103,43 @@ Do not chain or submit the full stage behind an unreviewed pilot. Review quota
 and pilot archive sizes first. Runtime contracts are repeated for every scene.
 Follow logs with `tail -n 100 -f <log>`; Ctrl-C stops watching. Transfers remain
 user-operated through the field-notes rsync route; extract each archive separately.
+
+## Native budget-32 attribution control (2026-09-27)
+
+After reviewing LongStream full job 25921, run one additional condition only:
+`recent32_native`, budget 32 and quant_bits 0. Stage `precision-native` accepts
+LongStream only and runs the same three full sequences sequentially (array task
+0), producing three archives. `stream_cache_precision_native.json` preserves all
+other policy defaults, native precision, width, frame selection, seed, heads and
+refresh. The effective retained maximum remains 25 frames. This uses the existing
+native path; no new compression implementation or model change is introduced.
+
+Purpose: compare against 25921 `recent32_int4` to separate the effect of longer
+retained history from quantization distortion. Also report native budget-32 versus
+archived recent8, noting the older control's different GPU. Do not impose a new
+noninferiority tolerance after observing results: report exact ATE, translation-RPE
+p99, rotation RPE and fitted-scale deltas for each sequence. This attribution
+control does not alter A3's predefined result or establish actual packed savings.
+
+Require tests, native fidelity, RUN OK recent32_native, CAMERA EVALUATION OK,
+JOB OK and exit 0 for each scene. A PRECISION CONTRACT GATE marker is not expected
+for this unquantized control. During archive review verify matching input/GT/pair
+masks, checkpoint/model source, actual dtype, and frame-by-frame retained IDs,
+refresh boundaries and aggregator byte counts against 25921. Expect identical
+retention and actual storage with quant_bits 0 versus 4; review any discrepancy
+before interpreting accuracy. Check the actual GPU against 25921's RTX 4090.
+
+On CAMP head after publication, reuse the established stuttgart allocation;
+queue availability is not asserted:
+
+```bash
+cd /mnt/projects/gr/3DRecon/layer_good
+W='git -c fetch.recurseSubmodules=false pull --ff-only'
+W="$W && bash tools/stream_cache_long.sbatch longstream precision-native"
+LOG=/mnt/projects/gr/3DRecon/stream_cache_native-%A_%a.log
+sbatch -A students --qos=students_normal -p 24g -w stuttgart \
+  --array=0 --gres=gpu:1 --propagate=NONE -o "$LOG" --wrap="$W"
+```
+
+Review all three archives before choosing the B3 host/calibration protocol.
+No B3 port or full run is included in this control experiment.

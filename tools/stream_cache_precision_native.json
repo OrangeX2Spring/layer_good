@@ -1,0 +1,9 @@
+{
+  "description": "LongStream native budget-32 control for job 25921 recent32_int4. Preserve native precision and refresh; compare identical retained history with quantization disabled.",
+  "max_frames": 5182,
+  "isolate_conditions": true,
+  "geometry_export": "final",
+  "conditions": [
+    {"name": "recent32_native", "policy": {"frame_budget": 32, "quant_bits": 0}}
+  ]
+}
