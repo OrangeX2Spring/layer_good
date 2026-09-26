@@ -127,6 +127,11 @@ whether the bias restores the dense background mass share. Low-confidence pose
 holds (`low conf detected` in the log) are reported per arm, since they explained
 most of box's 25837 gap. No threshold or K sweep beyond {4, 16}.
 
+Runs on stuttgart's RTX 4090 (agreed preference: faster than muenchen's A5000).
+The r518 baseline was recorded on the A5000, so `--expect-baseline` asserts
+only there; on the 4090 it prints `BASELINE NOT ASSERTED` with each object's ATE
+deviation. The criterion uses the same-allocation original regardless.
+
 Submit on CAMP head after publishing; check quota first (~6.6 GB added):
 
 ```bash
@@ -134,12 +139,13 @@ getquota
 cd /mnt/projects/gr/3DRecon/layer_good
 W='git -c fetch.recurseSubmodules=false pull --ff-only'
 W="$W && bash tools/kvt_token_drop.sbatch a2"
-Q="-A students --qos=students_normal -p 24g -w muenchen"
+Q="-A students --qos=students_normal -p 24g -w stuttgart"
 LOG=/mnt/projects/gr/3DRecon/kvt_token_drop-%j.log
 sbatch $Q --gres=gpu:1 --propagate=NONE -o $LOG --wrap="$W"
 ```
 
 Expected evidence: `COMMIT`, test `OK` with `ALL-BACKGROUND`, `MASS k=4` and
-`PROBE` lines, `BASELINE GATE OK`, `MASK GATE OK` for every later run, per-run
+`PROBE` lines, `BASELINE NOT ASSERTED` with small deviations (review them),
+`MASK GATE OK` for every later run, per-run
 ATE tables, `PROBE <scene>` summaries for six probe runs, `TOKEN MASS JOB OK`.
 Limits: one run per condition, three objects, synchronous harness timing.
