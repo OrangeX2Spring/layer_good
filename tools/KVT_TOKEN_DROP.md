@@ -119,7 +119,7 @@ without the bias path; K=4 caches exactly object + 4 per frame + registers with
 the stored bias equal to the log weight; the probe records all 18 global layers
 for a rebuild and its query with shares summing to 1. The single-frame all-kept
 test is bit-exact only on the A5000; the 4090 picks different bf16 kernels for
-the two paths (jobs 25903/25904: up to 1.28e-2 over points, poses and
+the two paths (job 25903 and its resubmission: up to 1.28e-2 over points, poses and
 confidence), so there it asserts poses within 1e-2, like the rebuild test, and
 prints the point and confidence differences.
 

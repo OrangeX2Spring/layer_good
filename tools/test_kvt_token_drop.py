@@ -117,7 +117,7 @@ class ForwardTests(unittest.TestCase):
         reference = pi3_inference(net, images, "cuda:0")
         kept = pi3_inference(net, images, "cuda:0", keep=full)
         # Bit-exact on the A5000 (jobs 25837, 25902). The RTX 4090 selects different
-        # bf16 kernels for the two paths (jobs 25903/25904), so there the rebuild
+        # bf16 kernels for the two paths (job 25903 and its resubmission), so the rebuild
         # test's contract applies: poses within 1e-2; points and confidence reported.
         gpu = torch.cuda.get_device_name()
         diffs = {name: float((a - b).abs().max())
