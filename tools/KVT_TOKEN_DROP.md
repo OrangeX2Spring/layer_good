@@ -71,3 +71,75 @@ Object mode only: TUM scene mode has no mask to drop by. The dropped path cannot
 see background even through attention, but object mode already blanked it, so the
 information removed is zeros plus their positional context. Timing is the
 synchronous harness, not the paper's FPS benchmark. One run per condition.
+
+
+## A2: kept background, mass correction and attention probe (mode `a2`)
+
+Selected 2026-09-26; the user asked for the full plan in one job rather than a
+diagnostic first. Job 25837 dropped every background patch and failed the 5%
+accuracy gate (ATE +8–10%) while time fell 26–51%. A2 asks whether the background
+acted as attention sinks or context, and whether a few background tokens with
+the right attention mass recover accuracy at nearly the same cost.
+
+Changes (fork `kv_tracker/token_drop.py`, flags through `main.py` and
+`kvt_arctic_run.py`, all with `--token-drop`):
+
+- `--keep-background K` keeps K background patches per frame, evenly spaced in
+  raster order over that frame's non-object patches; `-1` keeps all of them,
+  the dense computation via the token-drop path. The selection rule is fixed a
+  priori; the probe reports whether mass sits where it keeps patches.
+- `--background-mass` adds log(n_background / K) to those keys' attention
+  logits in every decoder attention: frame, global (including cached keys; the
+  per-key bias is stored with the cache), camera, point and confidence decoders.
+  A representative then carries the softmax mass of the background it stands for
+  (Co-Me). The DINOv2 encoder is unchanged. The survey wrote log(n_dropped / k);
+  this uses the whole background count, log(1 + n_dropped / k), which is the
+  exact duplicate-key identity tested below.
+- Camera-head pooling stays a uniform mean over kept tokens, now including the K
+  background tokens, in both arms, so mass bias versus none isolates attention.
+- `--attention-probe` writes `attention_probe.jsonl`: every rebuild and the first
+  query after it, each global layer. Per query class (object patches, registers):
+  mass share on register / object / background keys; for background keys the
+  top-4 and top-16 share, effective fraction (exp entropy / count; 1 = uniform,
+  small = sinks), mass by Chebyshev patch distance to the object, and the
+  distances of the top-16; hidden-state norm quantiles per token class. The
+  probe only reads, but slows the run: probe runs are never timed.
+
+Job (`bash tools/kvt_token_drop.sbatch a2`, one allocation, tag `token_mass_<job>`):
+tests; original (`--expect-baseline`); k=0 token drop; timed arms bg4, bg4mass,
+bg16, bg16mass; then probe runs dense (-1), dropped, bg4, bg4mass, bg16,
+bg16mass. Every run after original has `--check-masks-from` the original.
+Twelve run archives of roughly 0.55 GB each (25837 sizes), ~6.6 GB in
+`kvt_arctic_out/`.
+
+Contracts (`test_kvt_token_drop.py`, CPU and GPU): background selection;
+a representative with bias log 7 through the real `BlockRope` equals seven
+identical keys (1e-5); all background kept matches upstream within 1e-2 with and
+without the bias path; K=4 caches exactly object + 4 per frame + registers with
+the stored bias equal to the log weight; the probe records all 18 global layers
+for a rebuild and its query with shares summing to 1.
+
+Criterion: unchanged from 2026-09-23, each timed arm against the same-allocation
+original on each object: ATE, RPE_t and RPE_rot each at most 5% worse, lower peak
+allocated and lower tracking time. The k=0 arm reproduces the 25837 condition in
+this allocation. The dense probe answers sink versus context; arm probes show
+whether the bias restores the dense background mass share. Low-confidence pose
+holds (`low conf detected` in the log) are reported per arm, since they explained
+most of box's 25837 gap. No threshold or K sweep beyond {4, 16}.
+
+Submit on CAMP head after publishing; check quota first (~6.6 GB added):
+
+```bash
+getquota
+cd /mnt/projects/gr/3DRecon/layer_good
+W='git -c fetch.recurseSubmodules=false pull --ff-only'
+W="$W && bash tools/kvt_token_drop.sbatch a2"
+Q="-A students --qos=students_normal -p 24g -w muenchen"
+LOG=/mnt/projects/gr/3DRecon/kvt_token_drop-%j.log
+sbatch $Q --gres=gpu:1 --propagate=NONE -o $LOG --wrap="$W"
+```
+
+Expected evidence: `COMMIT`, test `OK` with `ALL-BACKGROUND`, `MASS k=4` and
+`PROBE` lines, `BASELINE GATE OK`, `MASK GATE OK` for every later run, per-run
+ATE tables, `PROBE <scene>` summaries for six probe runs, `TOKEN MASS JOB OK`.
+Limits: one run per condition, three objects, synchronous harness timing.

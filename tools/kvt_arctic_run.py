@@ -166,7 +166,7 @@ def track(scene, manifest, results_name, resize_dim, keyframe_indices=None,
         assert 2 <= prefix_frames <= expected
         source.length = expected = prefix_frames
     torch.cuda.reset_peak_memory_stats()
-    token_drop.stats.update(calls=0, kept=0, total=0)
+    token_drop.stats.update(calls=0, kept=0, total=0, background=0)
     selector = None
     cache_policy = None
     if online_config is not None:
@@ -218,6 +218,21 @@ def track(scene, manifest, results_name, resize_dim, keyframe_indices=None,
     assert masks_written == expected, (scene, masks_written, expected)
     print(f"\nTRACKED {scene}: {expected} frames in {elapsed:.1f}s "
           f"({expected / elapsed:.2f} frames/s, synchronous export)", flush=True)
+    probe = results_dir / "attention_probe.jsonl"
+    if "--attention_probe" in tracker_args:
+        records = [json.loads(line) for line in probe.read_text().splitlines()]
+        assert records, f"{scene}: probe recorded nothing"
+        summary = {}
+        for kind in ("rebuild", "query"):
+            for queries in ("object_queries", "register_queries"):
+                rows = [r[queries] for r in records if r["kind"] == kind]
+                keys = ["background"] + [k for k in ("top4_share", "top16_share", "effective_fraction")
+                                         if all(k in row for row in rows)]
+                summary[f"{kind}/{queries}"] = {k: round(float(np.mean([row[k] for row in rows])), 4)
+                                                for k in keys}
+        print(f"PROBE {scene}: {len(records)} layer records {json.dumps(summary)}", flush=True)
+    else:
+        assert not probe.exists()
     return {"frames": expected, "seconds": round(elapsed, 1),
             "frames_per_second": round(expected / elapsed, 2),
             "keyframes": int(len(np.load(results_dir / "kf_idx.npy"))),
@@ -313,6 +328,12 @@ def main():
                         help="Correspondence pilot; requires online interval selection")
     parser.add_argument("--token-drop", action="store_true",
                         help="Compute only patches touching the SAM mask (kv_tracker/token_drop.py)")
+    parser.add_argument("--keep-background", type=int, default=0,
+                        help="A2, with --token-drop: background patches kept per frame; -1 keeps all")
+    parser.add_argument("--background-mass", action="store_true",
+                        help="A2: log-mass attention bias on the kept background patches")
+    parser.add_argument("--attention-probe", action="store_true",
+                        help="A2: record global-layer attention mass (slows the run; not for timing)")
     args = parser.parse_args()
     assert not (args.online_policy and args.keyframes_from)
     assert not (args.online_policy and args.only_eval), "Online provenance requires a fresh run"
@@ -322,7 +343,12 @@ def main():
     assert args.max_keyframes >= 2 or (args.online_policy == "original" and args.max_keyframes == 0)
     assert not args.prefix_frames or args.no_viz
     assert not (args.token_drop and args.cache_policy)
+    assert args.token_drop or not (args.keep_background or args.background_mass or args.attention_probe)
     tracker_args = ["--obj_mode", "--resize_dim", str(args.resize_dim)] + (["--token_drop"] if args.token_drop else [])
+    if args.keep_background:
+        tracker_args += ["--keep_background", str(args.keep_background)]
+    tracker_args += ["--background_mass"] * args.background_mass
+    tracker_args += ["--attention_probe"] * args.attention_probe
     online_config = None
     if args.online_policy:
         online_config = dict(policy=args.online_policy, max_keyframes=args.max_keyframes,

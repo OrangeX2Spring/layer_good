@@ -1,6 +1,7 @@
 #!/bin/bash
 # Object-mode token dropping against the original tracker, three ARCTIC S01 objects.
 # Protocol: tools/KVT_TOKEN_DROP.md. Submit after publishing both repository commits.
+# Mode: drop (default, job 25837) or a2 (kept background, mass bias, attention probe).
 #SBATCH --job-name=kvt-token-drop
 #SBATCH --account=students
 #SBATCH --qos=students_normal
@@ -11,12 +12,15 @@
 #SBATCH --propagate=NONE
 #SBATCH --output=/mnt/projects/gr/3DRecon/kvt_token_drop-%j.log
 set -euo pipefail
+MODE=${1:-drop}
+case "$MODE" in drop) PREFIX=token_drop ;; a2) PREFIX=token_mass ;;
+    *) echo "Unknown mode: $MODE" >&2; exit 2 ;; esac
 test "$(hostname -s)" != head
 : "${SLURM_JOB_ID:?Submit through sbatch}"
 ROOT=/mnt/projects/gr/3DRecon
 REPO="$ROOT/layer_good"
 OUT="$ROOT/kvt_arctic_out"
-TAG="token_drop_${SLURM_JOB_ID}"
+TAG="${PREFIX}_${SLURM_JOB_ID}"
 DATA=/tmp/data/arctic_data/data/cropped_images_grab_only_subset/s01
 
 hostname
@@ -62,4 +66,26 @@ bash "$REPO/tools/kvt_run.sh" arctic-run --results "${TAG}_original" --no-viz \
 bash "$REPO/tools/kvt_run.sh" arctic-run --results "${TAG}_dropped" --no-viz \
     --online-policy original --max-keyframes 0 --token-drop \
     --check-masks-from "${TAG}_original"
-echo "TOKEN DROP JOB OK"
+if [ "$MODE" = drop ]; then
+    echo "TOKEN DROP JOB OK"
+    exit 0
+fi
+# A2 timed arms, same allocation: k background patches, without and with mass bias.
+for K in 4 16; do
+    bash "$REPO/tools/kvt_run.sh" arctic-run --results "${TAG}_bg${K}" --no-viz \
+        --online-policy original --max-keyframes 0 --token-drop --keep-background "$K" \
+        --check-masks-from "${TAG}_original"
+    bash "$REPO/tools/kvt_run.sh" arctic-run --results "${TAG}_bg${K}mass" --no-viz \
+        --online-policy original --max-keyframes 0 --token-drop --keep-background "$K" \
+        --background-mass --check-masks-from "${TAG}_original"
+done
+# Probe runs read attention only; their times are not comparable. -1 keeps every
+# background patch: the dense computation, through the token-drop path.
+for ARM in dense:-1: dropped:0: bg4:4: bg4mass:4:--background-mass \
+           bg16:16: bg16mass:16:--background-mass; do
+    IFS=: read -r NAME K EXTRA <<< "$ARM"
+    bash "$REPO/tools/kvt_run.sh" arctic-run --results "${TAG}_probe_${NAME}" --no-viz \
+        --online-policy original --max-keyframes 0 --token-drop --keep-background "$K" \
+        $EXTRA --attention-probe --check-masks-from "${TAG}_original"
+done
+echo "TOKEN MASS JOB OK"
