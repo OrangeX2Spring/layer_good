@@ -12,7 +12,7 @@ import torch
 from stream_cache_adapters import sparse_vggt_attention
 from stream_cache_dynamic import (FEATURES, HIGH, LOW, History, Signals,
                                   attention_indices, budget_for, fit_controller,
-                                  history_ids, predict)
+                                  history_ids, predict, running_threshold, SCORE_WINDOW)
 
 
 class DynamicTests(unittest.TestCase):
@@ -123,12 +123,32 @@ class DynamicTests(unittest.TestCase):
         model = json.loads(json.dumps(model))
         self.assertLess(predict(model, x[0]), model['threshold'])
         self.assertGreater(predict(model, x[-1]), model['threshold'])
-        self.assertEqual(budget_for('learned', 16, x[0], model, HIGH), LOW)
+        self.assertEqual(budget_for('learned', 16, x[0], model, HIGH, model['threshold']), LOW)
         self.assertEqual(budget_for('learned', 17, x[-1], model, LOW), LOW)
-        self.assertEqual(budget_for('learned', 24, x[-1], model, LOW), HIGH)
+        self.assertEqual(budget_for('learned', 24, x[-1], model, LOW, model['threshold']), HIGH)
         schedule = [budget_for('alternate', i, None, None, LOW) for i in (16, 24, 32)]
         self.assertEqual(schedule, [LOW, HIGH, LOW])
         self.assertTrue(np.isfinite(model['weights']).all())
+
+    def test_running_threshold_shift_scale_window_and_ties(self):
+        scores = np.linspace(5., 10., SCORE_WINDOW)
+        threshold = running_threshold(scores)
+        self.assertEqual(threshold, 7.5)
+        self.assertEqual(running_threshold([-999.] + scores.tolist()), threshold)
+        # Positive affine changes preserve relative decisions, unlike a fixed cutoff.
+        for score in (6., 9.):
+            self.assertEqual(score > threshold,
+                             3 * score + 20 > running_threshold(3 * scores + 20))
+        self.assertEqual(running_threshold([6.] * 14), 6.)
+        model = dict(features=FEATURES, mean=[0.] * 7, std=[1.] * 7,
+                     weights=[0., 1., 0., 0., 0., 0., 0., 0.])
+        features = [6.] + [0.] * 6
+        self.assertEqual(budget_for('learned', 16, features, model, HIGH, 6.), LOW)
+        self.assertEqual(budget_for('learned', 8, features, model, LOW), HIGH)
+        self.assertEqual(budget_for('learned', 17, features, model, HIGH, 9.), HIGH)
+        # A huge current score cannot raise its own threshold: history is supplied separately.
+        features[0] = 1000.
+        self.assertEqual(budget_for('learned', 24, features, model, LOW, threshold), HIGH)
 
     def test_signal_interface_has_no_gt_or_future_predictions(self):
         from PIL import Image

@@ -18,6 +18,7 @@ from stream_cache_sweep import (digest, evaluate, fidelity, load_frame, load_mod
 
 REPO = Path(__file__).resolve().parents[1]
 LOW, HIGH, PERIOD = 4, 16, 8
+SCORE_WINDOW = 64
 CLIPS = [('calibration', 'freiburg3_long_office_household', 256),
          ('with_loop', 'freiburg2_large_with_loop', 256),
          ('no_loop', 'freiburg2_large_no_loop', 256)]
@@ -190,7 +191,13 @@ def predict(controller, features):
     return float(np.dot(np.r_[1., x], controller['weights']))
 
 
-def budget_for(mode, frame, features, controller, previous):
+def running_threshold(past_scores):
+    """Sequence-local median; caller excludes current/future scores and startup frames."""
+    assert len(past_scores) > 0 and np.isfinite(past_scores).all()
+    return float(np.median(past_scores[-SCORE_WINDOW:]))
+
+
+def budget_for(mode, frame, features, controller, previous, threshold=None):
     if mode.startswith('fixed'):
         return int(mode.removeprefix('fixed'))
     if frame < HIGH:
@@ -200,7 +207,8 @@ def budget_for(mode, frame, features, controller, previous):
     if mode == 'alternate':
         return LOW if (frame - HIGH) // PERIOD % 2 == 0 else HIGH
     assert mode == 'learned'
-    return HIGH if predict(controller, features) > controller['threshold'] else LOW
+    assert threshold is not None
+    return HIGH if predict(controller, features) > threshold else LOW
 
 
 def worker(args):
@@ -224,6 +232,7 @@ def worker(args):
     calibration = mode == 'collect'
     encodings, features_log, low_poses, high_poses, events = [], [], [], [], []
     previous_budget = HIGH
+    past_scores = []
     torch.manual_seed(0)
     with torch.no_grad(), (target / 'events.jsonl').open('w') as log:
         for index, frame in enumerate(frames):
@@ -231,7 +240,10 @@ def worker(args):
             start = time.perf_counter()
             features = signals.before(root / 'inputs' / frame['rgb'])
             image, _ = load_frame(root / 'inputs', frame)
-            budget = HIGH if calibration else budget_for(mode, index, features, controller, previous_budget)
+            score = predict(controller, features) if controller is not None else None
+            threshold = running_threshold(past_scores) if mode == 'learned' and index >= HIGH else None
+            budget = HIGH if calibration else budget_for(
+                mode, index, features, controller, previous_budget, threshold)
             selection_end = time.perf_counter()
             if calibration and index >= HIGH:
                 snapshot = history.snapshot()
@@ -254,13 +266,20 @@ def worker(args):
             torch.cuda.synchronize()
             event.update(features=features, signal_latest_prediction_frame=index - 1,
                          decision=index >= HIGH and index % PERIOD == 0,
-                         controller_score=predict(controller, features) if controller is not None else None,
+                         controller_score=score, controller_threshold=threshold,
+                         threshold_start_frame=max(2, index - SCORE_WINDOW) if threshold is not None else None,
+                         threshold_end_frame=index - 1 if threshold is not None else None,
                          controller_and_input_seconds=selection_end - start,
                          seconds=time.perf_counter() - start,
                          peak_allocated=torch.cuda.max_memory_allocated(),
                          peak_reserved=torch.cuda.max_memory_reserved())
             log.write(json.dumps(event, allow_nan=False) + '\n'); log.flush()
             events.append(event)
+            # Frames 0/1 have incomplete previous-motion signals. Current score
+            # enters history only AFTER its decision, never its own threshold.
+            if score is not None and index >= 2:
+                past_scores.append(score)
+                past_scores = past_scores[-SCORE_WINDOW:]
             previous_budget = budget
     np.savez_compressed(target / 'camera.npz', **pose_arrays('streamvggt',
         {'pose_enc': torch.cat(encodings, dim=1)}, frames[0]['model_hw'], 8))
@@ -305,6 +324,8 @@ def train(args):
     block_loss = np.asarray([loss[i:i + PERIOD].mean() for i in starts])
     controller = fit_controller(data['features'][starts], block_loss)
     controller.update(translation_unit=unit, source_clip='calibration',
+                      decision_rule='score > median of preceding up-to-64 frame scores; ties low',
+                      score_window=SCORE_WINDOW, score_start_frame=2,
                       labels='one-step low-vs-high pose distortion, averaged over 8 teacher steps',
                       oracle_warning='teacher-state screening; not a closed-loop performance bound')
     write_json(args.work / 'controller.json', controller)
@@ -337,6 +358,7 @@ def contracts(root, names):
         assert sizes == camera_bytes, 'Native camera history changed size across conditions'
         frame_bytes = rows[0]['aggregator_bytes']
         previous = HIGH
+        controller = json.loads((root.parents[1] / 'controller.json').read_text()) if mode == 'learned' else None
         for i, row in enumerate(rows):
             budget = row['requested_budget']
             assert row['frame'] == i and row['signal_latest_prediction_frame'] == i - 1
@@ -351,6 +373,17 @@ def contracts(root, names):
             assert row['aggregator_bytes'] == frame_bytes * len(row['retained_frames'])
             if mode in ('learned', 'alternate') and i >= HIGH and i % PERIOD:
                 assert budget == previous
+            if mode == 'learned':
+                np.testing.assert_allclose(row['controller_score'], predict(controller, row['features']))
+                if i < HIGH:
+                    assert budget == HIGH and row['controller_threshold'] is None
+                else:
+                    start = max(2, i - SCORE_WINDOW)
+                    threshold = float(np.median([e['controller_score'] for e in rows[start:i]]))
+                    assert row['threshold_start_frame'] == start and row['threshold_end_frame'] == i - 1
+                    np.testing.assert_allclose(row['controller_threshold'], threshold)
+                    if i % PERIOD == 0:
+                        assert budget == (HIGH if row['controller_score'] > threshold else LOW)
             previous = budget
         reports[name] = json.loads((root / name / 'summary.json').read_text())
     if 'stored_alternate' in names:
@@ -446,6 +479,8 @@ def main():
         shutil.copy2(REPO / 'tools' / name, source)
     write_json(args.work / 'dynamic_protocol.json', dict(host='streamvggt', clips=CLIPS,
         budgets=[LOW, HIGH], decision_period=PERIOD, seed=0, features=FEATURES,
+        revision='causal-running-median-v2', score_window=SCORE_WINDOW,
+        threshold='median of previous frame scores, excluding frames 0/1; ties low',
         backbone='frozen native dtype; native camera history preserved',
         stored_recovery='anchor plus recent source RGB; aggregator-only causal replay',
         scope='bounded supervised distillation pilot; no GT policy labels, no full evaluation'))
