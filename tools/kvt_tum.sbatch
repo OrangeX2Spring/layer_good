@@ -190,9 +190,15 @@ fi
 if [ "$MODE" = active-keyframes ]; then
     "${CONTAINER[@]}" python "$REPO/tools/test_kvt_active_keyframes.py" \
         2>&1 | tee "$WORK/context/active_keyframe_tests.log"
-    "${CONTAINER[@]}" python "$REPO/tools/kvt_active_keyframes.py" \
-        --work "$WORK" --out "$OUT" --tag "$TAG" --arms "${2:-pilot}" \
-        2>&1 | tee "$WORK/context/active_keyframes.log"
+    if [ "${2:-pilot}" = ycb ]; then
+        "${CONTAINER[@]}" python "$REPO/tools/kvt_active_objects.py" \
+            --work "$WORK" --out "$OUT" --tag "$TAG" --ycb-only \
+            2>&1 | tee "$WORK/context/active_objects.log"
+    else
+        "${CONTAINER[@]}" python "$REPO/tools/kvt_active_keyframes.py" \
+            --work "$WORK" --out "$OUT" --tag "$TAG" --arms "${2:-pilot}" \
+            2>&1 | tee "$WORK/context/active_keyframes.log"
+    fi
     if [ "${2:-pilot}" = occlusion ]; then
         "${CONTAINER[@]}" python "$REPO/tools/kvt_active_objects.py" \
             --work "$WORK" --out "$OUT" --tag "$TAG" \

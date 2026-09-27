@@ -150,3 +150,9 @@ then source frame 100 or 200. If dropping it still costs most at every start, th
 role is positional (implementation); if the cost moves with content, it is not.
 no_loop is excluded: its GT covers only frames 0-228 and 2949-3358, so no shifted
 512-frame window is evaluable. Start 0 is job 25946. Labels: `<scene>_s<start>`.
+
+Job 25949 (2026-09-27): TUM occluder and ARCTIC completed with all gates; YCBInEOAT
+stopped at staging because pose and RGB names differ (689 each). Fixed: pair by
+sorted order as point_to_pose's YcbineoatReader does. Arms now delete upstream
+`pcd.npy` (~120 MB each; 25949's all_runs.tar is 7.0 GB because of it). Rerun
+YCBInEOAT alone: `bash tools/kvt_tum.sbatch active-keyframes ycb`.

@@ -43,12 +43,15 @@ def sha256(path):
 
 
 def ycb_poses(scene_dir):
-    """annotated_poses are object-in-camera; KV-Tracker estimates camera-in-object."""
+    """annotated_poses are object-in-camera; KV-Tracker estimates camera-in-object.
+
+    Pose and RGB names differ (job 25949); like point_to_pose's YcbineoatReader,
+    pair them by sorted order."""
     rgb = sorted((scene_dir / 'rgb').glob('*.png'))
     poses = sorted((scene_dir / 'annotated_poses').glob('*.txt'))
-    assert [p.stem for p in rgb] == [p.stem for p in poses], (len(rgb), len(poses))
-    ob_in_cam = np.stack([np.loadtxt(p) for p in poses])
-    assert ob_in_cam.shape == (len(rgb), 4, 4)
+    assert len(rgb) == len(poses), (len(rgb), len(poses))
+    ob_in_cam = np.stack([np.loadtxt(p).reshape(4, 4) for p in poses])
+    assert np.isfinite(ob_in_cam).all()
     return ob_in_cam
 
 
@@ -159,29 +162,34 @@ def main():
     parser.add_argument('--work', type=Path)
     parser.add_argument('--out', type=Path)
     parser.add_argument('--tag')
+    parser.add_argument('--ycb-only', action='store_true',
+                        help='Rerun only YCBInEOAT (TUM and ARCTIC done in job 25949)')
     args = parser.parse_args()
     assert sys.platform == 'linux'
     if args.run is not None:
         return run(args.run)
-    assert args.work.is_relative_to('/tmp') and (args.work / 'TUM_OCCLUSION_OK').is_file()
+    assert args.work.is_relative_to('/tmp') and (args.ycb_only or (args.work / 'TUM_OCCLUSION_OK').is_file())
     from kvt_arctic_run import DATASET_DIR, OUT as ARCTIC_OUT, stage_dataset
 
     os.chdir(CHECKOUT)
-    manifest = json.loads((ARCTIC_OUT / 'initial_frames' / 'manifest.json').read_text())
-    stage_dataset(manifest)
-    inputs = dict(arctic_prepared=str(ARCTIC_OUT / 'prepared.tar'),
-                  arctic_prepared_sha256=sha256(ARCTIC_OUT / 'prepared.tar'), init_masks={})
-    for scene in ARCTIC:
-        reviewed = ARCTIC_OUT / 'masks' / scene / 'init_mask.png'
-        shutil.copyfile(reviewed, DATASET_DIR / scene / 'init_mask.png')
-        inputs['init_masks'][scene] = sha256(reviewed)
+    inputs = {}
+    if not args.ycb_only:
+        manifest = json.loads((ARCTIC_OUT / 'initial_frames' / 'manifest.json').read_text())
+        stage_dataset(manifest)
+        inputs = dict(arctic_prepared=str(ARCTIC_OUT / 'prepared.tar'),
+                      arctic_prepared_sha256=sha256(ARCTIC_OUT / 'prepared.tar'), init_masks={})
+        for scene in ARCTIC:
+            reviewed = ARCTIC_OUT / 'masks' / scene / 'init_mask.png'
+            shutil.copyfile(reviewed, DATASET_DIR / scene / 'init_mask.png')
+            inputs['init_masks'][scene] = sha256(reviewed)
     write_json(args.work / 'objects_protocol.json', dict(
         arctic=ARCTIC, ycbineoat=YCB_SCENE, resize_dim=RESIZE, tracker='object mode, no token drop',
         native='own angular admission; arms replay its keyframe schedule',
         subsets=[name for name, _ in SUBSETS], visibility='keyframe SAM mask fraction at model resolution',
         ycb_init='SAM 2 from first gt_mask', ycb_gt='inverse of annotated object-in-camera poses',
         inputs=inputs))
-    sequences = [('arctic', s, DATASET_DIR / s, manifest['scenes'][s]['tracking_frames']) for s in ARCTIC]
+    sequences = [] if args.ycb_only else [
+        ('arctic', s, DATASET_DIR / s, manifest['scenes'][s]['tracking_frames']) for s in ARCTIC]
     sequences.append(('ycbineoat', YCB_SCENE, YCB_STAGE / YCB_SCENE, None))
     results = {}
     for setting, scene, scene_dir, frames in sequences:
@@ -212,6 +220,8 @@ def main():
             metric = json.loads((target / 'metrics.json').read_text())
             if access is not None:
                 metric.update(audit(target, schedule))
+                # Upstream point-cloud dump, ~120 MB per run (25949: 6.4 GB); native keeps it.
+                (target / 'pcd.npy').unlink()
             return target, metric
 
         native, baseline = arm('native')
