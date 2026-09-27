@@ -12,7 +12,7 @@ def fake_quantize(value, bits, axis, group_size=32):
     Return dequantized values in the input dtype and the hypothetical byte cost.
     """
     assert value.ndim == 4 and value.is_floating_point()
-    assert bits in (4, 8) and axis in (2, 3) and group_size > 0
+    assert bits in (2, 4, 8) and axis in (2, 3) and group_size > 0
     rows = value.movedim(axis, -1)
     length = rows.shape[-1]
     groups, tail = divmod(length, group_size)

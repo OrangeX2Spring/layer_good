@@ -1,0 +1,4 @@
+{
+  "sensitivity_sweep": true,
+  "description": "Fixed bounded calibration/evaluation protocol in cache_sensitivity_sweep.py; no full evaluation."
+}

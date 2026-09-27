@@ -18,6 +18,7 @@ from kvcache_policy import pool_confidence, pool_mask
 from stream_cache_adapters import StreamAdapter
 from stream_cache_policy import CachePolicy, PolicyConfig
 from stream_cache_structure import StructureExperiment
+from stream_cache_sensitivity import CacheCompression
 
 REPO = Path(__file__).resolve().parents[1]
 PREDICTIONS = ('pose_enc', 'rel_pose_enc', 'depth', 'depth_conf',
@@ -237,6 +238,7 @@ def run_condition(args, model, root, frames, name, config):
         write_json(target / 'structure.json', dict(special_tokens=adapter.special,
                    recent_frames=4, local_threshold=.05, rank_fraction=.5,
                    profile='b_profile/profile.pt', mode=config.b_experiment))
+    compression = CacheCompression(config.compression) if config.compression is not None else None
     torch.manual_seed(config.seed)
     pose_chunks = {}
     latencies = []
@@ -276,6 +278,8 @@ def run_condition(args, model, root, frames, name, config):
                     event.update(structure.after_prune())
                 if config.quant_bits:
                     event.update(adapter.quantize_current(config.quant_bits))
+                if compression is not None:
+                    event.update(compression.stream(adapter, index))
                 event.update(adapter.memory())
                 event['feature_bytes'] = policy.feature_bytes()
                 torch.cuda.synchronize()
@@ -299,6 +303,8 @@ def run_condition(args, model, root, frames, name, config):
                     adapter.prune(picked, kept)
                     if config.quant_bits:
                         refresh_event.update(adapter.quantize_current(config.quant_bits))
+                    if compression is not None:
+                        refresh_event.update(compression.stream(adapter, index, refresh=True))
                     event['refresh_seed'] = refresh_event
                     event['post_refresh_memory'] = adapter.memory()
                     del replay
@@ -338,6 +344,8 @@ def run_condition(args, model, root, frames, name, config):
                total_seconds=sum(latencies), inference='single-frame causal, fixed head histories',
                geometry_export=args.geometry_export,
                quality='camera.npz and selected geometry exports; no object-pose claim'))
+    if compression is not None:
+        compression.save(target / 'compression.json')
     if structure is not None:
         structure.finish()
     adapter.close()

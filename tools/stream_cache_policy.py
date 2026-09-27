@@ -22,8 +22,13 @@ class PolicyConfig:
     seed: int = 0
     quant_bits: int = 0
     b_experiment: str = ''
+    compression: dict | None = None
 
     def __post_init__(self):
+        if self.compression is not None:
+            assert not self.quant_bits and not self.b_experiment
+            assert self.patch_policy == 'all' and self.admission == 'all'
+            assert self.eviction == 'fifo'
         assert self.b_experiment in ('', 'profile', 'heads', 'layers', 'rank', 'registers')
         if self.b_experiment:
             assert not self.quant_bits and self.patch_policy == 'all'

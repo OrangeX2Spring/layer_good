@@ -43,7 +43,7 @@ def associate_gt(rgb_times, gt_times, max_difference):
     return nearest, difference <= max_difference, difference
 
 
-def prepare(archive, destination, resize_dim, max_difference):
+def prepare(archive, destination, resize_dim, max_difference, start=0, count=None):
     import cv2
     from kv_tracker.image import pi3_resize_image
 
@@ -52,8 +52,16 @@ def prepare(archive, destination, resize_dim, max_difference):
     scene = archive.stem.removeprefix('rgbd_dataset_')
     prefix = f'rgbd_dataset_{scene}/'
     with zipfile.ZipFile(archive) as packed:
+        images = sorted(n for n in packed.namelist() if n.startswith(prefix + 'rgb/')
+                        and n.endswith('.png'))
+        assert start >= 0
+        selected = images[start:] if count is None else images[start:start + count]
+        assert selected and (count is None or len(selected) == count)
+        selected = set(selected)
         for info in packed.infolist():
             if not info.filename.startswith(prefix) or info.is_dir():
+                continue
+            if info.filename.startswith(prefix + 'rgb/') and info.filename not in selected:
                 continue
             relative = Path(info.filename[len(prefix):])
             assert '..' not in relative.parts and not relative.is_absolute()
@@ -171,6 +179,10 @@ def run(config_path):
     config = json.loads(config_path.read_text())
     scene_dir, result = Path(config['scene_dir']), config_path.parent
     manifest = json.loads((scene_dir / 'manifest.json').read_text())
+    compression = None
+    if config.get('compression') is not None:
+        from stream_cache_sensitivity import CacheCompression
+        compression = CacheCompression(config['compression'])
     length = config['frames']
     assert 2 <= length <= manifest['frames']
     random.seed(0)
@@ -225,8 +237,11 @@ def run(config_path):
                 args=['--cam_only', '--resize_dim', str(config['resize_dim']),
                       '--kf_auto', str(config['interval'])], frame_source=source,
                 keyframe_selector=selector, snapshot_callback=recorder,
-                keyframe_append=append_cache, **cache_args)
+                keyframe_append=append_cache,
+                cache_transform=None if compression is None else compression.kvt, **cache_args)
         finally:
+            if compression is not None:
+                compression.save(result / 'compression.json')
             if selector is not None:
                 selector.close(result)
             if append_cache is not None:

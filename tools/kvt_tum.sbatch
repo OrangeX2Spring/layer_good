@@ -11,7 +11,7 @@
 #SBATCH --output=/mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log
 set -euo pipefail
 MODE=${1:-sweep}
-case "$MODE" in sweep|combined|correspondence|correspondence-gates|llm-packet|replay-fidelity|llm-compare|append) ;;
+case "$MODE" in sweep|combined|correspondence|correspondence-gates|llm-packet|replay-fidelity|llm-compare|append|sensitivity) ;;
     *) echo "Unknown mode: $MODE" >&2; exit 2 ;; esac
 test "$(uname -s)" = Linux
 test "$(hostname)" != head
@@ -125,6 +125,11 @@ if [ "$MODE" = correspondence-gates ]; then
     test -f "$HOME/.hf_env"
     source "$HOME/.hf_env"
 fi
+if [ "$MODE" = sensitivity ]; then
+    cp "$REPO/tools/cache_sensitivity_sweep.py" "$REPO/tools/stream_cache_sensitivity.py" \
+       "$REPO/tools/stream_cache_quantization.py" "$REPO/tools/test_cache_sensitivity.py" \
+       "$REPO/tools/CACHE_SENSITIVITY.md" "$WORK/context/"
+fi
 sha256sum "$ROOT/kvt.tar" > "$WORK/context/container_tar.sha256"
 
 if ! podman image exists localhost/kvt; then
@@ -177,7 +182,13 @@ if [ "$MODE" = correspondence-gates ]; then
 fi
 "${CONTAINER[@]}" python -m pip list --format=json > "$WORK/context/packages.json"
 "${CONTAINER[@]}" python "$REPO/tools/test_kvt_tum.py" 2>&1 | tee "$WORK/context/tests.log"
-if [ "$MODE" = replay-fidelity ]; then
+if [ "$MODE" = sensitivity ]; then
+    "${CONTAINER[@]}" python "$REPO/tools/test_cache_sensitivity.py" \
+        2>&1 | tee "$WORK/context/sensitivity_tests.log"
+    "${CONTAINER[@]}" python "$REPO/tools/cache_sensitivity_sweep.py" \
+        --host kvt --work "$WORK" --out "$OUT" --tag "$TAG" \
+        2>&1 | tee "$WORK/context/sensitivity.log"
+elif [ "$MODE" = replay-fidelity ]; then
     "${CONTAINER[@]}" python "$REPO/tools/kvt_tum_replay.py" \
         --work "$WORK" --out "$OUT" --tag "$TAG" \
         2>&1 | tee "$WORK/context/replay_fidelity.log"

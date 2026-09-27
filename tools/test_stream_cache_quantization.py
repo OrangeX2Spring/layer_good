@@ -15,7 +15,7 @@ class QuantizationTests(unittest.TestCase):
     def test_cuda_dtypes_and_finite_reconstruction(self):
         for dtype in (torch.float32, torch.float16, torch.bfloat16):
             value = torch.randn(1, 2, 35, 64, device='cuda', dtype=dtype)
-            for bits in (4, 8):
+            for bits in (2, 4, 8):
                 for axis in (2, 3):
                     result, size = fake_quantize(value, bits, axis)
                     self.assertEqual(result.dtype, dtype)
@@ -36,7 +36,7 @@ class QuantizationTests(unittest.TestCase):
     def test_group_axes_and_error_against_scalar_reference(self):
         torch.manual_seed(42)
         value = torch.randn(1, 2, 35, 37)
-        for bits in (4, 8):
+        for bits in (2, 4, 8):
             for axis in (2, 3):
                 actual, size = fake_quantize(value, bits, axis)
                 rows = value.movedim(axis, -1).reshape(-1, value.shape[axis])
