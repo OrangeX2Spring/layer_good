@@ -100,3 +100,40 @@ gates (no controller is used). Output: comparison.json with native/all/drop<j>;
 per-frame traj.npy for post-hoc per-keyframe value analysis. Late keyframes affect
 few frames (499 only 500..511), so their ATE deltas are small by construction.
 Entry: `bash tools/kvt_tum.sbatch active-keyframes loo`.
+
+## Occlusion setting (`active-keyframes occlusion`)
+
+User-approved 2026-09-27: three settings in one job, leave-one-out plus
+visibility-ranked arms. Question: under occlusion, does keeping the keyframes
+where the target is most visible beat recency at the same count? Arms per
+sequence, after native and the all-selected fidelity gate: `drop<j>` for every
+native keyframe, and `newest_two`/`visible_two`/`newest_half`/`visible_half`
+(anchor plus the 1 or ceil(K/2)-1 newest, or most-visible, keyframes; visibility
+ties prefer newer). A keyframe's visibility is recorded when it is queried, before
+admission, so selection is causal. Counts are unchanged: this compares ranking.
+
+1. **TUM + synthetic occluder** (`kvt_active_keyframes.py --arms occlusion`): the
+   three 512-frame clips, camera mode as above. Opaque gray (128) centred patch
+   covering 40% of the model input on frames [100,150), [250,300), [400,450); each
+   burst covers one native keyframe (149, 299, 449). Visibility = 1 - covered
+   fraction (0.6 or 1.0). The scene mask stays all-true, so gauge/origin handling is
+   native. Native is also occluded; the unoccluded reference is job 25944/Job 1.
+2. **ARCTIC S01** box/ketchup/espresso and 3. **YCBInEOAT** `mustard_easy_00_02`
+   (`kvt_active_objects.py`): object mode, 518, no token drop. Native uses its own
+   angular admission (no cap); every arm replays native's keyframe schedule via
+   `keyframe_indices`, because admission depends on the predicted pose.
+   Visibility = SAM mask fraction at model resolution, which also grows as the
+   object nears the camera. ARCTIC uses the reviewed initial masks and upstream GT
+   and evaluation. YCBInEOAT: SAM 2 from the first `gt_mask`; GT is the inverse of
+   `annotated_poses` (object-in-camera); `ate_uninverted_gt_m` is only a convention
+   check. One sequence; there is no published KV-Tracker reference on it.
+
+Gates: object arms must match native's keyframe IDs and poses and every SAM mask
+byte for byte; all-selected and drop prefixes (frames <= max(j, first insertion))
+match native at the ARCTIC prefix tolerance rtol/atol 1e-4 (TUM: atol1e-5/rtol1e-4);
+every query's selection, visibility and bytes are replayed by `audit`. Arm masks
+are deleted after the comparison; native's are kept. Order TUM, ARCTIC, YCBInEOAT;
+YCBInEOAT is staged last so a layout surprise cannot cost the others. Markers:
+`TUM_OCCLUSION_OK`, `OBJECT FIDELITY GATE OK`, `OBJECT SEQUENCE OK`, then JOB_OK.
+Outputs: comparison.json (TUM), comparison_objects.json, objects_protocol.json,
+objects_inputs.json. Expected runtime several hours (ARCTIC ~2 min per arm).

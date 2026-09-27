@@ -127,7 +127,8 @@ if [ "$MODE" = correspondence-gates ]; then
 fi
 if [ "$MODE" = active-keyframes ]; then
     cp "$REPO/tools/kvt_active_keyframes.py" "$REPO/tools/test_kvt_active_keyframes.py" \
-       "$REPO/tools/KVT_ACTIVE_KEYFRAMES.md" "$WORK/context/"
+       "$REPO/tools/KVT_ACTIVE_KEYFRAMES.md" "$REPO/tools/kvt_active_objects.py" \
+       "$REPO/tools/kvt_arctic_run.py" "$WORK/context/"
 fi
 if [ "$MODE" = sensitivity ]; then
     cp "$REPO/tools/cache_sensitivity_sweep.py" "$REPO/tools/stream_cache_sensitivity.py" \
@@ -192,6 +193,11 @@ if [ "$MODE" = active-keyframes ]; then
     "${CONTAINER[@]}" python "$REPO/tools/kvt_active_keyframes.py" \
         --work "$WORK" --out "$OUT" --tag "$TAG" --arms "${2:-pilot}" \
         2>&1 | tee "$WORK/context/active_keyframes.log"
+    if [ "${2:-pilot}" = occlusion ]; then
+        "${CONTAINER[@]}" python "$REPO/tools/kvt_active_objects.py" \
+            --work "$WORK" --out "$OUT" --tag "$TAG" \
+            2>&1 | tee "$WORK/context/active_objects.log"
+    fi
 elif [ "$MODE" = sensitivity ]; then
     "${CONTAINER[@]}" python "$REPO/tools/test_cache_sensitivity.py" \
         2>&1 | tee "$WORK/context/sensitivity_tests.log"

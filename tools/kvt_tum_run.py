@@ -185,6 +185,7 @@ def run(config_path):
         compression = CacheCompression(config['compression'])
     length = config['frames']
     assert 2 <= length <= manifest['frames']
+    occluder = config.get('occluder')
     random.seed(0)
     np.random.seed(0)
     torch.manual_seed(0)
@@ -200,6 +201,18 @@ def run(config_path):
                 assert frame['resized_mask_np'].all()
                 assert hashlib.sha256(pixels.tobytes()).hexdigest() == (
                     manifest['inputs'][index]['model_rgb_sha256'])
+                frame['visible_fraction'] = 1.
+                if occluder is not None and any(a <= index < b for a, b in occluder['windows']):
+                    # Opaque centred patch on the model input; the scene mask stays all true.
+                    h, w = pixels.shape[:2]
+                    oh, ow = round(h * occluder['fraction'] ** .5), round(w * occluder['fraction'] ** .5)
+                    y0, x0 = (h - oh) // 2, (w - ow) // 2
+                    pixels = pixels.copy()
+                    pixels[y0:y0 + oh, x0:x0 + ow] = occluder['value']
+                    frame['resized_rgb_masked_np'] = pixels
+                    frame['resized_rgb_masked'] = torch.tensor(
+                        pixels, device='cuda:0', dtype=torch.float32)[None, None] / 255.
+                    frame['visible_fraction'] = 1. - oh * ow / (h * w)
                 yield frame
                 torch.cuda.synchronize()
                 timing.write(json.dumps(dict(frame=index,
