@@ -222,6 +222,11 @@ def run(config_path):
         else:
             selector = None if config['policy'] == 'bare' else TumSelector(config, decisions, inference)
         recorder = FinalScene() if config.get('save_final_scene', True) else None
+        active_keyframes = None
+        if config.get('active_keyframes') is not None:
+            from kv_tracker.active_keyframes import ActiveKeyframes
+            assert config['policy'] == 'original' and recorder is None
+            active_keyframes = ActiveKeyframes(**config['active_keyframes'])
         append_cache = None
         if config.get('append_only', False):
             from kv_tracker.append_cache import AppendOnlyCache
@@ -237,9 +242,11 @@ def run(config_path):
                 args=['--cam_only', '--resize_dim', str(config['resize_dim']),
                       '--kf_auto', str(config['interval'])], frame_source=source,
                 keyframe_selector=selector, snapshot_callback=recorder,
-                keyframe_append=append_cache,
+                keyframe_append=append_cache, active_keyframes=active_keyframes,
                 cache_transform=None if compression is None else compression.kvt, **cache_args)
         finally:
+            if active_keyframes is not None:
+                write_json(result / 'active_keyframes.json', active_keyframes.events)
             if compression is not None:
                 compression.save(result / 'compression.json')
             if selector is not None:

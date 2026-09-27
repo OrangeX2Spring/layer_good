@@ -11,7 +11,7 @@
 #SBATCH --output=/mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log
 set -euo pipefail
 MODE=${1:-sweep}
-case "$MODE" in sweep|combined|correspondence|correspondence-gates|llm-packet|replay-fidelity|llm-compare|append|sensitivity) ;;
+case "$MODE" in sweep|combined|correspondence|correspondence-gates|llm-packet|replay-fidelity|llm-compare|append|sensitivity|active-keyframes) ;;
     *) echo "Unknown mode: $MODE" >&2; exit 2 ;; esac
 test "$(uname -s)" = Linux
 test "$(hostname)" != head
@@ -125,6 +125,10 @@ if [ "$MODE" = correspondence-gates ]; then
     test -f "$HOME/.hf_env"
     source "$HOME/.hf_env"
 fi
+if [ "$MODE" = active-keyframes ]; then
+    cp "$REPO/tools/kvt_active_keyframes.py" "$REPO/tools/test_kvt_active_keyframes.py" \
+       "$REPO/tools/KVT_ACTIVE_KEYFRAMES.md" "$WORK/context/"
+fi
 if [ "$MODE" = sensitivity ]; then
     cp "$REPO/tools/cache_sensitivity_sweep.py" "$REPO/tools/stream_cache_sensitivity.py" \
        "$REPO/tools/stream_cache_quantization.py" "$REPO/tools/test_cache_sensitivity.py" \
@@ -182,7 +186,13 @@ if [ "$MODE" = correspondence-gates ]; then
 fi
 "${CONTAINER[@]}" python -m pip list --format=json > "$WORK/context/packages.json"
 "${CONTAINER[@]}" python "$REPO/tools/test_kvt_tum.py" 2>&1 | tee "$WORK/context/tests.log"
-if [ "$MODE" = sensitivity ]; then
+if [ "$MODE" = active-keyframes ]; then
+    "${CONTAINER[@]}" python "$REPO/tools/test_kvt_active_keyframes.py" \
+        2>&1 | tee "$WORK/context/active_keyframe_tests.log"
+    "${CONTAINER[@]}" python "$REPO/tools/kvt_active_keyframes.py" \
+        --work "$WORK" --out "$OUT" --tag "$TAG" \
+        2>&1 | tee "$WORK/context/active_keyframes.log"
+elif [ "$MODE" = sensitivity ]; then
     "${CONTAINER[@]}" python "$REPO/tools/test_cache_sensitivity.py" \
         2>&1 | tee "$WORK/context/sensitivity_tests.log"
     "${CONTAINER[@]}" python "$REPO/tools/cache_sensitivity_sweep.py" \
