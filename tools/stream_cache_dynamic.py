@@ -19,6 +19,8 @@ from stream_cache_sweep import (digest, evaluate, fidelity, load_frame, load_mod
 REPO = Path(__file__).resolve().parents[1]
 LOW, HIGH, PERIOD = 4, 16, 8
 SCORE_WINDOW = 64
+QUANTILES = {'learned_q25': .25, 'learned_q50': .5,
+             'learned_q60': .6, 'learned_q75': .75}
 CLIPS = [('calibration', 'freiburg3_long_office_household', 256),
          ('with_loop', 'freiburg2_large_with_loop', 256),
          ('no_loop', 'freiburg2_large_no_loop', 256)]
@@ -191,10 +193,11 @@ def predict(controller, features):
     return float(np.dot(np.r_[1., x], controller['weights']))
 
 
-def running_threshold(past_scores):
-    """Sequence-local median; caller excludes current/future scores and startup frames."""
+def running_threshold(past_scores, quantile):
+    """Sequence-local quantile; caller excludes current/future scores and startup frames."""
     assert len(past_scores) > 0 and np.isfinite(past_scores).all()
-    return float(np.median(past_scores[-SCORE_WINDOW:]))
+    assert 0 < quantile < 1
+    return float(np.quantile(past_scores[-SCORE_WINDOW:], quantile))
 
 
 def budget_for(mode, frame, features, controller, previous, threshold=None):
@@ -206,7 +209,7 @@ def budget_for(mode, frame, features, controller, previous, threshold=None):
         return previous
     if mode == 'alternate':
         return LOW if (frame - HIGH) // PERIOD % 2 == 0 else HIGH
-    assert mode == 'learned'
+    assert mode in QUANTILES
     assert threshold is not None
     return HIGH if predict(controller, features) > threshold else LOW
 
@@ -226,7 +229,7 @@ def worker(args):
         return
     backend, mode = args.worker.split('_', 1)
     assert backend in ('active', 'stored')
-    controller = json.loads((args.work / 'controller.json').read_text()) if mode == 'learned' else None
+    controller = json.loads((args.work / 'controller.json').read_text()) if mode in QUANTILES else None
     adapter = StreamAdapter(model, 'streamvggt')
     history, signals = History(adapter, backend), Signals()
     calibration = mode == 'collect'
@@ -241,7 +244,8 @@ def worker(args):
             features = signals.before(root / 'inputs' / frame['rgb'])
             image, _ = load_frame(root / 'inputs', frame)
             score = predict(controller, features) if controller is not None else None
-            threshold = running_threshold(past_scores) if mode == 'learned' and index >= HIGH else None
+            threshold = (running_threshold(past_scores, QUANTILES[mode])
+                         if mode in QUANTILES and index >= HIGH else None)
             budget = HIGH if calibration else budget_for(
                 mode, index, features, controller, previous_budget, threshold)
             selection_end = time.perf_counter()
@@ -267,6 +271,7 @@ def worker(args):
             event.update(features=features, signal_latest_prediction_frame=index - 1,
                          decision=index >= HIGH and index % PERIOD == 0,
                          controller_score=score, controller_threshold=threshold,
+                         controller_quantile=QUANTILES.get(mode),
                          threshold_start_frame=max(2, index - SCORE_WINDOW) if threshold is not None else None,
                          threshold_end_frame=index - 1 if threshold is not None else None,
                          controller_and_input_seconds=selection_end - start,
@@ -288,6 +293,7 @@ def worker(args):
                  low=np.asarray(low_poses), high=np.asarray(high_poses),
                  frames=np.arange(HIGH, len(frames)))
     write_json(target / 'summary.json', dict(backend=backend, mode=mode, frames=len(frames),
+        controller_quantile=QUANTILES.get(mode),
         total_seconds=sum(e['seconds'] for e in events),
         replay_frames=sum(e['replay_frames'] for e in events),
         replay_seconds=sum(e['replay_seconds'] for e in events),
@@ -324,7 +330,8 @@ def train(args):
     block_loss = np.asarray([loss[i:i + PERIOD].mean() for i in starts])
     controller = fit_controller(data['features'][starts], block_loss)
     controller.update(translation_unit=unit, source_clip='calibration',
-                      decision_rule='score > median of preceding up-to-64 frame scores; ties low',
+                      decision_rule='score > quantile of preceding up-to-64 frame scores; ties low',
+                      quantiles=QUANTILES,
                       score_window=SCORE_WINDOW, score_start_frame=2,
                       labels='one-step low-vs-high pose distortion, averaged over 8 teacher steps',
                       oracle_warning='teacher-state screening; not a closed-loop performance bound')
@@ -358,7 +365,7 @@ def contracts(root, names):
         assert sizes == camera_bytes, 'Native camera history changed size across conditions'
         frame_bytes = rows[0]['aggregator_bytes']
         previous = HIGH
-        controller = json.loads((root.parents[1] / 'controller.json').read_text()) if mode == 'learned' else None
+        controller = json.loads((root.parents[1] / 'controller.json').read_text()) if mode in QUANTILES else None
         for i, row in enumerate(rows):
             budget = row['requested_budget']
             assert row['frame'] == i and row['signal_latest_prediction_frame'] == i - 1
@@ -371,15 +378,17 @@ def contracts(root, names):
                 assert row['replay_attention_pairs'] == 0 and row['replay_seconds'] == 0
             assert row['aggregator_bytes'] > 0 and row['camera_bytes'] > 0
             assert row['aggregator_bytes'] == frame_bytes * len(row['retained_frames'])
-            if mode in ('learned', 'alternate') and i >= HIGH and i % PERIOD:
+            if (mode in QUANTILES or mode == 'alternate') and i >= HIGH and i % PERIOD:
                 assert budget == previous
-            if mode == 'learned':
+            if mode in QUANTILES:
+                assert row['controller_quantile'] == QUANTILES[mode]
                 np.testing.assert_allclose(row['controller_score'], predict(controller, row['features']))
                 if i < HIGH:
                     assert budget == HIGH and row['controller_threshold'] is None
                 else:
                     start = max(2, i - SCORE_WINDOW)
-                    threshold = float(np.median([e['controller_score'] for e in rows[start:i]]))
+                    threshold = float(np.quantile([e['controller_score'] for e in rows[start:i]],
+                                                  QUANTILES[mode]))
                     assert row['threshold_start_frame'] == start and row['threshold_end_frame'] == i - 1
                     np.testing.assert_allclose(row['controller_threshold'], threshold)
                     if i % PERIOD == 0:
@@ -479,8 +488,8 @@ def main():
         shutil.copy2(REPO / 'tools' / name, source)
     write_json(args.work / 'dynamic_protocol.json', dict(host='streamvggt', clips=CLIPS,
         budgets=[LOW, HIGH], decision_period=PERIOD, seed=0, features=FEATURES,
-        revision='causal-running-median-v2', score_window=SCORE_WINDOW,
-        threshold='median of previous frame scores, excluding frames 0/1; ties low',
+        revision='causal-running-quantiles-v3', score_window=SCORE_WINDOW, quantiles=QUANTILES,
+        threshold='quantile of previous frame scores, excluding frames 0/1; ties low',
         backbone='frozen native dtype; native camera history preserved',
         stored_recovery='anchor plus recent source RGB; aggregator-only causal replay',
         scope='bounded supervised distillation pilot; no GT policy labels, no full evaluation'))
@@ -517,7 +526,8 @@ def main():
             names = ['active_collect', 'active_fixed16']
         else:
             names = ['active_fixed4', 'active_fixed10', 'active_fixed16',
-                     'active_alternate', 'stored_alternate', 'active_learned', 'stored_learned']
+                     'active_alternate', 'stored_alternate']
+            names += [f'{backend}_{mode}' for mode in QUANTILES for backend in ('active', 'stored')]
             for name in names:
                 assert digest(args.work / 'controller.json') == controller_hash
                 launch(args, clip, name)

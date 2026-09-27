@@ -1,4 +1,4 @@
 {
   "dynamic_history": true,
-  "description": "StreamVGGT dynamic history v2: causal running-median score threshold, active/stored pilot."
+  "description": "StreamVGGT dynamic history v3: causal score quantiles 0.25/0.5/0.6/0.75, active/stored pilot."
 }

@@ -5,30 +5,35 @@ all patches processed, width 308. No other host, bit-width experiment, training 
 the backbone or full sequence is included. Local verification is static only;
 all tests, preparation, controller fitting and inference execute on CAMP.
 
-## Revision 2: causal score normalization
+## Revision 3: causal score quantile sweep
 
 Job 25941 used a frozen office-median threshold and saturated at high history
 on evaluation. The authorized rerun changes only the decision threshold: at each
 8-frame decision, choose 16 if the current score is strictly greater than the
-median of the preceding up-to-64 **frame** scores; otherwise choose 4. Scores from
+selected quantile of the preceding up-to-64 **frame** scores; otherwise choose 4. Scores from
 frames 0/1 are excluded because previous-motion signals are incomplete. The first
 decision at frame 16 therefore uses scores from frames 2–15. Warmup remains high.
 Current/future scores never enter the threshold; each worker starts fresh, and
 the threshold history follows that worker's own causal predictions. Between
-decisions the budget remains fixed. Ties choose low. The 64-frame window is fixed
-before rerunning, with no window or percentile sweep.
+decisions the budget remains fixed. Ties choose low. The 64-frame window is fixed.
+User-selected quantiles are exactly 0.25, 0.5, 0.6 and 0.75, each evaluated with
+both active and stored history. Arm names use learned_q25/q50/q60/q75. Higher
+quantiles nominally select high history less often (roughly 75%, 50%, 40%, 25%
+under stationary continuous scores); these are not guaranteed action fractions.
+This supersedes the median-only v2 rerun; do not submit both versions.
 
-This is sequence-local score centering (score minus running median), not a new
+This is sequence-local score centering (score minus running quantile), not a new
 feature scaler or regressor. It is invariant to a common positive affine score
-change, but trends, ties and feedback can still produce imbalanced actions; half
-high is an aim, not a quota or correctness gate. The office threshold remains in
+change, but trends, ties and feedback can still produce imbalanced actions; the nominal high
+fraction is an aim, not a quota or correctness gate. The office threshold remains in
 controller.json solely for the historical in-sample screening; evaluation does
 not use it. Weights and training statistics stay frozen; the causal threshold is
 deliberately adaptive. Log score, threshold and exact historical frame bounds;
 contracts independently reconstruct thresholds and decisions from events.
 
-Keep the same seven arms, calibration, clips, implementation gates and cost
-accounting. These clips informed this revision, so this is a diagnostic rerun,
+Run 13 arms per evaluation clip: the five fixed/alternating controls once,
+plus eight learned arms (four quantiles times two backends). Keep calibration,
+clips, implementation gates and cost accounting unchanged. These clips informed this revision, so this is a diagnostic rerun,
 not independent held-out validation. Compare with 25941 and fresh fixed/alternate
 controls using actual budgets/costs; do not infer accuracy from rescoring old logs.
 Review switching/high fraction first, then GT/fidelity and replay/storage/latency.
@@ -83,8 +88,8 @@ read indices smaller than the current frame. Source RGB storage is not KV storag
   No GT or current-frame tracker output is available to the decision. Features at
   block start predict its subsequent loss; future frames enter training labels only.
 - Fit standardized linear ridge regression to log1p(loss), fixed regularization 1.
-  Save the median calibration prediction for in-sample screening only. Revision 2
-  uses the causal running median above for evaluation. Save means, scales, weights,
+  Save the median calibration prediction for in-sample screening only. Revision 3
+  uses the causal running quantiles above for evaluation. Save means, scales, weights,
   training threshold and feature names; freeze and hash this file before evaluation.
   Test action rates are not forced to 50%.
 
@@ -93,7 +98,8 @@ GT accuracy. High history is a teacher, not guaranteed ground truth. A controlle
 trained on high-history states also faces distribution shift in closed-loop use,
 especially after stored-cache rebuilds. The pilot measures that failure mode; a
 negative result cannot rule out stronger controllers, other features, or GT-aware
-training. No reinforcement learning or threshold search is included.
+training. No reinforcement learning is included. Only the four user-selected quantiles
+are swept; do not add feature, window or budget sweeps.
 
 The calibration screening report compares hindsight top-half high allocation with
 expected uniformly allocated high actions at the same count. It is a **teacher-state
@@ -115,8 +121,9 @@ Before training, use a separate 32-frame office implementation clip:
 - Calibration counterfactual branching must preserve the independent fixed16
   trajectory at the same tolerances. Failure blocks controller fitting/evaluation.
 
-On each evaluation clip run seven fresh workers: active fixed4, fixed10, fixed16;
-active alternate, stored alternate; active learned, stored learned. Fixed-budget
+On each evaluation clip run 13 fresh workers: active fixed4, fixed10, fixed16;
+active alternate, stored alternate; active and stored learned at each of the four
+quantiles. Fixed-budget
 backend identity is established by the gate, rather than repeating all fixed
 controls under both backends for the entire pilot. Alternation uses low/high
 8-frame blocks with the same warmup and decision cadence as learning.
@@ -143,10 +150,12 @@ Fixed10 is a nominal midpoint reference, **not automatically an equal-cost
 comparator**. Compare actual cost: warmup, high-action fraction, gathers, replay
 and unmodified camera caches all matter. Learned-versus-alternating comparisons
 also need their actual budgets; running thresholds may yield unequal action counts.
-Do not tune thresholds on evaluation to manufacture a matched comparison.
+Report all four quantiles, not just the best result. Selection on these reused
+clips is exploratory; a selected policy needs independent validation. Do not
+claim matched cost from nominal action fractions.
 
 Technical success: all remote tests and native/implementation/counterfactual
-identity gates pass; all seven evaluation arms produce finite outputs; both
+identity gates pass; all 13 evaluation arms produce finite outputs; both
 evaluation contract/comparison reports exist; controller hash is unchanged; final
 DYNAMIC HISTORY PILOT OK, JOB_OK and archived exit status 0. Runtime success does
 not itself establish the research hypothesis. Inspect the measured accuracy/cost
