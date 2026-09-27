@@ -137,3 +137,16 @@ YCBInEOAT is staged last so a layout surprise cannot cost the others. Markers:
 `TUM_OCCLUSION_OK`, `OBJECT FIDELITY GATE OK`, `OBJECT SEQUENCE OK`, then JOB_OK.
 Outputs: comparison.json (TUM), comparison_objects.json, objects_protocol.json,
 objects_inputs.json. Expected runtime several hours (ARCTIC ~2 min per arm).
+
+## First keyframe: position or content? (`active-keyframes shifted`)
+
+Added 2026-09-27 after 25946: dropping frame 0 cost +16% (office) and +29%
+(with_loop) ATE, but was neutral on no_loop. Pi3 has no first-frame token or
+frame position (identical register tokens, patch RoPE only), so any positional
+role must come from KV-Tracker (first-keyframe gauge/origin, bootstrap slot).
+Same leave-one-out as `loo`, on 512-frame clips starting at source frames 100 and
+200 of office and with_loop (GT-valid 512/512 and 501/416). The first keyframe is
+then source frame 100 or 200. If dropping it still costs most at every start, the
+role is positional (implementation); if the cost moves with content, it is not.
+no_loop is excluded: its GT covers only frames 0-228 and 2949-3358, so no shifted
+512-frame window is evaluable. Start 0 is job 25946. Labels: `<scene>_s<start>`.

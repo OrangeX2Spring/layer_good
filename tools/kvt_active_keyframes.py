@@ -89,11 +89,15 @@ def main():
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--tag', required=True)
-    parser.add_argument('--arms', choices=('pilot', 'loo', 'occlusion'), default='pilot')
+    parser.add_argument('--arms', choices=('pilot', 'loo', 'occlusion', 'shifted'), default='pilot')
     args = parser.parse_args()
     assert sys.platform == 'linux' and args.work.is_relative_to('/tmp')
+    starts = (100, 200) if args.arms == 'shifted' else (0,)
+    # no_loop has GT only on frames 0-228 and 2949-3358, so no shifted window is covered;
+    # its first keyframe was also neutral in 25946.
+    scenes = SCENES[:2] if args.arms == 'shifted' else SCENES
     runner = Path(__file__).with_name('kvt_tum_run.py')
-    write_json(args.work / 'active_protocol.json', dict(scenes=SCENES, frames=512,
+    write_json(args.work / 'active_protocol.json', dict(scenes=scenes, frames=512,
         quantiles=QUANTILES, score='mean absolute RGB channel-mean change, spatial stride16',
         decision_period=8, score_window=64, initial_count=1, count_step=1,
         admission='native interval50/cap20; rebuild all native keyframes',
@@ -101,35 +105,38 @@ def main():
         baseline='original native all available cache; no active controller',
         scope='heuristic access-controller pilot, not learned or GT-optimal; no full run'
         if args.arms == 'pilot' else 'query-only leave-one-keyframe-out headroom; no full run',
-        arms=args.arms, occluder=OCCLUDER if args.arms == 'occlusion' else None))
+        arms=args.arms, occluder=OCCLUDER if args.arms == 'occlusion' else None,
+        starts=list(starts)))
     results = {}
-    for scene in SCENES:
-        staged = args.work / 'inputs' / scene
+    for scene, start in [(s, t) for s in scenes for t in starts]:
+        # Shifted clips test whether the first keyframe matters by position or content.
+        label = scene if start == 0 else f'{scene}_s{start}'
+        staged = args.work / 'inputs' / label
         source = Path('/mnt/datasets/tum-rgbd') / f'rgbd_dataset_{scene}.zip'
-        prepare(source, staged, 308, .02, count=512)
+        prepare(source, staged, 308, .02, start=start, count=512)
         h = hashlib.sha256()
         with source.open('rb') as stream:
             for block in iter(lambda: stream.read(8 * 1024 * 1024), b''):
                 h.update(block)
         (staged / 'archive.sha256').write_text(f'{h.hexdigest()}  {source}\n')
-        archive_inputs(staged, args.out / f'{args.tag}_inputs_{scene}.tar')
-        base = dict(scene=scene, scene_dir=str(staged), frames=512, resize_dim=308,
+        archive_inputs(staged, args.out / f'{args.tag}_inputs_{label}.tar')
+        base = dict(scene=scene, start=start, scene_dir=str(staged), frames=512, resize_dim=308,
             policy='original', interval=50, cap=20, max_gt_difference=.02,
             evaluate_trajectory=True, save_final_scene=False,
             occluder=OCCLUDER if args.arms == 'occlusion' else None)
 
         def run(name, access=None, frames=512):
-            target = args.work / 'runs' / scene / name
+            target = args.work / 'runs' / label / name
             target.mkdir(parents=True)
             write_json(target / 'config.json', dict(base, name=name, frames=frames, active_keyframes=access))
-            print('RUN', scene, name, frames, flush=True)
+            print('RUN', label, name, frames, flush=True)
             with (target / 'run.log').open('w') as log:
                 completed = subprocess.run([sys.executable, str(runner), str(target / 'config.json')],
                                            stdout=log, stderr=subprocess.STDOUT)
             write_json(target / 'process.json', dict(returncode=completed.returncode))
             if completed.returncode:
                 print((target / 'run.log').read_text()[-8000:], flush=True)
-                raise RuntimeError(f'{scene}/{name} failed; see run.log')
+                raise RuntimeError(f'{label}/{name} failed; see run.log')
             np.testing.assert_array_equal(np.load(target / 'kf_idx.npy'), periodic_indices(frames, 50, 20))
             metric = json.loads((target / 'metrics.json').read_text())
             if access is not None:
@@ -143,7 +150,7 @@ def main():
         all_run, all_metrics = run('all', dict(mode='all'))
         np.testing.assert_allclose(np.load(native / 'traj.npy'), np.load(all_run / 'traj.npy'), atol=1e-5, rtol=1e-4)
         np.testing.assert_array_equal(np.load(native / 'kf_poses.npy'), np.load(all_run / 'kf_poses.npy'))
-        if args.arms in ('loo', 'occlusion'):
+        if args.arms in ('loo', 'occlusion', 'shifted'):
             if args.arms == 'occlusion':
                 for e in json.loads((all_run / 'active_keyframes.json').read_text()):
                     occluded = any(a <= e['frame'] < b for a, b in OCCLUDER['windows'])
@@ -164,9 +171,9 @@ def main():
                     for key in ('rgb_indices', 'rpe_pair_start_indices'):
                         np.testing.assert_array_equal(a[key], b[key])
                 metrics[name] = metric
-            results[scene] = metrics
+            results[label] = metrics
             write_json(args.work / 'comparison.json', results)
-            print('LEAVE-ONE-OUT OK' if args.arms == 'loo' else 'OCCLUDED TUM OK', scene, flush=True)
+            print('OCCLUDED TUM OK' if args.arms == 'occlusion' else 'LEAVE-ONE-OUT OK', label, flush=True)
             continue
         forced, _ = run('forced_gate', dict(mode='alternate'), frames=128)
         forced_rows = json.loads((forced / 'active_keyframes.json').read_text())
