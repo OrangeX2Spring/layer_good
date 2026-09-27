@@ -1,0 +1,4 @@
+{
+  "dynamic_history": true,
+  "description": "StreamVGGT only: fixed two-budget learned active/stored history pilot."
+}

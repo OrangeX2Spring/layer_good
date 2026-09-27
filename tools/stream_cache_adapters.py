@@ -39,6 +39,11 @@ def sparse_vggt_attention(self, x, pos=None, attn_mask=None,
         key_positions = pos
     self.cache_positions = key_positions
     cache = (k.unsqueeze(2), v.unsqueeze(2))
+    if hasattr(self, 'active_token_indices'):
+        # Keep the complete bounded persistent cache; gather only attention inputs.
+        indices = self.active_token_indices.to(k.device)
+        k, v = k.index_select(2, indices), v.index_select(2, indices)
+        key_positions = key_positions.index_select(1, indices)
     q, k = self.q_norm(q), self.k_norm(k)
     if self.rope is not None:
         q, k = self.rope(q, pos), self.rope(k, key_positions)

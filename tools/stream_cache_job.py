@@ -51,6 +51,11 @@ def main():
     print(f'MODEL IMPORT OK {args.host}', flush=True)
     subprocess.run([python, '-m', 'unittest', 'discover', '-s', 'tools',
                     '-p', 'test_*cache*.py'], cwd=repo, check=True)
+    if json.loads(args.sweep.read_text()).get('dynamic_history'):
+        assert args.host == 'streamvggt'
+        subprocess.run([python, 'tools/stream_cache_dynamic.py', '--work', str(args.work),
+                        '--checkpoint', str(args.checkpoint)], cwd=repo, check=True)
+        return
     if json.loads(args.sweep.read_text()).get('sensitivity_sweep'):
         subprocess.run([python, 'tools/cache_sensitivity_sweep.py', '--host', args.host,
                         '--work', str(args.work), '--checkpoint', str(args.checkpoint)],
