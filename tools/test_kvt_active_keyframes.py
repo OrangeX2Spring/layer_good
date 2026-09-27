@@ -55,6 +55,35 @@ class ActiveTests(unittest.TestCase):
             self.assertEqual(policy.count, 1)
             policy.end()
 
+    def test_leave_one_out_drops_exactly_one_keyframe(self):
+        torch.manual_seed(5)
+        block = BlockRope(dim=16, num_heads=2, qk_norm=True, attn_class=FlashAttentionRope).eval()
+        bank = {1: {k: torch.randn(1, 2, 27, 8) for k in ('k', 'v')}}
+        model = SimpleNamespace(cache=bank)
+        rgb = np.zeros((32, 32, 3), dtype=np.uint8)
+        x = torch.randn(1, 9, 16)
+        old = {k: t.clone() for k, t in bank[1].items()}
+        for drop, keep in ((49, [0, 1, 2, 3, 4, 5, 6, 7, 8, 18, 19, 20, 21, 22, 23, 24, 25, 26]),
+                           (0, list(range(9, 27)))):
+            policy = ActiveKeyframes('drop', drop=drop); policy.bootstrap(model, rgb)
+            policy.begin(101, [0, 49, 99], rgb)
+            manual = {k: t[:, :, keep] for k, t in bank[1].items()}
+            torch.testing.assert_close(block(x, kv_cache=model.cache[1], ret_kv=False),
+                                       block(x, kv_cache=manual, ret_kv=False), rtol=0, atol=0)
+            self.assertEqual(policy.events[-1]['selected_ids'], [f for f in (0, 49, 99) if f != drop])
+            policy.end()
+            self.assertIs(model.cache, bank)
+        for k in old:
+            torch.testing.assert_close(bank[1][k], old[k], rtol=0, atol=0)
+        # Not yet admitted: full bank. Only keyframe: kept, including both bootstrap slots.
+        pair = SimpleNamespace(cache={1: {k: torch.zeros(1, 2, 18, 8) for k in ('k', 'v')}})
+        late = ActiveKeyframes('drop', drop=99); late.bootstrap(pair, rgb)
+        late.begin(60, [0, 49], rgb)
+        self.assertEqual(late.events[-1]['selected_ids'], [0, 49]); late.end()
+        anchor = ActiveKeyframes('drop', drop=0); anchor.bootstrap(pair, rgb)
+        anchor.begin(1, [0, 0], rgb)
+        self.assertEqual(anchor.events[-1]['selected_physical_ids'], [0, 0]); anchor.end()
+
     def test_native_bootstrap_duplicate_counts_as_one(self):
         bank = {1: {k: torch.zeros(1, 2, 18, 8) for k in ('k', 'v')}}
         model = SimpleNamespace(cache=bank)

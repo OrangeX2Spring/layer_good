@@ -84,3 +84,19 @@ runs as tum_<job>_all_runs.tar and context/protocol/comparison as
  tum_<job>_context.tar. Partial failures are archived too. Never infer success from
 archive existence: require tests/gates, JOB_OK, exit0 and artifact review. No new
 full evaluation follows automatically.
+
+## Leave-one-keyframe-out headroom (`active-keyframes loo`)
+
+Added 2026-09-27 after pilot 25944 (motion controller lost to fixed half). Asks
+whether keyframe value is concentrated, i.e. whether any selector has headroom on
+these clips. Same three 512-frame clips, native bank, admission and rebuilds.
+Per clip: native, all-selected fidelity gate, then `drop<j>` for every native
+keyframe j in [0,49,...,499]: queries use all available keyframes except j. j is
+removed only once it is available and never when it is the only keyframe, so
+dropping the anchor affects frames >=50 only. Frames 0..max(j,49) must match
+native (atol1e-5/rtol1e-4); keyframe poses, rebuild count, GT masks and every
+per-query selection are audited as in the pilot. No controller, forced or prefix
+gates (no controller is used). Output: comparison.json with native/all/drop<j>;
+per-frame traj.npy for post-hoc per-keyframe value analysis. Late keyframes affect
+few frames (499 only 500..511), so their ATE deltas are small by construction.
+Entry: `bash tools/kvt_tum.sbatch active-keyframes loo`.

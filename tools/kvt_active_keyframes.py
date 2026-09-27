@@ -1,4 +1,4 @@
-"""Bounded active-keyframe-count pilot; run only on CAMP, no full run dispatch."""
+"""Bounded active-keyframe pilot or leave-one-out sweep; CAMP only, no full run."""
 import argparse
 import hashlib
 import json
@@ -29,7 +29,10 @@ def audit(result):
         assert row['physical_ids'] == physical
         count = row['active_count']
         assert 1 <= count <= len(available) and row['bank_preserved']
-        expected = [0] + (available[-(count - 1):] if count > 1 else [])
+        if row['mode'] == 'drop':
+            expected = [j for j in available if j != row['drop']] if len(available) > 1 else available
+        else:
+            expected = [0] + (available[-(count - 1):] if count > 1 else [])
         assert row['selected_ids'] == expected and max(expected) < i
         assert row['selected_physical_ids'] == [j for j in physical if j in expected]
         assert row['previous_count'] == previous and row['frame'] == i
@@ -49,6 +52,8 @@ def audit(result):
             target = 1
         elif mode == 'half':
             target = (len(available) + 1) // 2
+        elif mode == 'drop':
+            target = len(expected)
         elif row['decision']:
             grow = row['score'] > threshold if mode == 'motion' else (i // 8) % 2 == 1
             target = min(len(available), max(1, previous + (1 if grow else -1)))
@@ -71,6 +76,7 @@ def main():
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--tag', required=True)
+    parser.add_argument('--arms', choices=('pilot', 'loo'), default='pilot')
     args = parser.parse_args()
     assert sys.platform == 'linux' and args.work.is_relative_to('/tmp')
     runner = Path(__file__).with_name('kvt_tum_run.py')
@@ -80,7 +86,9 @@ def main():
         admission='native interval50/cap20; rebuild all native keyframes',
         selection='anchor plus newest admitted keyframes; native bootstrap duplicate preserved',
         baseline='original native all available cache; no active controller',
-        scope='heuristic access-controller pilot, not learned or GT-optimal; no full run'))
+        scope='heuristic access-controller pilot, not learned or GT-optimal; no full run'
+        if args.arms == 'pilot' else 'query-only leave-one-keyframe-out headroom; no full run',
+        arms=args.arms))
     results = {}
     for scene in SCENES:
         staged = args.work / 'inputs' / scene
@@ -121,6 +129,24 @@ def main():
         all_run, all_metrics = run('all', dict(mode='all'))
         np.testing.assert_allclose(np.load(native / 'traj.npy'), np.load(all_run / 'traj.npy'), atol=1e-5, rtol=1e-4)
         np.testing.assert_array_equal(np.load(native / 'kf_poses.npy'), np.load(all_run / 'kf_poses.npy'))
+        if args.arms == 'loo':
+            metrics = dict(native=baseline, all=all_metrics)
+            for j in periodic_indices(512, 50, 20):
+                target, metric = run(f'drop{j}', dict(mode='drop', drop=j))
+                np.testing.assert_array_equal(np.load(native / 'kf_poses.npy'), np.load(target / 'kf_poses.npy'))
+                assert metric['rebuild_calls'] == baseline['rebuild_calls']
+                # Frames before j's first effective query (and the anchor's) are untouched.
+                untouched = max(j, 49) + 1
+                np.testing.assert_allclose(np.load(native / 'traj.npy')[:untouched],
+                                           np.load(target / 'traj.npy')[:untouched], atol=1e-5, rtol=1e-4)
+                with np.load(native / 'evaluation.npz') as a, np.load(target / 'evaluation.npz') as b:
+                    for key in ('rgb_indices', 'rpe_pair_start_indices'):
+                        np.testing.assert_array_equal(a[key], b[key])
+                metrics[f'drop{j}'] = metric
+            results[scene] = metrics
+            write_json(args.work / 'comparison.json', results)
+            print('LEAVE-ONE-OUT OK', scene, flush=True)
+            continue
         forced, _ = run('forced_gate', dict(mode='alternate'), frames=128)
         forced_rows = json.loads((forced / 'active_keyframes.json').read_text())
         assert any(e['active_count'] > e['previous_count'] for e in forced_rows)
@@ -144,7 +170,7 @@ def main():
         results[scene] = metrics
         write_json(args.work / 'comparison.json', results)
         print('ACTIVE KEYFRAME PILOT OK', scene, flush=True)
-    (args.work / 'JOB_OK').write_text('Active-keyframe pilot complete; artifact review required.\n')
+    (args.work / 'JOB_OK').write_text(f'Active-keyframe {args.arms} complete; artifact review required.\n')
 
 
 if __name__ == '__main__':

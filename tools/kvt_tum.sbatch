@@ -190,7 +190,7 @@ if [ "$MODE" = active-keyframes ]; then
     "${CONTAINER[@]}" python "$REPO/tools/test_kvt_active_keyframes.py" \
         2>&1 | tee "$WORK/context/active_keyframe_tests.log"
     "${CONTAINER[@]}" python "$REPO/tools/kvt_active_keyframes.py" \
-        --work "$WORK" --out "$OUT" --tag "$TAG" \
+        --work "$WORK" --out "$OUT" --tag "$TAG" --arms "${2:-pilot}" \
         2>&1 | tee "$WORK/context/active_keyframes.log"
 elif [ "$MODE" = sensitivity ]; then
     "${CONTAINER[@]}" python "$REPO/tools/test_cache_sensitivity.py" \
