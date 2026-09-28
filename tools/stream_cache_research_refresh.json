@@ -1,0 +1,15 @@
+{
+  "description": "Selective refresh pilot: four retained frames, one historical frame refreshed every eight arrivals. Oracle is an expensive KV-change diagnostic, not a deployable control or pose oracle.",
+  "max_frames": 256,
+  "isolate_conditions": true,
+  "geometry_export": "final",
+  "conditions": [
+    {"name": "recent8", "policy": {"research": {"method": "native"}}},
+    {"name": "recent4", "policy": {"research": {"method": "native", "frame_budget": 4}}},
+    {"name": "refresh_none", "policy": {"research": {"method": "refresh", "frame_budget": 4, "refresh": "none"}}},
+    {"name": "refresh_random", "policy": {"research": {"method": "refresh", "frame_budget": 4, "refresh": "random"}}},
+    {"name": "refresh_selective", "policy": {"research": {"method": "refresh", "frame_budget": 4, "refresh": "selective"}}},
+    {"name": "refresh_oracle", "policy": {"research": {"method": "refresh", "frame_budget": 4, "refresh": "oracle"}}},
+    {"name": "refresh_full", "policy": {"research": {"method": "refresh", "frame_budget": 4, "refresh": "full"}}}
+  ]
+}

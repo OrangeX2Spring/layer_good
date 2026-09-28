@@ -1,0 +1,12 @@
+{
+  "description": "Context pilot: identical masked RGB, all foreground patches, 64 background representatives; no accuracy claim without object GT review.",
+  "max_frames": 128,
+  "isolate_conditions": true,
+  "geometry_export": "final",
+  "conditions": [
+    {"name": "dense8", "policy": {"research": {"method": "context", "context": "dense"}}},
+    {"name": "spread64", "policy": {"research": {"method": "context", "context": "drop"}}},
+    {"name": "spatial64", "policy": {"research": {"method": "context", "context": "spatial"}}},
+    {"name": "appearance64", "policy": {"research": {"method": "context", "context": "appearance"}}}
+  ]
+}

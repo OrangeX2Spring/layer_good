@@ -90,6 +90,8 @@ def evaluate(est, gt):
             "translation_errors_m": errors.tolist(),
             "homogeneous_row_max_error": row_error,
             "rpe_t_m": float(np.sqrt(np.mean(np.sum(relative_t ** 2, axis=1)))),
+            "rpe_translation_p99_m": float(np.quantile(np.linalg.norm(relative_t, axis=1), .99)),
+            "rpe_translation_m": np.linalg.norm(relative_t, axis=1).tolist(),
             "rpe_rot": float(np.sqrt(np.mean(np.sum(rpe_rot ** 2, axis=(1, 2)))))}
 
 

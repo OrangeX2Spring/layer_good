@@ -23,8 +23,12 @@ class PolicyConfig:
     quant_bits: int = 0
     b_experiment: str = ''
     compression: dict | None = None
+    research: dict | None = None
 
     def __post_init__(self):
+        if self.research is not None:
+            assert self.compression is None and not self.quant_bits and not self.b_experiment
+            assert self.patch_policy == 'all' and self.admission == 'all' and self.eviction == 'fifo'
         if self.compression is not None:
             assert not self.quant_bits and not self.b_experiment
             assert self.patch_policy == 'all' and self.admission == 'all'

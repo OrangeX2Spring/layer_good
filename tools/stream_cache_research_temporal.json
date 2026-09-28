@@ -1,0 +1,12 @@
+{
+  "description": "Temporal-spatial pilot: budget equals eight dense frame states including auxiliary tensors; two recent frames protected; no precision simulation.",
+  "max_frames": 256,
+  "isolate_conditions": true,
+  "geometry_export": "final",
+  "conditions": [
+    {"name": "recent8", "policy": {"research": {"method": "native"}}},
+    {"name": "temporal_fifo", "policy": {"research": {"method": "temporal", "allocation": "fifo"}}},
+    {"name": "temporal_uniform", "policy": {"research": {"method": "temporal", "allocation": "uniform"}}},
+    {"name": "temporal_coverage", "policy": {"research": {"method": "temporal", "allocation": "coverage"}}}
+  ]
+}

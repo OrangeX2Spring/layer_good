@@ -101,11 +101,15 @@ if [ -n "${CACHE_ARCTIC_SCENE:-}" ]; then
     PREPARED="$ROOT/kvt_arctic_out/prepared.tar"
     KVT="$ROOT/kvt_arctic_out/arctic_r518_20260915T152911Z.tar"
     test -f "$PREPARED" && test -f "$KVT"
+    arctic_extra=()
+    if [ "${CACHE_ARCTIC_OBJECT_GT:-0}" = 1 ]; then
+        arctic_extra=(--object-gt)
+    fi
     podman run --rm --network=none -v /mnt:/mnt:ro -v /tmp:/tmp:rw -w "$REPO" \
         -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONUNBUFFERED=1 "$IMAGE" \
         python tools/stream_cache_arctic.py --prepared "$PREPARED" --kvt "$KVT" \
         --scene "$CACHE_ARCTIC_SCENE" --count "${CACHE_ARCTIC_COUNT:-121}" \
-        --out "$WORK/extracted"
+        --out "$WORK/extracted" "${arctic_extra[@]}"
     sha256sum "$PREPARED" "$KVT" > "$WORK/input_archive.sha256"
     cp "$WORK/extracted/manifest.json" "$WORK/source_manifest.json"
     extra=(--manifest "$WORK/extracted/manifest.json")

@@ -44,6 +44,11 @@ def prepare(args):
     args.out.mkdir(parents=True, exist_ok=False)
     (args.out / 'rgb').mkdir()
     (args.out / 'masks').mkdir()
+    for name, checksum in source.get('object_gt_files', {}).items():
+        assert Path(name).name == name
+        path = args.manifest.parent / name
+        assert digest(path) == checksum
+        shutil.copy2(path, args.out / name)
     records = []
     for index, frame in enumerate(frames):
         path = args.manifest.parent / frame['rgb']
@@ -227,6 +232,9 @@ def pose_arrays(host, predictions, hw, stride):
 
 
 def run_condition(args, model, root, frames, name, config):
+    if config.research is not None:
+        from stream_cache_research import run_research_condition
+        return run_research_condition(args, model, root, frames, name, config)
     target = args.out / name
     target.mkdir()
     write_json(target / 'config.json', asdict(config))
@@ -423,6 +431,8 @@ def run(args):
         assert args.host == 'streamvggt'
     if any(config.quant_bits for _, config in configs):
         assert args.host in ('streamvggt', 'longstream')
+    if any(config.research is not None for _, config in configs):
+        assert args.host == 'streamvggt'
     names = [name for name, _ in configs]
     assert len(names) == len(set(names)) and all(name and Path(name).name == name for name in names)
     assert all(name not in ('.', '..', 'inputs', '__fidelity__') for name in names)
@@ -441,6 +451,9 @@ def run(args):
             assert digest(args.inputs / frame['mask']) == frame['mask_sha256']
     if any(config.patch_policy in ('mask', 'semantic_correspondence') for _, config in configs):
         assert all('mask' in frame for frame in frames)
+    if any(config.research is not None and config.research.get('method') == 'context'
+           for _, config in configs):
+        assert all('mask' in frame for frame in frames), 'Context experiment requires masks'
     if args.worker is not None:
         model = load_model(args)
         if args.worker == '__fidelity__':
@@ -464,6 +477,12 @@ def run(args):
     shutil.copy2(Path(__file__).with_name('test_stream_cache_workers.py'), source)
     shutil.copy2(Path(__file__).with_name('test_stream_cache_quantization.py'), source)
     shutil.copy2(Path(__file__).with_name('test_stream_cache_structure.py'), source)
+    if any(config.research is not None for _, config in configs):
+        shutil.copy2(Path(__file__).with_name('test_stream_cache_research.py'), source)
+        shutil.copy2(REPO / 'streamvggt/src/streamvggt/models/research_cache.py', source)
+        shutil.copy2(Path(__file__).with_name('STREAM_CACHE_RESEARCH.md'), source)
+        shutil.copy2(Path(__file__).with_name('stream3r_arctic_eval.py'), source)
+        shutil.copy2(Path(__file__).with_name('stream_cache_research.sbatch'), source)
     shutil.copy2(Path(__file__).with_name('test_kvcache_policy.py'), source)
     checkpoint_files = sorted(args.checkpoint.rglob('*')) if args.checkpoint.is_dir() else [args.checkpoint]
     provenance = dict(host=args.host, checkpoint={str(p): digest(p) for p in checkpoint_files if p.is_file()},
@@ -485,11 +504,17 @@ def run(args):
         for name, config in configs:
             print(f'RUN {name}', flush=True)
             run_condition(args, model, args.out / 'inputs', frames, name, config)
-    if any(frame.get('gt_c2w') is not None for frame in frames):
+    if any(frame.get('gt_object_c2w') is not None for frame in frames):
+        from stream_cache_research import evaluate_object
+        evaluate_object(args, manifest)
+    elif any(frame.get('gt_c2w') is not None for frame in frames):
         evaluate(args)
     else:
         write_json(args.out / 'camera_metrics.json',
                    {'status': 'not evaluated: no camera GT supplied in manifest'})
+    if any(config.research is not None for _, config in configs):
+        from stream_cache_research import verify_research_run
+        verify_research_run(args, configs, len(frames))
     if specification.get('structure_gate'):
         profile = torch.load(args.out / 'b_profile' / 'profile.pt', map_location='cpu', weights_only=True)
         assert torch.isfinite(profile['samples']).all()
