@@ -283,6 +283,8 @@ class CacheTests(unittest.TestCase):
             cache.after_rebuild(ids, torch.rand(1, len(ids), H, W, 1), torch.rand(1, len(ids), H, W, 3),
                                 np.ones((len(ids), H, W), dtype=bool), rgb)
             event = cache.events[-1]
+            # Every event, the anchor's included, states its kept patch count.
+            self.assertEqual(event['budget'], len(cache.selected[ids[-1]]))
             for frame, picked in history.items():
                 self.assertEqual(cache.selected[frame].tolist(), picked)  # choices persist
             history[ids[-1]] = cache.selected[ids[-1]].tolist()
