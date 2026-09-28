@@ -3,12 +3,12 @@
 Protocol: tools/SEMANTIC_KV_OVERNIGHT_PLAN.md. Policies: the fork's
 kv_tracker/patch_select.py. Entry: `bash tools/kvt_tum.sbatch patch-select <stage>`.
 
-- preflight: 128-frame espresso and office clips. Native, all-kept, the three
-  sparse controls and the ten candidates, plus a causal prefix run of every
-  sparse condition. Checks the contracts and projects the screen's cost.
-  Its accuracy values do not select candidates.
-- screen: the frozen 102-run screen on six clips, then the frozen decision
-  report. Requires the reviewed preflight context archive.
+- preflight: 128-frame espresso and office clips. Native, all-kept, uniform,
+  eight random seeds, object_dense (object only) and the ten candidates, plus a
+  causal prefix run of uniform, random17 and every candidate. Checks the
+  contracts and projects the screen's cost. Its accuracy values select nothing.
+- screen: the 141-run screen on six clips (amended 2026-09-29 after preflight
+  25993), then the decision report. Requires the reviewed preflight context.
 
 Every condition is a fresh process (`--run config.json`) archived on completion.
 Arms replay native's admission schedule, so they differ only in which patch rows
@@ -32,6 +32,7 @@ import torch
 
 from kvt_tum_run import CHECKOUT, evaluate as evaluate_tum, prepare, write_json
 from kvt_tum_sweep import archive_inputs
+from kv_tracker.patch_select import BACKGROUND, SEEDS
 
 # Dict order is the round-robin order: tasks alternate.
 CLIPS = {
@@ -46,9 +47,14 @@ PREFLIGHT_CLIPS = ('espresso', 'office')
 PREFLIGHT_FRAMES = 128
 # K2/K7/K4/K6 first, as the design prioritises; the rest by ID.
 PRIORITY = ('K2', 'K7', 'K4', 'K6', 'K1', 'K3', 'K5', 'K8', 'K9', 'K10')
-SPARSE_CONTROLS = ('uniform', 'random17', 'random29')
+# The random seeds are the null: a candidate must beat every one of them.
+RANDOM = tuple(f'random{s}' for s in SEEDS)
+SPARSE_CONTROLS = ('uniform',) + RANDOM
 CONTROLS = ('native', 'all') + SPARSE_CONTROLS
+# Object reference, not a control of the claim: all object patches + shared background.
+OBJECT_REFERENCE = 'object_dense'
 REPEATS = ('native_repeat', 'all_repeat')
+PREFIX_ARMS = ('uniform', 'random17')
 RESIZE = dict(object=518, scene=308)
 # Established fidelity tolerances: kvt_active_objects.py (ARCTIC) and
 # kvt_active_keyframes.py (TUM).
@@ -67,12 +73,16 @@ def sha256(path):
     return h.hexdigest()
 
 
+def controls(clip):
+    return CONTROLS + ((OBJECT_REFERENCE,) if CLIPS[clip]['task'] == 'object' else ())
+
+
 def screen_order():
     """All controls first, candidates round-robin across tasks, repeats last."""
-    runs = [(clip, name) for clip in CLIPS for name in CONTROLS]
+    runs = [(clip, name) for clip in CLIPS for name in controls(clip)]
     runs += [(clip, name) for name in PRIORITY for clip in CLIPS]
     runs += [(clip, name) for clip in CLIPS for name in REPEATS]
-    assert len(runs) == len(set(runs)) == 102
+    assert len(runs) == len(set(runs)) == 141
     return runs
 
 
@@ -270,6 +280,8 @@ def run(config_path):
             selected_patches=sum(len(e['selected']) for e in chosen),
             weak_corner_selected=sum(e.get('weak_corner_selected', 0) for e in chosen),
             target_selected=sum(e.get('target_selected', 0) for e in chosen),
+            eligible_selected=sum(e.get('eligible_selected', 0) for e in chosen),
+            background_kept=sum(e.get('background_kept', 0) for e in chosen),
             k2_fill=sum(e.get('k2_fill', 0) for e in chosen))
     metrics.update(evaluate_object(config['scene'], result, frames) if task == 'object'
                    else evaluate_scene(Path(config['scene_dir']), result, frames))
@@ -294,17 +306,28 @@ def audit(target, config, schedule, native):
     events = json.loads((target / 'patch_events.json').read_text())
     assert [e['frame'] for e in events] == schedule
     total = events[0]['patches']
-    budget = math.ceil(total / 4)
-    kept = total if policy == 'all' else budget
     assert events[0]['selected'] == list(range(total))
+    history = 0  # kept tokens of the non-anchor keyframes so far
     for i, event in enumerate(events):
-        assert event['retained_frame_ids'] == schedule[:i + 1] and event['budget'] == budget
+        assert event['retained_frame_ids'] == schedule[:i + 1]
         if i:
             picked = event['selected']
-            assert len(picked) == kept and picked == sorted(set(picked))
+            assert len(picked) == event['budget'] and picked == sorted(set(picked))
             assert 0 <= picked[0] and picked[-1] < total
+            if policy == 'all':
+                assert event['budget'] == total
+            elif config['task'] == 'scene':
+                assert event['eligible_patches'] == total and event['background_kept'] == 0
+                assert event['budget'] == event['eligible_selected'] == math.ceil(total / 4)
+            else:
+                eligible = event['eligible_patches']
+                assert event['background_kept'] == min(BACKGROUND, total - eligible)
+                inner = eligible if policy == OBJECT_REFERENCE else math.ceil(eligible / 4)
+                assert event['eligible_selected'] == inner
+                assert event['budget'] == inner + event['background_kept']
+            history += SPECIAL + len(picked)
         slots = 2 if i == 0 else i + 1
-        expected = (slots if i == 0 else 1) * (SPECIAL + total) + (i * (SPECIAL + kept) if i else 0)
+        expected = (2 if i == 0 else 1) * (SPECIAL + total) + history
         assert event['retained_tokens'] == expected, (i, event['retained_tokens'], expected)
         dense_tokens = slots * (SPECIAL + total)
         # Every layer holds the same dtype, so bytes scale exactly with kept tokens.
@@ -325,7 +348,7 @@ def audit(target, config, schedule, native):
 def overlap(run_dir, clip_results):
     """Selected-set Jaccard between sparse arms per admission: identical choices
 are not independent evidence."""
-    names = [n for n in SPARSE_CONTROLS + PRIORITY if n in clip_results]
+    names = [n for n in SPARSE_CONTROLS + (OBJECT_REFERENCE,) + PRIORITY if n in clip_results]
     chosen = {n: {e['frame']: set(e['selected'])
                   for e in json.loads((run_dir / n / 'patch_events.json').read_text())[1:]}
               for n in names}
@@ -354,8 +377,16 @@ def decide(results):
                 for a, b in (('native', 'native_repeat'), ('all', 'all_repeat'))
                 for key in ('rpe_translation_m', 'translation_p99_m', 'ate_m')}
             stable = not missing and all(v <= .05 for v in deviation.values())
+            # Deterministic repeats only detect nondeterminism; the seed spread is the
+            # noise level of sparse selection on this clip (reported, not a gate).
+            seeds = [r[n] for n in RANDOM if n in r]
+            spread = {key: max(m[key] for m in seeds) / min(m[key] for m in seeds) - 1
+                      for key in KEYS} if seeds else {}
+            reference = {key: r[OBJECT_REFERENCE][key] / r['all'][key] for key in KEYS} if (
+                OBJECT_REFERENCE in r and 'all' in r) else None
             state[clip] = dict(missing_controls=missing, repeat_deviation=deviation,
-                               interpretable=stable,
+                               interpretable=stable, random_seed_spread=spread,
+                               object_dense_ratio_to_all_kept=reference,
                                label='incomplete' if missing else ('stable' if stable else 'unstable'))
         interpretable = [c for c in clips if state[c]['interpretable']]
         candidates = {}
@@ -452,12 +483,14 @@ def main():
                                 duration_seconds=prepared['duration_seconds'])
     staging_seconds = time.time() - started
     if preflight:
-        order = [(clip, name) for clip in clips for name in CONTROLS + PRIORITY]
+        order = [(clip, name) for clip in clips for name in controls(clip) + PRIORITY]
     else:
         order = screen_order()
     write_json(args.work / 'protocol.json', dict(
         stage=args.stage, clips=clips, frames=frames, order=order, inputs=inputs,
-        random_seeds=[17, 29], patch_fraction='ceil(P/4) ordinary patches per non-anchor keyframe',
+        random_seeds=list(SEEDS), background_patches=BACKGROUND,
+        patch_budget=('scene: ceil(P/4) of all patches; object: ceil(P_obj/4) of the patches '
+                      'touching the mask plus the shared evenly spaced background'),
         tolerance=TOLERANCE, staging_seconds=staging_seconds, deadline_hours=args.hours,
         reviewed_preflight=None if preflight else dict(
             path=str(args.reviewed_preflight), sha256=sha256(args.reviewed_preflight)),
@@ -527,7 +560,7 @@ that the full run follows with more frames; choices and poses must match."""
         assert len(schedule) >= 3, f'{clip}: two admissions are needed to exercise history'
         length = schedule[-1] + 1
         keys = ('frame', 'selected', 'retained_frame_ids', 'retained_tokens', 'budget')
-        for name in SPARSE_CONTROLS + PRIORITY:
+        for name in PREFIX_ARMS + PRIORITY:
             target, results[clip][f'{name}_prefix'] = condition(clip, f'{name}_prefix', length, schedule)
             full = args.work / 'runs' / clip / name
             np.testing.assert_allclose(np.load(full / 'traj.npy')[:length], np.load(target / 'traj.npy'),

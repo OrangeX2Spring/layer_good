@@ -1,9 +1,10 @@
 """Patch-select contract tests. Run in the CAMP image before any patch-select run;
 numerical project code is never run on the editing Mac.
 
-CPU: quota rounding, image scores and the mask-cut exclusion, exact K and
-determinism for every policy, K7/K8 history, K10 non-finite handling, and the
-cache gather (persistence, anchor, bytes, attention equal to masked dense keys).
+CPU: quota rounding, image scores and the mask-cut exclusion, exact budgets and
+determinism for every policy, object arms confined to the object plus one shared
+background, K7/K8 history, K10 non-finite handling, and the cache gather
+(persistence, anchor, bytes, attention equal to masked dense keys).
 GPU: the K9 register-attention hook reproduces the real final global block, and
 gathered post-RoPE keys equal masked dense keys through that real block.
 """
@@ -16,8 +17,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from kv_tracker.patch_select import (CANDIDATES, CLUSTERS, POLICIES, PatchSelectCache, allocate,
-                                     cells, image_scores, register_attention, stratified)
+from kv_tracker.patch_select import (BACKGROUND, CANDIDATES, CLUSTERS, POLICIES, PatchSelectCache,
+                                     allocate, cells, even, image_scores, mask_fraction,
+                                     register_attention, stratified)
 
 H, W = 224, 308  # 16 x 22 = 352 patches, the TUM protocol grid
 GRID = (H // 14, W // 14)
@@ -41,6 +43,10 @@ def fake_model():
                            decoder=[torch.nn.Identity() for _ in range(36)], cache={})
 
 
+# object_frame's mask touches patch rows 2-10 and columns 4-14: 99 patches.
+OBJECT_PATCHES = 99
+
+
 def policy_cache(policy, task, seed=0):
     """A cache that has seen its bootstrap, with synthetic arrival signals."""
     cache = PatchSelectCache(policy, task, [0, 5, 9])
@@ -48,7 +54,9 @@ def policy_cache(policy, task, seed=0):
     generator = torch.Generator().manual_seed(seed)
     features = F.normalize(torch.randn(P, 1024, generator=generator), dim=-1)
     if policy in ('K7', 'K8'):
-        cache.previous = dict(features=features, age=torch.zeros(P, dtype=torch.long))
+        rows = (mask_fraction(object_frame(0)[1]) > 0).nonzero().flatten() if task == 'object' \
+            else torch.arange(P)
+        cache.previous = dict(features=features[rows], age=torch.zeros(len(rows), dtype=torch.long))
     if policy == 'K8':
         cache.retained = [features]
     cache.tokens = F.normalize(features + .01 * torch.randn(P, 1024, generator=generator), dim=-1)
@@ -62,7 +70,16 @@ def choose(cache, rgb, mask, frame=5, confidence=None, points=None):
     if points is None:
         y, x = torch.meshgrid(torch.arange(H), torch.arange(W), indexing='ij')
         points = torch.stack((x, y, torch.ones_like(x)), -1).float()
-    return cache.choose(frame, GRID, K, rgb, mask, confidence, points)
+    return cache.choose(frame, GRID, rgb, mask, confidence, points)
+
+
+def expected_budget(policy, task):
+    if policy == 'all':
+        return P
+    if task == 'scene':
+        return K
+    inner = OBJECT_PATCHES if policy == 'object_dense' else math.ceil(OBJECT_PATCHES / 4)
+    return inner + min(BACKGROUND, P - OBJECT_PATCHES)
 
 
 class AllocationTests(unittest.TestCase):
@@ -80,6 +97,18 @@ class AllocationTests(unittest.TestCase):
         self.assertEqual(allocate(0, [3, 3], [1, 1]).tolist(), [0, 0])
         with self.assertRaises(AssertionError):
             allocate(7, [3, 3], [1, 1])
+
+    def test_even_spreads_exactly_inside_the_eligible_set(self):
+        eligible = mask_fraction(object_frame(0)[1]) > 0
+        self.assertEqual(int(eligible.sum()), OBJECT_PATCHES)
+        picked = even(eligible, 25, cells(GRID))
+        self.assertEqual(len(picked), len(set(picked.tolist())))
+        self.assertEqual(len(picked), 25)
+        self.assertTrue(eligible[picked].all())
+        everywhere = even(torch.ones(P, dtype=torch.bool), K, cells(GRID))
+        sizes = torch.bincount(cells(GRID))
+        self.assertEqual(torch.bincount(cells(GRID)[everywhere], minlength=16).tolist(),
+                         allocate(K, sizes, sizes).tolist())
 
     def test_stratified_quotas_and_ranking(self):
         score = torch.arange(P, dtype=torch.float64)
@@ -129,16 +158,41 @@ class PolicyTests(unittest.TestCase):
                 if flat:
                     rgb = np.zeros_like(rgb)
                 for policy in POLICIES:
+                    if policy == 'object_dense' and task == 'scene':
+                        continue
                     with self.subTest(task=task, flat=flat, policy=policy):
                         first, details = choose(policy_cache(policy, task), rgb, mask)
                         second, _ = choose(policy_cache(policy, task), rgb, mask)
                         self.assertEqual(first.tolist(), second.tolist())
-                        expected = P if policy == 'all' else K
-                        self.assertEqual(len(first), expected)
+                        self.assertEqual(len(first), expected_budget(policy, task))
+                        self.assertEqual(details['budget'], len(first))
                         self.assertEqual(first.tolist(), sorted(set(first.tolist())))
                         self.assertTrue(0 <= int(first.min()) and int(first.max()) < P)
                         if policy != 'all':
                             self.assertIn('weak_corner_selected', details)
+
+    def test_object_arms_choose_inside_the_object_and_share_background(self):
+        rgb, mask = object_frame(6)
+        eligible = mask_fraction(mask) > 0
+        backgrounds = set()
+        for policy in POLICIES:
+            if policy == 'all':
+                continue
+            with self.subTest(policy=policy):
+                picked, details = choose(policy_cache(policy, 'object'), rgb, mask)
+                inside = picked[eligible[picked]]
+                backgrounds.add(tuple(picked[~eligible[picked]].tolist()))
+                self.assertEqual(details['background_kept'], BACKGROUND)
+                self.assertEqual(len(inside), OBJECT_PATCHES if policy == 'object_dense'
+                                 else math.ceil(OBJECT_PATCHES / 4))
+                self.assertEqual(details['eligible_selected'], len(inside))
+                if policy in ('K7', 'K8'):
+                    self.assertLessEqual(details['matched'], OBJECT_PATCHES)
+        self.assertEqual(len(backgrounds), 1)  # one shared background rule
+        # Evenly spaced over the non-object patches in raster order (token_drop's bg16).
+        free = (~eligible).nonzero().flatten()
+        expected = free[torch.linspace(0, len(free) - 1, BACKGROUND).round().long()]
+        self.assertEqual(list(backgrounds.pop()), expected.tolist())
 
     def test_candidates_differ_from_uniform_on_texture(self):
         rgb, mask = textured(3), np.ones((H, W), bool)
@@ -156,19 +210,6 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(a.tolist(), b.tolist())
         self.assertNotEqual(a.tolist(), c.tolist())
         self.assertNotEqual(a.tolist(), d.tolist())
-
-    def test_object_region_split(self):
-        rgb, mask = object_frame(6)
-        picked, details = choose(policy_cache('K4', 'object'), rgb, mask)
-        # Majority-covered patches: rows 3-10 x columns 4-13. 80 exceeds 75% of
-        # K = 88, so the split is exact.
-        self.assertEqual(details['target_patches'], 80)
-        self.assertEqual(details['target_selected'], 66)
-        small = np.zeros((H, W), dtype=bool)
-        small[42:70, 62:90] = True
-        picked, details = choose(policy_cache('K4', 'object'), rgb * small[..., None], small)
-        self.assertEqual(details['target_selected'], details['target_patches'])
-        self.assertEqual(len(picked), K)
 
     def test_scene_clusters_and_boundaries(self):
         rgb, mask = textured(7), np.ones((H, W), bool)
@@ -192,7 +233,7 @@ class PolicyTests(unittest.TestCase):
         torch.testing.assert_close(ages, (torch.arange(P) % 5)[permutation] + 1)
         self.assertGreaterEqual(int(ages[picked].min()), int(ages.sort(descending=True).values[K - 1]))
         # Only the latest admission is kept: bounded history.
-        self.assertIs(cache.previous['features'], cache.tokens)
+        torch.testing.assert_close(cache.previous['features'], cache.tokens, atol=0, rtol=0)
         cache.tokens = -previous  # nothing reaches the cosine floor
         _, details = choose(cache, rgb, mask, frame=9)
         self.assertEqual(details['matched'], 0)

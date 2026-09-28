@@ -257,8 +257,8 @@ LOG=/mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log
 sbatch $Q --gres=gpu:1 --propagate=NONE -o $LOG --wrap="$W"
 ```
 
-Expected: tests `OK` with `REGISTER ATTENTION` and `GATHER` error lines,
-`SCHEDULE` x2, 56 `RUN OK`, `FULL RETENTION FIDELITY OK` x2, `CAUSAL PREFIX OK`
+Expected (amended arms): tests `OK` with `REGISTER ATTENTION` and `GATHER` error
+lines, `SCHEDULE` x2, 67 `RUN OK`, `FULL RETENTION FIDELITY OK` x2, `CAUSAL PREFIX OK`
 x2, `PATCH SELECT PREFLIGHT OK`, `JOB OK`. Outputs in `kvt_tum_out/`:
 `tum_<job>_ps_<clip>_<arm>.tar` per run, `tum_<job>_ps_inputs_office.tar`,
 `tum_<job>_context.tar` (protocol, comparison, preflight.json, logs, sources) and
@@ -267,7 +267,45 @@ the EXIT trap's `tum_<job>_all_runs.tar`. Well under 1 GB expected.
 ### Screen command (only after the preflight archive is reviewed)
 
 `bash tools/kvt_tum.sbatch patch-select screen <reviewed preflight context tar>`
-in the same allocation wrapper. It records that tar's SHA-256, runs the 102
+in the same allocation wrapper. It records that tar's SHA-256, runs the 141
 conditions in the frozen order, archives each, writes `overlap.json`,
 `decision.json` and `comparison.json`, prints `DECISION <task> <status> <winner>`,
 and writes JOB_OK only if every run completed.
+
+## Amendment 2026-09-29, after preflight 25993 (user-selected)
+
+Preflight 25993 passed every mechanical gate, but its selections showed the
+frozen screen could not support the intended conclusions (FINDINGS "patch-select
+preflight 25993"): the object budget ceil(P/4) exceeded the object, so corner
+arms kept every object patch and filled with background by patch index (K1 == K4),
+controls dropped ~75% of the object (a win would reflect mask awareness), K7
+tracked masked-black background, and the two random seeds differed by more than
+the 5% margin while deterministic repeats cannot detect that. The user chose:
+
+- **Object task: quarter inside the object.** Eligible patches are those touching
+  the SAM mask (token_drop's definition). Every arm, controls included, chooses
+  ceil(P_obj/4) of them by its own rule; every object arm then adds the same 16
+  background patches, evenly spaced in raster order (`background_keep`, as bg16
+  in 25906). Candidates differ only inside the object. Within-object versions:
+  K4 = equal quotas over eight encoder-feature clusters of the object patches
+  (the 75/25 target split is superseded by the shared background); K5 = partially
+  covered (mask-edge) versus fully covered patches; K7/K8 match only object
+  patches of the latest admission; K1-K3, K6, K9, K10 rank/sample only object
+  patches; K2 fill likewise. Uniform = cell quotas plus even spacing over the
+  object's patches; random = a random quarter of them. New reference arm
+  `object_dense` (every object patch plus the shared background) is reported to
+  separate background removal from object pruning; it is not a claim control.
+- **Noise floor: eight random seeds** (17, 29, 41, 53, 67, 79, 97, 113) on every
+  clip. The claim needs RMS <= 0.95 x and p99 <= each of uniform and all eight
+  seeds on >= 2 interpretable clips. Seed spread per clip is reported in
+  `decision.json`; native/all-kept repeats remain a determinism check.
+- **Halves: GT-valid pair span** (as implemented).
+
+Unchanged: scene budget ceil(P/4), anchor dense, eligibility gates (1.05 vs
+all-kept, halves, 1.10 time vs native, 0.60 persistent), at most one winner per
+task, confirmation rules. Scene selections are unchanged except uniform, which
+now uses the shared cell-quota/even-spacing helper. Screen size: 141 runs (object
+clips 12 controls, scene 11, ten candidates, two repeats per clip). Preflight:
+espresso and office, 67 runs including prefixes of uniform, random17 and every
+candidate. Preflight 25993 results do not carry over; the amended preflight must
+pass and be reviewed before the screen.
