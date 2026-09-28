@@ -1,6 +1,6 @@
 #!/bin/bash
 # Bounded pilots only. User submits one experiment at a time and reviews its archive.
-# Usage: sbatch ... tools/stream_cache_research.sbatch context|temporal|refresh [scene]
+# Usage: sbatch ... tools/stream_cache_research.sbatch context|context_diagnostic|temporal|refresh [scene]
 #SBATCH --job-name=cache-research
 #SBATCH --account=students
 #SBATCH --qos=students_normal
@@ -12,8 +12,8 @@ set -euo pipefail
 : "${SLURM_JOB_ID:?Submit through sbatch}"
 test "$(hostname -s)" != head
 REPO=/mnt/projects/gr/3DRecon/layer_good
-METHOD=${1:?Choose context, temporal or refresh}
-case "$METHOD" in context|temporal|refresh) ;; *) exit 2 ;; esac
+METHOD=${1:?Choose context, context_diagnostic, temporal or refresh}
+case "$METHOD" in context|context_diagnostic|temporal|refresh) ;; *) exit 2 ;; esac
 git -C "$REPO" -c fetch.recurseSubmodules=false pull --ff-only
 unset CACHE_TUM_ZIP CACHE_ARCTIC_SCENE CACHE_INPUT_TAR CACHE_MANIFEST
 export CACHE_HOST=streamvggt CACHE_WIDTH=308
@@ -21,7 +21,7 @@ export CACHE_SWEEP="$REPO/tools/stream_cache_research_${METHOD}.json"
 export CACHE_IMAGE=localhost/optpose
 export CACHE_IMAGE_TAR=/mnt/projects/gr/3DRecon/optpose.tar
 export CACHE_CHECKPOINT=/mnt/projects/gr/3DRecon/streamvggt_ckpt/checkpoints.pth
-if [ "$METHOD" = context ]; then
+if [[ "$METHOD" == context* ]]; then
     export CACHE_ARCTIC_SCENE=${2:-espressomachine_grab_01}
     case "$CACHE_ARCTIC_SCENE" in box_grab_01|ketchup_grab_01|espressomachine_grab_01) ;; *) exit 2 ;; esac
     export CACHE_ARCTIC_COUNT=128 CACHE_WIDTH=518 CACHE_ARCTIC_OBJECT_GT=1

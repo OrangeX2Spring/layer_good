@@ -1,0 +1,14 @@
+{
+  "description": "Read-only dense-trajectory attention probes plus same-job context controls; diagnostic timing is not deployable speed.",
+  "max_frames": 128,
+  "isolate_conditions": true,
+  "geometry_export": "final",
+  "context_diagnostic": true,
+  "conditions": [
+    {"name": "dense8", "policy": {"research": {"method": "context", "context": "dense"}}},
+    {"name": "dense8_probe", "policy": {"research": {"method": "context", "context": "dense", "context_probe": true}}},
+    {"name": "spread64", "policy": {"research": {"method": "context", "context": "drop"}}},
+    {"name": "spatial64", "policy": {"research": {"method": "context", "context": "spatial"}}},
+    {"name": "appearance64", "policy": {"research": {"method": "context", "context": "appearance"}}}
+  ]
+}

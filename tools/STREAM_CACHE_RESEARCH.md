@@ -4,6 +4,8 @@ User selected implementation of all three on 2026-09-28 and authorized publicati
 for CAMP. All three bounded pilots have now run and been reviewed: temporal 25976, context
 25977, refresh 25978. Runtime gates passed; none meets its full scientific gate.
 Results and caveats: tools/FINDINGS.md, dated 2026-09-28. No further run queued.
+The next authorized run is the [context diagnostic](STREAM_CACHE_CONTEXT_DIAGNOSTIC.md),
+followed by a main experiment only after reviewing its evidence.
 Implementation audit supersedes broad method-rejection conclusions; see
 [STREAM_CACHE_RESEARCH_AUDIT.md](STREAM_CACHE_RESEARCH_AUDIT.md) before rerunning.
 Model code lives in the StreamVGGT fork at
@@ -20,7 +22,8 @@ controls. No full evaluation, dataset download, image modification, or automatic
 second experiment is dispatched. Each submission runs one method on one sequence.
 
 The original pilots used fork `380ace4` (base `05682bc`). The audit overhead fixes
-are published on `main` at `9931fbe`; the parent gitlink pins that revision.
+were published on `main` at `9931fbe`; the current parent gitlink additionally
+includes the passive context observer. The gitlink is the authoritative revision.
 Pull the parent and initialize its pinned
 submodule inside an allocation using the wrapper below. Recovery paths are the
 fork commit and tracked `tools/stream_cache_research*`, not a temporary worktree.

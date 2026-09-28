@@ -480,6 +480,10 @@ def run(args):
     if any(config.research is not None for _, config in configs):
         shutil.copy2(Path(__file__).with_name('test_stream_cache_research.py'), source)
         shutil.copy2(REPO / 'streamvggt/src/streamvggt/models/research_cache.py', source)
+        if specification.get('context_diagnostic'):
+            shutil.copy2(REPO / 'streamvggt/src/streamvggt/models/context_probe.py', source)
+            shutil.copy2(Path(__file__).with_name('test_stream_cache_context_probe.py'), source)
+            shutil.copy2(Path(__file__).with_name('STREAM_CACHE_CONTEXT_DIAGNOSTIC.md'), source)
         shutil.copy2(Path(__file__).with_name('STREAM_CACHE_RESEARCH.md'), source)
         shutil.copy2(Path(__file__).with_name('stream3r_arctic_eval.py'), source)
         shutil.copy2(Path(__file__).with_name('stream_cache_research.sbatch'), source)
@@ -515,6 +519,9 @@ def run(args):
     if any(config.research is not None for _, config in configs):
         from stream_cache_research import verify_research_run
         verify_research_run(args, configs, len(frames))
+    if specification.get('context_diagnostic'):
+        from stream_cache_context_diagnostic import evaluate_context_diagnostic
+        evaluate_context_diagnostic(args.out, args.gate_atol, args.gate_rtol)
     if specification.get('structure_gate'):
         profile = torch.load(args.out / 'b_profile' / 'profile.pt', map_location='cpu', weights_only=True)
         assert torch.isfinite(profile['samples']).all()

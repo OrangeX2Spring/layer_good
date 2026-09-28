@@ -92,7 +92,8 @@ def verify_research_run(args, configs, frame_count):
             assert row['frame'] == index
             assert row['retained_frames'] == sorted(set(row['retained_frames']))
             assert row['retained_frames'][0] == 0 and row['retained_frames'][-1] == index
-            assert row['total_persistent_bytes'] == row['state_bytes'] + row['camera_bytes']
+            assert row['total_persistent_bytes'] == (row['state_bytes'] + row['camera_bytes']
+                                                   + row.get('diagnostic_state_bytes', 0))
             if row['state_budget_bytes'] is not None:
                 assert row['state_bytes'] <= row['state_budget_bytes']
         events[name] = rows
@@ -155,9 +156,13 @@ def run_research_condition(args, model, root, frames, name, config):
     research_fidelity(args, model, root, frames, target)
     torch.cuda.empty_cache()
     torch.manual_seed(settings.seed)
-    session = ResearchCache(model.aggregator, settings)
+    observer = None
+    if settings.context_probe:
+        from streamvggt.models.context_probe import ContextProbe
+        observer = ContextProbe(model.aggregator.patch_start_idx, settings.context_tokens)
+    session = ResearchCache(model.aggregator, settings, observer=observer)
     camera = [None] * model.camera_head.trunk_depth
-    poses, rows = [], []
+    poses, rows, probe_rows = [], [], []
     with torch.no_grad(), (target / 'events.jsonl').open('w') as log:
         for index, frame in enumerate(frames):
             image, mask = load_frame(root, frame)
@@ -185,13 +190,20 @@ def run_research_condition(args, model, root, frames, name, config):
             assert len(session.records) <= index + 1
             assert 0 in session.records and index in session.records
             prediction = cpu_predictions(output)
+            diagnostic_bytes = 0 if observer is None else observer.memory()
+            if observer is not None:
+                probe = observer.report
+                probe['dense_background_confidence_mean'] = float(
+                    prediction['depth_conf'].reshape(-1)[~mask.reshape(-1)].mean())
+                probe_rows.append(probe)
             poses.append(prediction['pose_enc'])
             if args.geometry_export == 'all' or index == len(frames) - 1:
                 np.savez_compressed(target / f'frame_{index:06d}.npz',
                                     **{key: value.numpy() for key, value in prediction.items()})
             event.update(memory, pre_maintenance_state_bytes=before['state_bytes'],
                          camera_bytes=tensor_bytes(camera),
-                         total_persistent_bytes=memory['state_bytes'] + tensor_bytes(camera),
+                         diagnostic_state_bytes=diagnostic_bytes,
+                         total_persistent_bytes=memory['state_bytes'] + tensor_bytes(camera) + diagnostic_bytes,
                          aggregator_dtype=str(session.records[index]['kv'][0][0].dtype),
                          aggregate_seconds=aggregated - start,
                          head_seconds=predicted - aggregated,
@@ -208,10 +220,16 @@ def run_research_condition(args, model, root, frames, name, config):
     np.savez_compressed(target / 'camera.npz',
                         **pose_arrays(args.host, poses, frames[0]['model_hw'], args.keyframe_stride))
     times = [row['seconds'] for row in rows]
+    if observer is not None:
+        with (target / 'context_probes.jsonl').open('w') as output:
+            for row in probe_rows:
+                output.write(json.dumps(row, allow_nan=False) + '\n')
     write_json(target / 'summary.json', dict(frames=len(rows), total_seconds=sum(times),
                p50_seconds=float(np.median(times)), p95_seconds=float(np.quantile(times, .95)),
                max_state_bytes=max(row['state_bytes'] for row in rows),
                max_total_persistent_bytes=max(row['total_persistent_bytes'] for row in rows),
+               max_diagnostic_state_bytes=max(row['diagnostic_state_bytes'] for row in rows),
+               diagnostic_only=settings.context_probe,
                max_peak_allocated=max(row['peak_allocated'] for row in rows),
                max_peak_reserved=max(row['peak_reserved'] for row in rows),
                refreshed_groups=sum(len(row['refreshed_frames']) for row in rows),

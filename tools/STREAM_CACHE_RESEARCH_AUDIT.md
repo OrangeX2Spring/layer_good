@@ -1,5 +1,64 @@
 # StreamVGGT research audit: implementation before interpretation
 
+## Context direction and prior-art correction (2026-09-28)
+
+User now prioritizes improving context-token compression and identifying a
+contribution beyond Co-Me. This supersedes fixed-anchor/fixed-recent refresh as
+the immediate research direction. The user subsequently authorized the
+[context diagnostic](STREAM_CACHE_CONTEXT_DIAGNOSTIC.md) followed by a main
+experiment after evidence review. Diagnostic implementation is prepared; remote
+contracts and scientific signal remain unverified. No job submitted yet.
+
+Primary-source check rules out several easy novelty claims:
+
+- [Co-Me §3](https://arxiv.org/html/2511.14751v2): predicted-confidence merging,
+  dense splitting and attention-mass correction already exist.
+- [LiteVGGT](https://arxiv.org/html/2512.04939v1): pixel gradients plus token
+  variance preserve important geometry; cached merge indices reduce overhead.
+  The earlier generic boundary/variance proposal overlaps this work.
+- [HTTM](https://arxiv.org/abs/2511.21317): training-free head-specific temporal
+  merging is already proposed.
+- [Spark3R](https://arxiv.org/abs/2605.06270): asymmetric query/KV reduction is
+  already proposed. Abstract inspected; implementation not audited.
+- [RegimeVGGT](https://arxiv.org/abs/2606.18439): layer-dependent reduction with
+  pose-path/spatial protection is already proposed. Abstract inspected only.
+- [GRKV](https://arxiv.org/abs/2605.31105) and
+  [Attention Matching](https://arxiv.org/abs/2602.16284): preserving attention
+  outputs through training-free KV compaction is also prior art outside 3D.
+
+Therefore neither no-training, protecting edges, protecting camera tokens nor
+attention-output matching alone is an established new contribution. This is a
+targeted literature screen, not an exhaustive novelty certification.
+
+Candidate research question: can a small set of causal camera/register attention
+probes predict which context merges damage subsequent pose stability, and guide
+fixed-budget group refinement cheaply enough to retain the observed compute gain?
+This differs from confidence ranking as an objective, but its novelty and utility
+are unproven. Probe error is a local attention surrogate, not a guaranteed bound
+on final pose or unseen future queries.
+
+First diagnostic, before building a new selector: compare dense and compressed
+camera/register attention outputs on the same available layer inputs and historical
+state. Keep causal observations only. Relate the measured discrepancy to the
+already recorded local pose failures; include simple feature-variance and confidence
+controls. Dense probe computation is diagnostic overhead, not deployable speed.
+It needs new remote instrumentation because existing archives do not contain Q/K/V
+or intermediate camera-token activations. No future GT may enter online selection.
+
+If the signal works, a candidate implementation would keep a short dense prefix,
+then spend a fixed representative budget on splits that reduce measured probe
+distortion, coarsening low-impact groups elsewhere. Measure the dense-prefix and
+selection overhead and persistent state. It cannot retain our old architecture’s
+speed by assumption; future queries and dense geometry require separate validation.
+Do not retain a hidden full-resolution history as a free fallback.
+
+Separately, missing log-mass correction is an implementation baseline to test,
+not the proposed novelty. Keep it separate from partition/probe changes. Existing
+saved-SAM masked-input setup does not establish mask-free generalization; benchmark
+unmasked inputs and include segmentation cost before such a claim. Co-Me and the
+relevant training-free methods must be compared at matched measured resources,
+with pose tails and dense geometry, before claiming superiority.
+
 User requested autonomous re-investigation on 2026-09-28. Scope: audit the three
 published pilots, fix demonstrable implementation overhead without changing their
 policies, then use bounded runtime gates to distinguish execution problems from
@@ -104,6 +163,13 @@ pose-quality upper bound. No generalized conclusion about contextual repair foll
   cannot support a geometry-preservation claim.
 
 ## Fixes and next gates
+
+**25989 replay reviewed, 2026-09-28:** temporal optimization gate passed. Decisions
+and payloads match 25976 exactly; pose/camera arrays agree within existing
+atol/rtol, not bitwise for compressed arms. Timing improves; accuracy effectively
+unchanged. See FINDINGS “Audit replay 25989 versus 25976” for numbers and caveats.
+Gate 1 below is complete for temporal; do not repeat it. Context/refresh optimization
+speed effects remain unmeasured. Gate 2 remains a proposal, not a queued run.
 
 Implemented locally: device-resident seed selection; no unused coverage scores in
 FIFO/uniform; no unused selective scores in random/full; explicit fidelity scope
