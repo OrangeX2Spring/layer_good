@@ -11,7 +11,7 @@
 #SBATCH --output=/mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log
 set -euo pipefail
 MODE=${1:-sweep}
-case "$MODE" in sweep|combined|correspondence|correspondence-gates|llm-packet|replay-fidelity|llm-compare|append|sensitivity|active-keyframes) ;;
+case "$MODE" in sweep|combined|correspondence|correspondence-gates|llm-packet|replay-fidelity|llm-compare|append|sensitivity|active-keyframes|patch-select) ;;
     *) echo "Unknown mode: $MODE" >&2; exit 2 ;; esac
 test "$(uname -s)" = Linux
 test "$(hostname)" != head
@@ -130,6 +130,11 @@ if [ "$MODE" = active-keyframes ]; then
        "$REPO/tools/KVT_ACTIVE_KEYFRAMES.md" "$REPO/tools/kvt_active_objects.py" \
        "$REPO/tools/kvt_arctic_run.py" "$WORK/context/"
 fi
+if [ "$MODE" = patch-select ]; then
+    cp "$REPO/tools/kvt_patch_select.py" "$REPO/tools/test_kvt_patch_select.py" \
+       "$REPO/tools/SEMANTIC_KV_OVERNIGHT_PLAN.md" "$REPO/tools/kvt_arctic_run.py" \
+       "$REPO/kv_tracker/kv_tracker/patch_select.py" "$WORK/context/"
+fi
 if [ "$MODE" = sensitivity ]; then
     cp "$REPO/tools/cache_sensitivity_sweep.py" "$REPO/tools/stream_cache_sensitivity.py" \
        "$REPO/tools/stream_cache_quantization.py" "$REPO/tools/test_cache_sensitivity.py" \
@@ -204,6 +209,16 @@ if [ "$MODE" = active-keyframes ]; then
             --work "$WORK" --out "$OUT" --tag "$TAG" \
             2>&1 | tee "$WORK/context/active_objects.log"
     fi
+elif [ "$MODE" = patch-select ]; then
+    "${CONTAINER[@]}" python "$REPO/tools/test_kvt_patch_select.py" \
+        2>&1 | tee "$WORK/context/patch_select_tests.log"
+    PS_ARGS=(--stage "${2:-preflight}")
+    if [ "${2:-preflight}" = screen ]; then
+        PS_ARGS+=(--reviewed-preflight "${3:?Supply the reviewed preflight context tar}")
+    fi
+    "${CONTAINER[@]}" python "$REPO/tools/kvt_patch_select.py" \
+        --work "$WORK" --out "$OUT" --tag "$TAG" "${PS_ARGS[@]}" \
+        2>&1 | tee "$WORK/context/patch_select.log"
 elif [ "$MODE" = sensitivity ]; then
     "${CONTAINER[@]}" python "$REPO/tools/test_cache_sensitivity.py" \
         2>&1 | tee "$WORK/context/sensitivity_tests.log"
