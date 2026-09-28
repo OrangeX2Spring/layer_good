@@ -109,6 +109,28 @@ def verify_research_run(args, configs, frame_count):
             for name in ('spatial64', 'appearance64'):
                 assert expected == [row[field] for row in events[name]], (name, field)
         assert any(row['processed_patches'] < row['dense_patches'] for row in events['spread64'])
+    if 'spatial64_mass' in events:
+        for plain, corrected in (('dense8', 'dense8_mass'), ('spatial64', 'spatial64_mass')):
+            for a, b in zip(events[plain], events[corrected]):
+                for field in ('dense_to_sparse', 'representative_positions', 'token_mass',
+                              'processed_patches', 'retained_frames', 'patches_per_frame',
+                              'aggregator_bytes', 'state_bytes', 'camera_bytes'):
+                    assert a[field] == b[field], (plain, field)
+                special = len(a['token_mass']) - a['processed_patches']
+                assert a['token_mass'][:special] == [1.] * special
+                assert sum(a['token_mass']) == a['dense_patches'] + special
+                assert min(a['token_mass']) >= 1
+        assert any(max(row['token_mass']) > 1 for row in events['spatial64_mass'])
+        with np.load(args.out / 'dense8/pose_encodings.npz') as plain, \
+                np.load(args.out / 'dense8_mass/pose_encodings.npz') as corrected:
+            np.testing.assert_allclose(plain['pose_enc'], corrected['pose_enc'],
+                                       atol=args.gate_atol, rtol=args.gate_rtol)
+        with np.load(args.out / 'dense8' / f'frame_{frame_count - 1:06d}.npz') as plain, \
+                np.load(args.out / 'dense8_mass' / f'frame_{frame_count - 1:06d}.npz') as corrected:
+            for key in plain.files:
+                np.testing.assert_allclose(plain[key], corrected[key],
+                                           atol=args.gate_atol, rtol=args.gate_rtol)
+        print('CONTEXT MASS CONTRACTS OK', flush=True)
     if 'temporal_coverage' in events:
         for name in ('temporal_fifo', 'temporal_uniform', 'temporal_coverage'):
             assert any(row['allocation_actions'] for row in events[name]), name

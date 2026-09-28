@@ -29,9 +29,10 @@ class TinyAttention(nn.Module):
         # Position-sensitive fixture: catches row/position misalignment.
         return value + positions.sum(-1)[:, None, :, None].to(value.dtype) * .01
 
-    def forward(self, value, pos):
+    def forward(self, value, pos, attn_mask=None):
         q, k, v = self.qkv(value).reshape(1, -1, 3, 2, 4).permute(2, 0, 3, 1, 4).unbind(0)
-        out = torch.nn.functional.scaled_dot_product_attention(self.rope(q, pos), self.rope(k, pos), v)
+        out = torch.nn.functional.scaled_dot_product_attention(
+            self.rope(q, pos), self.rope(k, pos), v, attn_mask=attn_mask)
         return self.proj(out.transpose(1, 2).reshape(1, -1, 8))
 
 
@@ -43,8 +44,8 @@ class TinyBlock(nn.Module):
         self.ls1, self.ls2 = nn.Identity(), nn.Identity()
         self.mlp = nn.Sequential(nn.Linear(8, 16), nn.GELU(), nn.Linear(16, 8))
 
-    def forward(self, tokens, pos):
-        tokens = tokens + self.attn(self.norm1(tokens), pos)
+    def forward(self, tokens, pos, attn_mask=None):
+        tokens = tokens + self.attn(self.norm1(tokens), pos, attn_mask)
         return tokens + self.mlp(self.norm2(tokens))
 
 
@@ -183,6 +184,65 @@ class ResearchTests(unittest.TestCase):
                     for value in pair:
                         self.assertEqual(value.untyped_storage().nbytes(), research.nbytes(value))
             self.assertEqual(session.memory()['state_bytes'], research.nbytes(session.records))
+
+    def test_context_mass_identity_and_matched_retention(self):
+        mask = torch.zeros(8, 8, dtype=torch.bool)
+        mask[:2, :2] = True
+        for count in (2, 16):
+            sessions = [research.ResearchCache(self.model, research.ResearchConfig(
+                method='context', context='spatial', context_tokens=count,
+                context_mass=enabled, frame_budget=3)) for enabled in (False, True)]
+            corrected_prefix = []
+            with torch.no_grad():
+                for index, image in enumerate(self.images[:6]):
+                    outputs = [session.forward(image, index, mask) for session in sessions]
+                    corrected_prefix.append(outputs[1][-1].clone())
+                    events = [session.maintain(index) for session in sessions]
+                    self.assertEqual(events[0], events[1])
+                    self.assertEqual(sessions[0].memory(), sessions[1].memory())
+                    for session in sessions:
+                        for row in session.records.values():
+                            self.assertEqual(float(row['mass'].sum()), 18.)
+                            torch.testing.assert_close(row['mass'][:3], torch.ones(3))
+                    if count == 16:
+                        for a, b in zip(*outputs):
+                            torch.testing.assert_close(a, b)
+                replay = research.ResearchCache(self.model, sessions[1].config)
+                for index, image in enumerate(self.images[:4]):
+                    actual = replay.forward(image, index, mask)[-1]
+                    torch.testing.assert_close(actual, corrected_prefix[index], rtol=0, atol=0)
+                    replay.maintain(index)
+
+    def test_mass_attention_matches_explicit_duplicate_keys_with_history(self):
+        session = research.ResearchCache(self.model, research.ResearchConfig(
+            method='context', context='spatial', context_mass=True))
+        block = self.model.global_blocks[0]
+        tokens = torch.randn(1, 3, 8)
+        positions = torch.tensor([[[0, 0], [1, 1], [2, 3]]])
+        mass = torch.tensor([1., 2., 4.])
+        old_mass = torch.tensor([3., 1.])
+        old_k, old_v = torch.randn(1, 2, 2, 4), torch.randn(1, 2, 2, 4)
+        old_pos = torch.tensor([[[3, 1], [2, 2]]])
+        session.records[0] = dict(kv=[(old_k, old_v)], positions=old_pos, mass=old_mass)
+        with torch.no_grad():
+            actual, _ = session._global(block, tokens, positions, 0, None, mass)
+            q, k, v = block.attn.qkv(block.norm1(tokens)).reshape(
+                1, 3, 3, 2, 4).permute(2, 0, 3, 1, 4).unbind(0)
+            repeats = torch.cat((old_mass, mass)).long()
+            keys = torch.cat((old_k, k), 2).repeat_interleave(repeats, dim=2)
+            values = torch.cat((old_v, v), 2).repeat_interleave(repeats, dim=2)
+            pos = torch.cat((old_pos, positions), 1).repeat_interleave(repeats, dim=1)
+            expected = torch.nn.functional.scaled_dot_product_attention(
+                block.attn.rope(q, positions), block.attn.rope(keys, pos), values)
+            expected = tokens + block.attn.proj(expected.transpose(1, 2).reshape(1, 3, 8))
+            expected = expected + block.mlp(block.norm2(expected))
+            torch.testing.assert_close(actual, expected)
+            # Frame attention must interpret the same broadcast log-mass mask.
+            expanded = tokens.repeat_interleave(mass.long(), dim=1)
+            expanded_pos = positions.repeat_interleave(mass.long(), dim=1)
+            reference = block(expanded, expanded_pos)[:, [0, 1, 3]]
+            corrected = block(tokens, positions, mass.log()[None, None, None])
+            torch.testing.assert_close(corrected, reference)
 
     def test_coverage_compresses_redundant_view_before_old_unique_view(self):
         session = research.ResearchCache(self.model, research.ResearchConfig(

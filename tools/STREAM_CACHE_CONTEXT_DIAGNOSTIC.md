@@ -1,5 +1,17 @@
 # Context attention diagnostic
 
+## Reviewed outcome — job 25990
+
+Archive reviewed 2026-09-28: expected revisions, exit zero and all runtime
+contracts passed; all three controls failed the frozen exploratory signal screen.
+Canonical evidence and limitations: FINDINGS “Context attention diagnostic 25990”.
+Do not promote the frozen probe score to the main selector. Proposed next step
+is a bounded spatial64 mass-correction comparison with unchanged groups/budget,
+whose concrete protocol must be frozen before submission. Not implemented or
+queued at review time. The subsequent authorized mass-correction diagnostic is
+specified in `STREAM_CACHE_CONTEXT_MASS.md`; it supersedes that proposal as the
+next action. This supersedes archive review as the next action below.
+
 User authorized diagnostic followed by a main experiment on 2026-09-28. Submit
 `tools/stream_cache_research.sbatch context_diagnostic` inside the existing CAMP
 workflow. Review this archive before implementing/submitting the main experiment;

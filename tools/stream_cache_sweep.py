@@ -485,6 +485,8 @@ def run(args):
             shutil.copy2(Path(__file__).with_name('test_stream_cache_context_probe.py'), source)
             shutil.copy2(Path(__file__).with_name('STREAM_CACHE_CONTEXT_DIAGNOSTIC.md'), source)
         shutil.copy2(Path(__file__).with_name('STREAM_CACHE_RESEARCH.md'), source)
+        if any(config.research and config.research.get('context_mass') for _, config in configs):
+            shutil.copy2(Path(__file__).with_name('STREAM_CACHE_CONTEXT_MASS.md'), source)
         shutil.copy2(Path(__file__).with_name('stream3r_arctic_eval.py'), source)
         shutil.copy2(Path(__file__).with_name('stream_cache_research.sbatch'), source)
     shutil.copy2(Path(__file__).with_name('test_kvcache_policy.py'), source)

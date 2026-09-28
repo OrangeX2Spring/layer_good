@@ -1,0 +1,12 @@
+{
+  "description": "Bounded spatial64 group log-mass correction diagnostic; same groups, positions and retention.",
+  "max_frames": 128,
+  "isolate_conditions": true,
+  "geometry_export": "final",
+  "conditions": [
+    {"name": "dense8", "policy": {"research": {"method": "context", "context": "dense"}}},
+    {"name": "dense8_mass", "policy": {"research": {"method": "context", "context": "dense", "context_mass": true}}},
+    {"name": "spatial64", "policy": {"research": {"method": "context", "context": "spatial"}}},
+    {"name": "spatial64_mass", "policy": {"research": {"method": "context", "context": "spatial", "context_mass": true}}}
+  ]
+}
