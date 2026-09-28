@@ -1,6 +1,7 @@
 """StreamVGGT research conditions; called by the shared archived sweep driver."""
 
 from dataclasses import asdict
+from collections import Counter
 import json
 import time
 
@@ -44,7 +45,8 @@ def research_fidelity(args, model, root, frames, target):
             session.maintain(index)
             del tokens, image, output
     write_json(target / 'research_fidelity.json', dict(frames=count, frame_budget=budget, max_abs=worst,
-               atol=args.gate_atol, rtol=args.gate_rtol))
+               atol=args.gate_atol, rtol=args.gate_rtol,
+               scope='Disabled intervention only; does not validate merged or refreshed representations'))
     print('RESEARCH FIDELITY OK', flush=True)
 
 
@@ -94,9 +96,12 @@ def verify_research_run(args, configs, frame_count):
             if row['state_budget_bytes'] is not None:
                 assert row['state_bytes'] <= row['state_budget_bytes']
         events[name] = rows
+        refreshed_counts = Counter(key for row in rows for key in row['refreshed_frames'])
         reports[name] = dict(mean_state_bytes=float(np.mean([row['state_bytes'] for row in rows])),
                              max_state_bytes=max(row['state_bytes'] for row in rows),
-                             refreshed_groups=sum(len(row['refreshed_frames']) for row in rows))
+                             refreshed_groups=sum(refreshed_counts.values()),
+                             refreshed_frame_counts=dict(sorted(refreshed_counts.items())),
+                             actual_aggregator_dtypes=sorted({row['aggregator_dtype'] for row in rows}))
     if 'spread64' in events:
         for field in ('processed_patches', 'aggregator_bytes', 'state_bytes'):
             expected = [row[field] for row in events['spread64']]

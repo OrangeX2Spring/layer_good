@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import torch
 from torch import nn
@@ -98,6 +99,49 @@ class ResearchTests(unittest.TestCase):
             torch.testing.assert_close(identity, patches, rtol=0, atol=0)
             torch.testing.assert_close(identity_pos, positions)
             torch.testing.assert_close(mapping, torch.arange(16))
+
+    def test_spatial_seeds_preserve_order_and_ties(self):
+        positions = torch.cartesian_prod(torch.arange(4), torch.arange(4))
+        features = torch.zeros(16, 8)
+        for appearance in (False, True):
+            seeds, assignment = research.groups(features, positions, 5, appearance)
+            torch.testing.assert_close(seeds, torch.tensor([0, 15, 3, 12, 5]))
+            torch.testing.assert_close(assignment[seeds], torch.arange(5))
+            self.assertEqual(len(assignment.unique()), 5)
+
+    def test_fifo_and_uniform_do_not_compute_unused_novelty(self):
+        with patch.object(research.ResearchCache, '_novelty',
+                          side_effect=AssertionError('Control requested coverage scores')):
+            for allocation in ('fifo', 'uniform'):
+                _, _, events = self.stream(dict(method='temporal', budget_frames=3,
+                    recent_frames=1, min_patches=2, allocation=allocation), count=18)
+                self.assertTrue(any(row['allocation_actions'] for row in events))
+
+    @unittest.skipUnless(torch.cuda.is_available(), 'CAMP CUDA parity gate')
+    def test_cuda_grouping_matches_published_scalar_selection(self):
+        positions = torch.cartesian_prod(torch.arange(16), torch.arange(22)).cuda()
+        features = torch.randn(352, 8, device='cuda')
+        xy = positions.float()
+        xy = (xy - xy.amin(0)) / (xy.amax(0) - xy.amin(0)).clamp_min(1)
+        # Published 380ace4 scalar implementation, retained only as a test oracle.
+        expected_seeds = [0]
+        distance = (xy - xy[0]).square().sum(-1)
+        for _ in range(1, 64):
+            distance[expected_seeds] = -1
+            seed = int(distance.argmax())
+            expected_seeds.append(seed)
+            distance = torch.minimum(distance, (xy - xy[seed]).square().sum(-1))
+        expected_seeds = torch.tensor(expected_seeds, device='cuda')
+        for appearance in (False, True):
+            cost = (xy[:, None] - xy[expected_seeds][None]).square().sum(-1)
+            if appearance:
+                normalized = torch.nn.functional.normalize(features.float(), dim=-1)
+                cost = cost + .25 * (1 - normalized @ normalized[expected_seeds].T).clamp_min(0)
+            expected = cost.argmin(-1)
+            expected[expected_seeds] = torch.arange(64, device='cuda')
+            seeds, assignment = research.groups(features, positions, 64, appearance)
+            torch.testing.assert_close(seeds, expected_seeds, rtol=0, atol=0)
+            torch.testing.assert_close(assignment, expected, rtol=0, atol=0)
 
     def test_merging_preserves_weighted_mean_across_repeated_compression(self):
         values = torch.tensor([[1.], [3.], [8.], [12.]])
@@ -211,6 +255,20 @@ class ResearchTests(unittest.TestCase):
         self.assertEqual(events, repeat)
         for a, b in zip(first, second):
             torch.testing.assert_close(a, b, rtol=0, atol=0)
+
+    def test_random_and_full_refresh_do_not_score_unused_descriptors(self):
+        for mode in ('random', 'full'):
+            session, _, _ = self.stream(dict(method='refresh', frame_budget=4,
+                refresh_every=8, refresh=mode), 8)
+            with torch.no_grad():
+                session.forward(self.images[8], 8)
+                session.maintain(8)
+                # Selection in these controls must not depend on descriptor scores.
+                for row in session.records.values():
+                    del row['last_context']
+                session.refresh(8)
+            self.assertEqual(session.event['refresh_scores'], {})
+            self.assertEqual(len(session.event['refreshed_frames']), 3 if mode == 'full' else 1)
 
     def test_configuration_and_mask_contracts(self):
         with self.assertRaises(AssertionError):

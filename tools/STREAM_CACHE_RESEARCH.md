@@ -1,7 +1,11 @@
 # StreamVGGT: three cache-compression research pilots
 
 User selected implementation of all three on 2026-09-28 and authorized publication
-for CAMP. Remote tests, fidelity, resources and accuracy are unverified.
+for CAMP. All three bounded pilots have now run and been reviewed: temporal 25976, context
+25977, refresh 25978. Runtime gates passed; none meets its full scientific gate.
+Results and caveats: tools/FINDINGS.md, dated 2026-09-28. No further run queued.
+Implementation audit supersedes broad method-rejection conclusions; see
+[STREAM_CACHE_RESEARCH_AUDIT.md](STREAM_CACHE_RESEARCH_AUDIT.md) before rerunning.
 Model code lives in the StreamVGGT fork at
 `src/streamvggt/models/research_cache.py`; the parent only orchestrates experiments.
 Native weights, native entry points and other hosts are unchanged.
@@ -15,14 +19,16 @@ Scientific success is separate: an accuracy/resource advantage over the matched
 controls. No full evaluation, dataset download, image modification, or automatic
 second experiment is dispatched. Each submission runs one method on one sequence.
 
-The fork implementation is published on `main` at `380ace4` (base `05682bc`).
-The parent gitlink pins that revision. Pull the parent and initialize its pinned
+The original pilots used fork `380ace4` (base `05682bc`). The audit overhead fixes
+are published on `main` at `9931fbe`; the parent gitlink pins that revision.
+Pull the parent and initialize its pinned
 submodule inside an allocation using the wrapper below. Recovery paths are the
 fork commit and tracked `tools/stream_cache_research*`, not a temporary worktree.
 
 ## Shared model and measurement contract
 
-- Frozen StreamVGGT; batch=sequence=1; normal inference dtype. New raw ragged K/V
+- Frozen StreamVGGT; batch=sequence=1; FP32 as in the established sweep runner
+  (not the demo’s outer mixed-precision autocast). New raw ragged K/V
   uses native Q/K normalization, integer 2D RoPE and SDPA. Special embeddings
   distinguish original frame zero from later frames, including historical refresh.
 - Native camera-head history is retained and grows. Dense depth/point heads still
@@ -188,10 +194,12 @@ cost more compute than recent4; the trade-off must be measured, not assumed.
 
 ## Remote tests, evidence and first command
 
-The existing job launcher discovers `test_*cache*.py`, including eleven new CPU
+The existing job launcher discovers `test_*cache*.py`, including the original eleven CPU
 contracts for weighted merging, context identity/shape, temporal bytes/positions,
 causal prefixes, refresh isolation/oracle isolation, disabled fidelity and RNG.
-Do not run project modules/tests on the Mac. These tests are authored but unrun.
+Do not run project modules/tests on the Mac. The original tests passed as part of the 74-test suite in all three pilot jobs.
+Four audit contracts (including a CUDA grouping parity check) are added locally;
+their remote execution remains pending.
 Inspect `RESEARCH FIDELITY OK`, each `RESEARCH CONTRACTS OK` / `RUN OK`, camera or
 object evaluation, `RESEARCH CROSS-CONDITION GATE OK`, `JOB OK`, archived exit 0.
 Read `research_gate.json`, every config/event/summary, per-frame pose errors,
