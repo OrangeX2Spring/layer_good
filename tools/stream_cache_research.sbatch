@@ -1,6 +1,6 @@
 #!/bin/bash
 # Bounded pilots only. User submits one experiment at a time and reviews its archive.
-# Usage: sbatch ... tools/stream_cache_research.sbatch context|context_diagnostic|context_mass|temporal|refresh [scene]
+# Usage: sbatch ... tools/stream_cache_research.sbatch context|context_diagnostic|context_mass|context_paths|temporal|refresh [scene]
 #SBATCH --job-name=cache-research
 #SBATCH --account=students
 #SBATCH --qos=students_normal
@@ -12,8 +12,8 @@ set -euo pipefail
 : "${SLURM_JOB_ID:?Submit through sbatch}"
 test "$(hostname -s)" != head
 REPO=/mnt/projects/gr/3DRecon/layer_good
-METHOD=${1:?Choose context, context_diagnostic, context_mass, temporal or refresh}
-case "$METHOD" in context|context_diagnostic|context_mass|temporal|refresh) ;; *) exit 2 ;; esac
+METHOD=${1:?Choose context, context_diagnostic, context_mass, context_paths, temporal or refresh}
+case "$METHOD" in context|context_diagnostic|context_mass|context_paths|temporal|refresh) ;; *) exit 2 ;; esac
 git -C "$REPO" -c fetch.recurseSubmodules=false pull --ff-only
 unset CACHE_TUM_ZIP CACHE_ARCTIC_SCENE CACHE_INPUT_TAR CACHE_MANIFEST
 export CACHE_HOST=streamvggt CACHE_WIDTH=308

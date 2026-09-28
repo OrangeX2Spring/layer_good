@@ -110,7 +110,11 @@ def verify_research_run(args, configs, frame_count):
                 assert expected == [row[field] for row in events[name]], (name, field)
         assert any(row['processed_patches'] < row['dense_patches'] for row in events['spread64'])
     if 'spatial64_mass' in events:
-        for plain, corrected in (('dense8', 'dense8_mass'), ('spatial64', 'spatial64_mass')):
+        pairs = [('spatial64', name) for name in
+                 ('spatial64_mass', 'spatial64_frame', 'spatial64_global') if name in events]
+        if 'dense8_mass' in events:
+            pairs.append(('dense8', 'dense8_mass'))
+        for plain, corrected in pairs:
             for a, b in zip(events[plain], events[corrected]):
                 for field in ('dense_to_sparse', 'representative_positions', 'token_mass',
                               'processed_patches', 'retained_frames', 'patches_per_frame',
@@ -121,6 +125,8 @@ def verify_research_run(args, configs, frame_count):
                 assert sum(a['token_mass']) == a['dense_patches'] + special
                 assert min(a['token_mass']) >= 1
         assert any(max(row['token_mass']) > 1 for row in events['spatial64_mass'])
+        print('CONTEXT MASS CONTRACTS OK', flush=True)
+    if 'dense8_mass' in events:
         with np.load(args.out / 'dense8/pose_encodings.npz') as plain, \
                 np.load(args.out / 'dense8_mass/pose_encodings.npz') as corrected:
             np.testing.assert_allclose(plain['pose_enc'], corrected['pose_enc'],
@@ -130,7 +136,6 @@ def verify_research_run(args, configs, frame_count):
             for key in plain.files:
                 np.testing.assert_allclose(plain[key], corrected[key],
                                            atol=args.gate_atol, rtol=args.gate_rtol)
-        print('CONTEXT MASS CONTRACTS OK', flush=True)
     if 'temporal_coverage' in events:
         for name in ('temporal_fifo', 'temporal_uniform', 'temporal_coverage'):
             assert any(row['allocation_actions'] for row in events[name]), name
@@ -152,6 +157,35 @@ def verify_research_run(args, configs, frame_count):
         caveat='Temporal policies share a byte ceiling, not exact occupancy; '
                'native camera storage and measured CUDA peaks are reported separately.'))
     print('RESEARCH CROSS-CONDITION GATE OK', flush=True)
+
+
+def context_path_decision(metrics, summaries):
+    """Frozen descriptive screen; a scientific failure is a valid experiment result."""
+    reference = metrics['spatial64']
+    reference_errors = np.asarray(reference['rpe_translation_m'])
+    assert reference_errors.shape == (127,)
+    reference_halves = [float(np.sqrt(np.mean(part ** 2))) for part in
+                        (reference_errors[:63], reference_errors[63:])]
+    candidates = {}
+    for name in ('spatial64_frame', 'spatial64_global'):
+        row = metrics[name]
+        errors = np.asarray(row['rpe_translation_m'])
+        assert errors.shape == (127,) and np.isfinite(errors).all()
+        halves = [float(np.sqrt(np.mean(part ** 2))) for part in (errors[:63], errors[63:])]
+        checks = dict(
+            rms=row['rpe_t_m'] <= .95 * reference['rpe_t_m'],
+            p99=row['rpe_translation_p99_m'] <= .95 * reference['rpe_translation_p99_m'],
+            halves=all(a <= 1.05 * b for a, b in zip(halves, reference_halves)),
+            runtime=summaries[name]['total_seconds'] <= 1.10 * summaries['spatial64']['total_seconds'])
+        candidates[name] = dict(checks=checks, passed=all(checks.values()),
+                                half_rms_m=halves)
+    passing = [name for name, row in candidates.items() if row['passed']]
+    winner = min(passing, key=lambda name: (metrics[name]['rpe_translation_p99_m'],
+                                          metrics[name]['rpe_t_m'])) if passing else None
+    return dict(candidates=candidates, selected=winner, reference_half_rms_m=reference_halves,
+                next_action='review_then_validate_once' if winner else 'stop_mass_correction_branch',
+                caveat='Requires passed matched-cache/runtime contracts and archive review. '
+                       'Descriptive thresholds on one inspected clip; no significance or novelty claim.')
 
 
 def heads(model, tokens, image, camera):

@@ -1,5 +1,18 @@
 # Context group-mass diagnostic
 
+## Reviewed outcome — 25991
+
+Archive reviewed 2026-09-28: exit 0, expected b194887/a61fe6d, 84 tests and all
+runtime gates passed. Grouping and occupancy match. Correction improves RMS but
+worsens p99, so the frozen scientific gate is unmet (mixed/inconclusive).
+Canonical numbers, late-tail diagnosis and caveats: FINDINGS “Context group-mass
+diagnostic 25991”. No main-selector promotion or new submission. A bounded
+frame-versus-global correction comparison is only a proposed next decision;
+subsequently authorized as the final mechanism test in
+`STREAM_CACHE_CONTEXT_PATHS.md`, with a strict stop-or-validate rule.
+Submission instructions below are historical for
+this completed job; do not resubmit it.
+
 Frozen 2026-09-28 after job 25990 failed its attention-score screen. User authorized
 this bounded follow-up. This is a baseline mechanism check, not a novel selector.
 

@@ -1,0 +1,13 @@
+{
+  "description": "Final mass-correction mechanism test: off, frame only, global only, both. Stop or validate once.",
+  "max_frames": 128,
+  "isolate_conditions": true,
+  "geometry_export": "final",
+  "context_paths": true,
+  "conditions": [
+    {"name": "spatial64", "policy": {"research": {"method": "context", "context": "spatial"}}},
+    {"name": "spatial64_frame", "policy": {"research": {"method": "context", "context": "spatial", "context_mass": true, "context_mass_scope": "frame"}}},
+    {"name": "spatial64_global", "policy": {"research": {"method": "context", "context": "spatial", "context_mass": true, "context_mass_scope": "global"}}},
+    {"name": "spatial64_mass", "policy": {"research": {"method": "context", "context": "spatial", "context_mass": true}}}
+  ]
+}

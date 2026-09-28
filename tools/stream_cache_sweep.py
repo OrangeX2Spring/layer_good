@@ -487,6 +487,8 @@ def run(args):
         shutil.copy2(Path(__file__).with_name('STREAM_CACHE_RESEARCH.md'), source)
         if any(config.research and config.research.get('context_mass') for _, config in configs):
             shutil.copy2(Path(__file__).with_name('STREAM_CACHE_CONTEXT_MASS.md'), source)
+        if specification.get('context_paths'):
+            shutil.copy2(Path(__file__).with_name('STREAM_CACHE_CONTEXT_PATHS.md'), source)
         shutil.copy2(Path(__file__).with_name('stream3r_arctic_eval.py'), source)
         shutil.copy2(Path(__file__).with_name('stream_cache_research.sbatch'), source)
     shutil.copy2(Path(__file__).with_name('test_kvcache_policy.py'), source)
@@ -521,6 +523,14 @@ def run(args):
     if any(config.research is not None for _, config in configs):
         from stream_cache_research import verify_research_run
         verify_research_run(args, configs, len(frames))
+    if specification.get('context_paths'):
+        from stream_cache_research import context_path_decision
+        metrics = json.loads((args.out / 'object_metrics.json').read_text())['rows']
+        summaries = {name: json.loads((args.out / name / 'summary.json').read_text())
+                     for name, _ in configs}
+        decision = context_path_decision(metrics, summaries)
+        write_json(args.out / 'context_path_decision.json', decision)
+        print('CONTEXT PATH DECISION', decision['next_action'], decision['selected'], flush=True)
     if specification.get('context_diagnostic'):
         from stream_cache_context_diagnostic import evaluate_context_diagnostic
         evaluate_context_diagnostic(args.out, args.gate_atol, args.gate_rtol)

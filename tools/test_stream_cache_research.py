@@ -1,6 +1,7 @@
 """Remote CPU contracts for the research algorithms; never run on the editing Mac."""
 
 import importlib.util
+import copy
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -188,10 +189,11 @@ class ResearchTests(unittest.TestCase):
     def test_context_mass_identity_and_matched_retention(self):
         mask = torch.zeros(8, 8, dtype=torch.bool)
         mask[:2, :2] = True
-        for count in (2, 16):
+        for count, scope in ((count, scope) for count in (2, 16) for scope in ('both', 'frame', 'global')):
             sessions = [research.ResearchCache(self.model, research.ResearchConfig(
                 method='context', context='spatial', context_tokens=count,
-                context_mass=enabled, frame_budget=3)) for enabled in (False, True)]
+                context_mass=enabled, context_mass_scope=scope if enabled else 'both',
+                frame_budget=3)) for enabled in (False, True)]
             corrected_prefix = []
             with torch.no_grad():
                 for index, image in enumerate(self.images[:6]):
@@ -243,6 +245,57 @@ class ResearchTests(unittest.TestCase):
             reference = block(expanded, expanded_pos)[:, [0, 1, 3]]
             corrected = block(tokens, positions, mass.log()[None, None, None])
             torch.testing.assert_close(corrected, reference)
+
+    def test_context_mass_scope_routes_bias_to_selected_blocks(self):
+        mask = torch.zeros(8, 8, dtype=torch.bool)
+        mask[:2, :2] = True
+        attention = torch.nn.functional.scaled_dot_product_attention
+        for scope in ('frame', 'global', 'both'):
+            session = research.ResearchCache(self.model, research.ResearchConfig(
+                method='context', context='spatial', context_tokens=2,
+                context_mass=True, context_mass_scope=scope, frame_budget=3))
+            with torch.no_grad():
+                for index, image in enumerate(self.images[:5]):
+                    with patch.object(research.F, 'scaled_dot_product_attention', wraps=attention) as calls:
+                        session.forward(image, index, mask)
+                    self.assertEqual(len(calls.call_args_list), 6)
+                    for offset, call in enumerate(calls.call_args_list):
+                        bias = call.kwargs['attn_mask']
+                        enabled = scope == 'both' or scope == ('frame' if offset % 2 == 0 else 'global')
+                        self.assertEqual(bias is not None, enabled)
+                        if enabled:
+                            masses = [session.records[index]['mass']]
+                            if offset % 2:
+                                masses = [row['mass'] for row in session.records.values()]
+                            torch.testing.assert_close(bias.flatten().exp(), torch.cat(masses))
+                    session.maintain(index)
+
+    def test_context_path_frozen_stop_and_selection_rules(self):
+        from stream_cache_research import context_path_decision
+
+        names = ('spatial64', 'spatial64_frame', 'spatial64_global')
+        metrics = {name: dict(rpe_t_m=1., rpe_translation_p99_m=1.,
+                             rpe_translation_m=[1.] * 127) for name in names}
+        summaries = {name: dict(total_seconds=100.) for name in names}
+        self.assertEqual(context_path_decision(metrics, summaries)['next_action'],
+                         'stop_mass_correction_branch')
+        metrics['spatial64_frame'].update(rpe_t_m=.95, rpe_translation_p99_m=.95)
+        summaries['spatial64_frame']['total_seconds'] = 110.
+        self.assertEqual(context_path_decision(metrics, summaries)['selected'], 'spatial64_frame')
+        for field in ('rpe_t_m', 'rpe_translation_p99_m'):
+            failed = copy.deepcopy(metrics)
+            failed['spatial64_frame'][field] = .951
+            self.assertIsNone(context_path_decision(failed, summaries)['selected'])
+        failed = copy.deepcopy(metrics)
+        failed['spatial64_frame']['rpe_translation_m'][:63] = [1.051] * 63
+        self.assertIsNone(context_path_decision(failed, summaries)['selected'])
+        slower = copy.deepcopy(summaries)
+        slower['spatial64_frame']['total_seconds'] = 110.1
+        self.assertIsNone(context_path_decision(metrics, slower)['selected'])
+        metrics['spatial64_global'].update(rpe_t_m=.94, rpe_translation_p99_m=.95)
+        self.assertEqual(context_path_decision(metrics, summaries)['selected'], 'spatial64_global')
+        metrics['spatial64_frame']['rpe_translation_p99_m'] = .94
+        self.assertEqual(context_path_decision(metrics, summaries)['selected'], 'spatial64_frame')
 
     def test_coverage_compresses_redundant_view_before_old_unique_view(self):
         session = research.ResearchCache(self.model, research.ResearchConfig(
