@@ -11,7 +11,7 @@
 #SBATCH --output=/mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log
 set -euo pipefail
 MODE=${1:-sweep}
-case "$MODE" in sweep|combined|correspondence|correspondence-gates|llm-packet|replay-fidelity|llm-compare|append|sensitivity|active-keyframes|patch-select) ;;
+case "$MODE" in sweep|combined|correspondence|correspondence-gates|llm-packet|replay-fidelity|llm-compare|append|sensitivity|active-keyframes|patch-select|adaptive-tokens) ;;
     *) echo "Unknown mode: $MODE" >&2; exit 2 ;; esac
 test "$(uname -s)" = Linux
 test "$(hostname)" != head
@@ -135,6 +135,11 @@ if [ "$MODE" = patch-select ]; then
        "$REPO/tools/SEMANTIC_KV_OVERNIGHT_PLAN.md" "$REPO/tools/kvt_arctic_run.py" \
        "$REPO/kv_tracker/kv_tracker/patch_select.py" "$WORK/context/"
 fi
+if [ "$MODE" = adaptive-tokens ]; then
+    cp "$REPO/tools/kvt_adaptive_tokens.py" "$REPO/tools/test_kvt_adaptive_tokens.py" \
+       "$REPO/tools/ADAPTIVE_TOKEN_DENSITY_PLAN.md" "$REPO/tools/kvt_patch_select.py" \
+       "$REPO/tools/kvt_arctic_run.py" "$WORK/context/"
+fi
 if [ "$MODE" = sensitivity ]; then
     cp "$REPO/tools/cache_sensitivity_sweep.py" "$REPO/tools/stream_cache_sensitivity.py" \
        "$REPO/tools/stream_cache_quantization.py" "$REPO/tools/test_cache_sensitivity.py" \
@@ -219,6 +224,12 @@ elif [ "$MODE" = patch-select ]; then
     "${CONTAINER[@]}" python "$REPO/tools/kvt_patch_select.py" \
         --work "$WORK" --out "$OUT" --tag "$TAG" "${PS_ARGS[@]}" \
         2>&1 | tee "$WORK/context/patch_select.log"
+elif [ "$MODE" = adaptive-tokens ]; then
+    "${CONTAINER[@]}" python "$REPO/tools/test_kvt_adaptive_tokens.py" \
+        2>&1 | tee "$WORK/context/adaptive_tokens_tests.log"
+    "${CONTAINER[@]}" python "$REPO/tools/kvt_adaptive_tokens.py" \
+        --work "$WORK" --out "$OUT" --tag "$TAG" \
+        2>&1 | tee "$WORK/context/adaptive_tokens.log"
 elif [ "$MODE" = sensitivity ]; then
     "${CONTAINER[@]}" python "$REPO/tools/test_cache_sensitivity.py" \
         2>&1 | tee "$WORK/context/sensitivity_tests.log"
