@@ -304,3 +304,19 @@ matching the existing patch-select driver. No tracking arm had started.
 Reaching the driver implies the preceding test commands exited successfully
 under the published wrapper; their detailed output was not supplied here.
 Local Python compilation and whitespace checks passed; rerun remains pending.
+
+
+### Job 26009: benchmark resize semantics corrected
+
+User log: all six native/all/all-repeat triplets archived (18 runs), with every
+all-kept repeat passing. Benchmark setup then rejected the actual input grid
+because it assumed the longest edge equals `resize_dim`. `pi3_resize_image()`
+instead uses `resize_dim**2` as a pixel-area limit, preserving aspect ratio and
+rounding to 14-pixel patch multiples. Benchmark configs/results now carry task,
+resize setting and actual shape separately. The scene camera-only flag and
+speed-decision filter also use explicit task metadata, not edge length. The
+existing decision test now covers rectangular scene inputs and excludes object
+timings with a coincident 308 edge. Python compilation and whitespace checks
+passed; runtime pending. No benchmark or sparse/oracle arm completed in 26009.
+The native/all-kept differences in its log are maximum matrix-entry differences,
+not ATE or RPE; numerical interpretation awaits archived trajectories/metrics.

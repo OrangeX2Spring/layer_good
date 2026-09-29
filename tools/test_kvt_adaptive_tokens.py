@@ -82,13 +82,19 @@ class DecisionTests(unittest.TestCase):
                 tracking_seconds=1., mean_kept_patches=100., mismatched_budget_frames=0)
                 for name in CONTROLS + ('heuristic', 'oracle', 'come')}
             results[clip]['oracle']['rpe_translation_m'] = .94
-        timing = [dict(shape=[224, 308], kind='query', bank=bank, fraction=fraction,
+        timing = [dict(shape=[266, 350], task='scene', resize_dim=308,
+                       kind='query', bank=bank, fraction=fraction,
                        median_seconds=1. if fraction == 1. else .79)
                   for bank in (1, 10, 20) for fraction in (1., .5)]
+        # A scene's longest edge need not equal its resize setting. Object
+        # timings must not enter the scene gate, even with a coincident edge.
+        timing.extend(dict(shape=[308, 700], task='object', resize_dim=518,
+                           kind='query', bank=bank, fraction=fraction, median_seconds=100.)
+                      for bank in (1, 10, 20) for fraction in (1., .5))
         decision = decide(results, timing)
         self.assertTrue(decision['tasks']['object']['eligible_for_training_review'])
         self.assertTrue(decision['tasks']['scene']['eligible_for_training_review'])
-        timing[-1]['median_seconds'] = .81
+        timing[5]['median_seconds'] = .81
         decision = decide(results, timing)
         self.assertFalse(decision['tasks']['scene']['eligible_for_training_review'])
         self.assertTrue(decision['tasks']['object']['eligible_for_training_review'])

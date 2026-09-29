@@ -123,7 +123,9 @@ def benchmark(target):
     results = []
     # Actual model-input grids are recorded by the all-kept tracking runs.
     config = json.loads(target.read_text())
-    for height, width in config['shapes']:
+    for spec in config['shapes']:
+        height, width = spec['shape']
+        task, resize_dim = spec['task'], spec['resize_dim']
         grid = (height // 14, width // 14)
         p = math.prod(grid)
         for bank in (1, 10, 20):
@@ -146,7 +148,7 @@ def benchmark(target):
                             started = time.perf_counter()
                             output = forward_kept(model, imgs if kind == 'rebuild' else query,
                                 keep[None].expand(bank if kind == 'rebuild' else 1, -1),
-                                cam_only=(kind == 'query' and max(height, width) == 308),
+                                cam_only=(kind == 'query' and task == 'scene'),
                                 store_cache=kind == 'rebuild', use_cache=kind == 'query')
                             torch.cuda.synchronize()
                             seconds = time.perf_counter() - started
@@ -154,7 +156,8 @@ def benchmark(target):
                                 times.append(seconds)
                                 peaks.append(torch.cuda.max_memory_allocated())
                             del output
-                        results.append(dict(shape=[height, width], bank=bank, fraction=fraction,
+                        results.append(dict(shape=[height, width], task=task, resize_dim=resize_dim,
+                            bank=bank, fraction=fraction,
                             kind=kind, seconds=times, median_seconds=float(np.median(times)),
                             peak_allocated_bytes=max(peaks), kept=int(keep.sum()), patches=p))
                         write_json(target.parent / 'benchmark.json', results)
@@ -165,7 +168,7 @@ def benchmark(target):
 def decide(results, timing):
     speeds = []
     for bank in (1, 10, 20):
-        rows = [r for r in timing if max(r['shape']) == 308 and r['kind'] == 'query' and r['bank'] == bank]
+        rows = [r for r in timing if r['task'] == 'scene' and r['resize_dim'] == 308 and r['kind'] == 'query' and r['bank'] == bank]
         dense = next(r for r in rows if r['fraction'] == 1.)
         half = next(r for r in rows if r['fraction'] == .5)
         speeds.append(half['median_seconds'] / dense['median_seconds'])
@@ -322,8 +325,11 @@ def main():
     for clip in ('office', 'espresso'):
         event = json.loads((args.work / 'runs' / clip / 'all' / 'events.json').read_text())[0]
         height, width = [14 * d for d in event['grid']]
-        assert max(height, width) == RESIZE[clips[clip]['task']]
-        shapes.append([height, width])
+        task = clips[clip]['task']
+        resize_dim = RESIZE[task]
+        # resize_dim defines a pixel-area budget, not the longest edge.
+        assert height > 0 and width > 0 and height * width <= resize_dim ** 2
+        shapes.append(dict(shape=[height, width], task=task, resize_dim=resize_dim))
     bench_config = args.work / 'benchmark_config.json'
     write_json(bench_config, dict(shapes=shapes))
     subprocess.run([sys.executable, __file__, '--benchmark', str(bench_config)], check=True)
