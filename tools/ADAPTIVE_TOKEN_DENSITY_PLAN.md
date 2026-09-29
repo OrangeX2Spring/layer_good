@@ -291,3 +291,16 @@ A GPU regression checks strided incoming gradients, inverse-rotation derivatives
 unchanged caller gradient storage and forward equality. The existing six-pass
 oracle contract remains the end-to-end gate. Local syntax/whitespace checks only;
 resubmit the same gate command and review its runtime evidence before proceeding.
+
+
+### Job 26008: missing TUM archive checksum file
+
+The user log reaches the gate driver and prepares office, then fails because
+`archive_inputs()` requires `archive.sha256`. The driver now writes the source
+ZIP digest and path before archiving, reusing that digest in protocol provenance.
+The helper's other inputs (`manifest.json`, `groundtruth.txt`, `rgb.txt`,
+`model_rgb/`) are produced by `prepare()`. This fixes the omitted caller step,
+matching the existing patch-select driver. No tracking arm had started.
+Reaching the driver implies the preceding test commands exited successfully
+under the published wrapper; their detailed output was not supplied here.
+Local Python compilation and whitespace checks passed; rerun remains pending.

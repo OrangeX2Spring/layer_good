@@ -231,7 +231,9 @@ def main():
             source = TUM_ZIPS / f"rgbd_dataset_{spec['scene']}.zip"
             prepare(source, staged, 308, MAX_GT_DIFFERENCE, count=spec['frames'])
             spec['scene_dir'] = str(staged)
-            inputs[clip] = dict(zip_sha256=sha256(source))
+            digest = sha256(source)
+            inputs[clip] = dict(zip_sha256=digest)
+            (staged / 'archive.sha256').write_text(f'{digest}  {source}\n')
             archive_inputs(staged, args.out / f'{args.tag}_atd_inputs_{clip}.tar')
     checkpoints = Path(os.environ['HF_HOME']) / 'hub' / 'models--yyfz233--Pi3' / 'snapshots'
     weights = list(checkpoints.glob('**/*.safetensors')) + list(checkpoints.glob('**/pytorch_model.bin'))
