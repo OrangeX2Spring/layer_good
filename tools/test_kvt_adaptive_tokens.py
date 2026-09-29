@@ -1,5 +1,6 @@
 """ATD contracts; run in CAMP, never on the editing Mac."""
 import math
+import json
 import unittest
 
 import torch
@@ -110,6 +111,54 @@ class GPUContracts(unittest.TestCase):
         assert torch.cuda.is_available(), 'CAMP GPU required'
         cls.model = move_pi3_mlps_to_bfloat32(load_pi3_from_pretrained('cuda').eval())
         cls.model.requires_grad_(False)
+
+    def test_oracle_repeatability(self):
+        # Recorded 26010 office/espresso grids, including the failing object size.
+        # Baseline variability is measured, not required: nondeterminism need not
+        # manifest on every device/run. The fixed path must be bit-identical.
+        torch.manual_seed(17)
+        model = self.model
+        initial_mode = torch.are_deterministic_algorithms_enabled()
+        initial_warn = torch.is_deterministic_algorithms_warn_only_enabled()
+        for task, height, width in (('scene', 266, 350), ('object', 434, 616)):
+            grid = (height // 14, width // 14)
+            patches = math.prod(grid)
+            imgs = torch.rand(1, 1, 3, height, width, device='cuda')
+            mask = torch.zeros(patches, dtype=torch.bool, device='cuda')
+            if task == 'object':
+                mask[patches // 3:patches // 2] = True
+            for cached in (False, True):
+                model.cache = {}
+                model.kept_cache = None
+                with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
+                    if cached:
+                        forward_kept(model, imgs,
+                            torch.ones(1, patches, dtype=torch.bool, device='cuda'),
+                            store_cache=True, cam_only=True)
+                    before = {i: {k: v.clone() for k, v in layer.items()}
+                              for i, layer in model.cache.items()}
+                    for deterministic in (False, True):
+                        scores = [sensitivity(model, imgs, cached,
+                            deterministic_backward=deterministic) for _ in range(3)]
+                        choices = [select(score[0], mask, task, 'oracle', grid, 0)
+                                   for score in scores]
+                        delta = max(float((s - scores[0]).abs().max()) for s in scores[1:])
+                        changed = max(int((k != choices[0]).sum()) for k in choices[1:])
+                        print('ATD ORACLE REPEAT', json.dumps(dict(task=task,
+                            shape=[height, width], cached=cached, deterministic=deterministic,
+                            score_max_abs=delta, selection_changes=changed)), flush=True)
+                        if deterministic:
+                            for score, choice in zip(scores[1:], choices[1:]):
+                                self.assertTrue(torch.equal(score, scores[0]))
+                                self.assertTrue(torch.equal(choice, choices[0]))
+                        self.assertEqual(torch.are_deterministic_algorithms_enabled(), initial_mode)
+                        self.assertEqual(torch.is_deterministic_algorithms_warn_only_enabled(), initial_warn)
+                    for i, layer in before.items():
+                        for key, value in layer.items():
+                            self.assertTrue(torch.equal(model.cache[i][key], value))
+                model.cache = {}
+                model.kept_cache = None
+        print('ATD ORACLE REPEATABILITY OK', flush=True)
 
     def test_rope_strided_gradient(self):
         from kv_tracker.oracle_rope import OracleRoPE, cuRoPE2D

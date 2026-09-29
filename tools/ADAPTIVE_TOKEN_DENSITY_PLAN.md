@@ -320,3 +320,46 @@ timings with a coincident 308 edge. Python compilation and whitespace checks
 passed; runtime pending. No benchmark or sparse/oracle arm completed in 26009.
 The native/all-kept differences in its log are maximum matrix-entry differences,
 not ATE or RPE; numerical interpretation awaits archived trajectories/metrics.
+
+
+### Job 26010: oracle repeatability repair and diagnostic gate
+
+Archive inspection found score divergence at frame 0 and selected-token/pose
+changes starting together at frame 3; see FINDINGS.md for measurements and
+provisional headroom (not a passed gate). Archived torch is 2.8.0+cu128.
+PyTorch v2.8.0 `aten/src/ATen/native/transformers/cuda/attention_backward.cu`
+selects deterministic Flash backward only with strict deterministic algorithms.
+The oracle now enables that flag around its six gradient computations, restoring
+both the original enabled and warn-only flags in `finally`. No tolerance change.
+The wrapper supplies `CUBLAS_WORKSPACE_CONFIG=:4096:8` before CUDA initialization.
+The forward path is unchanged; backward reproducibility remains CAMP-unverified.
+
+`bash tools/kvt_tum.sbatch adaptive-tokens check` runs the existing 17 tests plus
+nine ATD tests and exits without staging tracking inputs or running the full gate.
+The new test uses recorded office/espresso image sizes, cached and uncached
+teacher queries, three identical-input repeats with default and deterministic
+backward. Default variability is logged (not required to occur); corrected scores
+and selected sets must be exactly equal, persistent cache tensors unchanged, and
+global flags restored. The test uses synthetic pixels, not a real-data prefix.
+Expected: eight `ATD ORACLE REPEAT` records, four deterministic records with zero
+score difference and zero selection changes, `ATD ORACLE REPEATABILITY OK`, nine
+ATD tests OK, and `ATD REPEATABILITY CHECK JOB OK`. EXIT trap saves context;
+there is deliberately no `JOB_OK` indicating completion of the scientific gate.
+
+Current next command on CAMP head (supersedes full-gate submission above):
+
+```bash
+cd /mnt/projects/gr/3DRecon/layer_good
+W='git -c fetch.recurseSubmodules=false pull --ff-only'
+W="$W && bash tools/kvt_tum.sbatch adaptive-tokens check"
+Q="-A students --qos=students_normal -p 24g -w stuttgart"
+LOG=/mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log
+sbatch $Q --gres=gpu:1 --propagate=NONE -o $LOG --wrap="$W"
+```
+
+Review diagnostic output before any subsequent tracking run. After it passes,
+verify independent-process real-data oracle prefixes, then recompute/review oracle
+headroom and speed under the fixed implementation. Do not automatically queue a
+full evaluation or training. Neither task passes the frozen headroom screen in
+26010's provisional results; repeatability repair may not change that conclusion.
+Training data exclusion, task selection and scorer architecture remain unresolved.

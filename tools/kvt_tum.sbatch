@@ -153,6 +153,9 @@ fi
 podman image inspect localhost/kvt > "$WORK/context/container.json"
 THIRDPARTY="$REPO/kv_tracker/thirdparty"
 EXTRA_ENV=()
+if [ "$MODE" = adaptive-tokens ]; then
+    EXTRA_ENV=(-e CUBLAS_WORKSPACE_CONFIG=:4096:8)
+fi
 OFFLINE_ENV=(-e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1)
 if [ "$MODE" = correspondence-gates ]; then
     EXTRA_ENV=(-e HF_TOKEN -e HF_XET_HIGH_PERFORMANCE=1)
@@ -225,8 +228,16 @@ elif [ "$MODE" = patch-select ]; then
         --work "$WORK" --out "$OUT" --tag "$TAG" "${PS_ARGS[@]}" \
         2>&1 | tee "$WORK/context/patch_select.log"
 elif [ "$MODE" = adaptive-tokens ]; then
+    case "${2:-gate}" in
+        gate|check) ;;
+        *) echo "Unknown ATD stage: $2" >&2; exit 2 ;;
+    esac
     "${CONTAINER[@]}" python "$REPO/tools/test_kvt_adaptive_tokens.py" \
         2>&1 | tee "$WORK/context/adaptive_tokens_tests.log"
+    if [ "${2:-gate}" = check ]; then
+        echo 'ATD REPEATABILITY CHECK JOB OK'
+        exit 0
+    fi
     "${CONTAINER[@]}" python "$REPO/tools/kvt_adaptive_tokens.py" \
         --work "$WORK" --out "$OUT" --tag "$TAG" \
         2>&1 | tee "$WORK/context/adaptive_tokens.log"
