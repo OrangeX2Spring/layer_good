@@ -205,6 +205,7 @@ def main():
     parser.add_argument('--out', type=Path)
     parser.add_argument('--tag')
     parser.add_argument('--hours', type=float, default=22.)
+    parser.add_argument('--stage', choices=('gate', 'prefix'), default='gate')
     args = parser.parse_args()
     assert sys.platform == 'linux', 'CAMP only'
     if args.run:
@@ -218,7 +219,8 @@ def main():
     from kvt_arctic_run import DATASET_DIR, OUT as ARCTIC_OUT, stage_dataset
     manifest = json.loads((ARCTIC_OUT / 'initial_frames' / 'manifest.json').read_text())
     stage_dataset(manifest)
-    clips = {c: dict(s) for c, s in CLIPS.items()}
+    clips = {c: dict(s) for c, s in CLIPS.items()
+             if args.stage == 'gate' or c in ('espresso', 'office')}
     inputs = dict(arctic_prepared_sha256=sha256(ARCTIC_OUT / 'prepared.tar'))
     # Preserve exact source pixels alongside per-run SAM masks and model-input hashes.
     shutil.copyfile(ARCTIC_OUT / 'prepared.tar', args.out / f'{args.tag}_atd_arctic_inputs.tar')
@@ -246,7 +248,8 @@ def main():
                           (checkpoints.parent / 'refs').rglob('*') if ref.is_file()}
     sam = CHECKOUT / 'thirdparty/segment-anything-2-real-time/checkpoints/sam2.1_hiera_small.pt'
     inputs['sam_checkpoint'] = dict(path=str(sam), sha256=sha256(sam))
-    write_json(args.work / 'protocol.json', dict(clips=clips, arms=ARMS, inputs=inputs,
+    write_json(args.work / 'protocol.json', dict(stage=args.stage, clips=clips,
+        arms=ARMS if args.stage == 'gate' else ('native', 'oracle', 'oracle_prefix'), inputs=inputs,
         seeds=SEEDS, scene_fraction=.5, object_background=64,
         admission='native schedule replay; arrival choices frozen and reused at rebuild',
         heuristic='scene: half of kept budget highest gradient energy, rest spread; object: bg64',
@@ -314,6 +317,19 @@ def main():
         results[clip][name] = metric
         write_json(args.work / 'comparison.json', results)
         print('ATD ARCHIVE OK', clip, name, flush=True)
+
+    if args.stage == 'prefix':
+        # Fresh processes and real inputs; cover the first native cache rebuild.
+        # No scientific headroom decision or automatic full evaluation follows.
+        for clip in clips:
+            condition(clip, 'native')
+            condition(clip, 'oracle')
+            assert len(schedules[clip]) >= 2
+            length = min(clips[clip]['frames'] - 1, schedules[clip][1] + 2)
+            condition(clip, 'oracle_prefix', length)
+        (args.work / 'JOB_OK').write_text('ATD oracle prefixes passed; headroom not evaluated.\n')
+        print('ATD ORACLE PREFIX PILOT OK', flush=True)
+        return
 
     # GPU contracts precede this driver; establish native schedules and dense references.
     for clip in clips:

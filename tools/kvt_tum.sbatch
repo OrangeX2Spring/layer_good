@@ -229,7 +229,7 @@ elif [ "$MODE" = patch-select ]; then
         2>&1 | tee "$WORK/context/patch_select.log"
 elif [ "$MODE" = adaptive-tokens ]; then
     case "${2:-gate}" in
-        gate|check) ;;
+        gate|check|prefix) ;;
         *) echo "Unknown ATD stage: $2" >&2; exit 2 ;;
     esac
     "${CONTAINER[@]}" python "$REPO/tools/test_kvt_adaptive_tokens.py" \
@@ -239,7 +239,7 @@ elif [ "$MODE" = adaptive-tokens ]; then
         exit 0
     fi
     "${CONTAINER[@]}" python "$REPO/tools/kvt_adaptive_tokens.py" \
-        --work "$WORK" --out "$OUT" --tag "$TAG" \
+        --work "$WORK" --out "$OUT" --tag "$TAG" --stage "${2:-gate}" \
         2>&1 | tee "$WORK/context/adaptive_tokens.log"
 elif [ "$MODE" = sensitivity ]; then
     "${CONTAINER[@]}" python "$REPO/tools/test_cache_sensitivity.py" \

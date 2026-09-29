@@ -363,3 +363,26 @@ headroom and speed under the fixed implementation. Do not automatically queue a
 full evaluation or training. Neither task passes the frozen headroom screen in
 26010's provisional results; repeatability repair may not change that conclusion.
 Training data exclusion, task selection and scorer architecture remain unresolved.
+
+
+### Job 26035 passed; next gate is real-data oracle prefixes
+
+User output reports all 17 existing and nine ATD tests passing, including exact
+fixed-path scores/selections in all four repeatability cases. Baseline backward
+changed scores/selections in all four. This validates the fix on the tested
+synthetic tensors, not independent-process real-data tracking or trainability.
+
+Next run: `bash tools/kvt_tum.sbatch adaptive-tokens prefix`. This stages only
+espresso/office tracking inputs, runs native/full-oracle/oracle-prefix for each
+(six runs), and stops. Full native schedules and full oracle lengths are retained;
+prefixes extend beyond the first native admission. Existing exact event-record,
+SAM-mask and pose-tolerance checks apply. No controls, benchmark, scientific
+decision or training run is queued. Context and per-run archives use the existing
+`kvt_tum_out/tum_JOB_*` namespace. Input provenance archive still preserves the
+complete prepared ARCTIC source archive. Runtime cost not yet measured.
+
+Use the preceding allocation-wrapped command with `adaptive-tokens prefix`
+in place of `adaptive-tokens check`. Expected: tests pass, two
+`ATD CAUSAL PREFIX OK ... oracle` messages, six archived runs,
+`ATD ORACLE PREFIX PILOT OK`, `JOB OK`. Review this output before the full gate.
+This supersedes the tests-only submission as the next action.
