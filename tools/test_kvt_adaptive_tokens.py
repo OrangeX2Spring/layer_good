@@ -105,6 +105,26 @@ class GPUContracts(unittest.TestCase):
         cls.model = move_pi3_mlps_to_bfloat32(load_pi3_from_pretrained('cuda').eval())
         cls.model.requires_grad_(False)
 
+    def test_rope_strided_gradient(self):
+        from kv_tracker.oracle_rope import OracleRoPE, cuRoPE2D
+        torch.manual_seed(29)
+        tokens = torch.randn(1, 2, 7, 16, device='cuda', requires_grad=True)
+        positions = torch.arange(14, device='cuda').reshape(1, 7, 2)
+        upstream = cuRoPE2D()
+        adapter = OracleRoPE()
+        with torch.no_grad():
+            expected_output = upstream(tokens.detach().clone(), positions)
+        output = adapter(tokens, positions)
+        self.assertTrue(torch.equal(output, expected_output))
+        gradient = torch.randn(1, 7, 2, 16, device='cuda').transpose(1, 2)
+        self.assertFalse(gradient.is_contiguous())
+        unchanged = gradient.clone()
+        actual, = torch.autograd.grad(output, tokens, gradient)
+        with torch.no_grad():
+            expected = cuRoPE2D(F0=-1.)(gradient.clone(), positions)
+        torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-5)
+        self.assertTrue(torch.equal(gradient, unchanged))
+
     def test_dense_sparse_cache_and_oracle(self):
         torch.manual_seed(17)
         model = self.model

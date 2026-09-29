@@ -275,3 +275,19 @@ messages, six `ATD DENSE REPEAT OK`, `ATD BENCHMARK OK`, six prefix messages, 96
 `ATD GATE OK`, `JOB OK`, then archive review. Do not start Stage 2 until that
 review confirms provenance, contracts, dense repeat, actual budgets, seed spread,
 speed and task-specific oracle headroom.
+
+
+### Job 26007: oracle backward boundary fix
+
+The user-supplied log reports 17 existing tests passing, then the ATD GPU
+contract failing at `sensitivity()` with `RuntimeError: tokens are not contiguous`
+in `pi3/curope/curope2d.py` backward. The gate driver had not started; this is an
+implementation failure, not evidence about token selection or training headroom.
+Inspection of the archived Pi3 source shows backward applies its in-place CUDA
+kernel directly to the incoming gradient. `kv_tracker/oracle_rope.py` now uses a
+private contiguous gradient copy at that boundary. Sensitivity installs the
+adapter on shared RoPE references; no-grad forwards still use upstream RoPE.
+A GPU regression checks strided incoming gradients, inverse-rotation derivatives,
+unchanged caller gradient storage and forward equality. The existing six-pass
+oracle contract remains the end-to-end gate. Local syntax/whitespace checks only;
+resubmit the same gate command and review its runtime evidence before proceeding.
