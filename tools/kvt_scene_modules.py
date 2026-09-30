@@ -53,6 +53,11 @@ def graph_case(config, out):
             prepared = forward_kept(model, image, keep, cam_only=True, use_cache=True,
                                     query_indices=index)['camera_poses']
             torch.testing.assert_close(prepared, native, rtol=0, atol=0)
+            features = forward_kept(model, image, keep, cam_only=True, use_cache=True,
+                                    query_indices=index, defer_camera_head=True)['camera_features']
+            with torch.amp.autocast(device_type='cuda', enabled=False):
+                split = model.camera_head(features, *grid).reshape(1, 1, 4, 4)
+            torch.testing.assert_close(split, native, rtol=0, atol=0)
             expected.append(native.clone())
         # CUDA capture requires warmup on a side stream. Retain all static buffers.
         torch.cuda.synchronize()
@@ -70,8 +75,9 @@ def graph_case(config, out):
         started = time.perf_counter()
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph, stream=stream):
-            graph_output = forward_kept(model, image_buffer, keep, cam_only=True,
-                                        use_cache=True, query_indices=index_buffer)['camera_poses']
+            graph_features = forward_kept(model, image_buffer, keep, cam_only=True,
+                use_cache=True, query_indices=index_buffer,
+                defer_camera_head=True)['camera_features']
         torch.cuda.synchronize()
         capture_seconds = time.perf_counter() - started
         setup_seconds = time.perf_counter() - setup_started
@@ -81,6 +87,9 @@ def graph_case(config, out):
             image_buffer.copy_(image)
             index_buffer.copy_(index)
             graph.replay()
+            # Preserve Pi3's head/SVD exactly; execute and charge it outside capture.
+            with torch.amp.autocast(device_type='cuda', enabled=False):
+                graph_output = model.camera_head(graph_features, *grid).reshape(1, 1, 4, 4)
             torch.cuda.synchronize()
             torch.testing.assert_close(graph_output, target, rtol=1e-4, atol=1e-4)
             max_error = max(max_error, float((graph_output - target).abs().max()))
@@ -99,12 +108,18 @@ def graph_case(config, out):
                 index_buffer.copy_(host_indices[j], non_blocking=True)
                 if mode == 'graph':
                     graph.replay()
+                    with torch.amp.autocast(device_type='cuda', enabled=False):
+                        query_output = model.camera_head(graph_features, *grid).reshape(1, 1, 4, 4)
                 else:
-                    eager = forward_kept(model, image_buffer, keep, cam_only=True,
-                                         use_cache=True, query_indices=index_buffer)['camera_poses']
+                    query_output = forward_kept(model, image_buffer, keep, cam_only=True,
+                        use_cache=True, query_indices=index_buffer)['camera_poses']
                 torch.cuda.synchronize()
+                elapsed = time.perf_counter() - started
                 if repeat >= 2:
-                    times[mode].append(time.perf_counter() - started)
+                    times[mode].append(elapsed)
+                torch.testing.assert_close(query_output, expected[j], rtol=1e-4, atol=1e-4)
+                if mode == 'graph':
+                    max_error = max(max_error, float((query_output - expected[j]).abs().max()))
         for i, layer in cache.items():
             for key, value in layer.items():
                 assert torch.equal(model.cache[i][key], value)
@@ -119,7 +134,8 @@ def graph_case(config, out):
         setup_break_even_queries=None if savings <= 0 else math.ceil(setup_seconds / savings),
         cache_bytes=sum(v.numel()*v.element_size() for layer in model.cache.values() for v in layer.values()),
         gpu=torch.cuda.get_device_name(), torch_version=torch.__version__,
-        timing='pinned-host RGB/index uploads + query; excludes selector, image preparation, capture and rebuild',
+        timing='pinned-host RGB/index uploads + query including unchanged eager camera head/SVD; excludes selector, image preparation, capture and rebuild',
+        graph_scope='encoder, decoder and camera decoder; fp32 camera features returned to eager head',
         scope='fixed cache per graph; no automatic replay across rebuilds; not end-to-end speed gate')
     write_json(out / 'result.json', result)
     print('SCENE GRAPH CASE OK', json.dumps(result), flush=True)

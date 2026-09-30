@@ -480,14 +480,23 @@ Six fresh processes: office input grid 266x350, cache banks 1/10/20, kept counts
 475/238. Each process compares the original boolean-mask forward with the
 fixed-index eager path exactly, captures on a warmed side stream, changes RGB
 and indices (including the same RGB with a different half-budget index set),
-then checks graph poses at rtol=atol=1e-4. Cache tensors, pointers and labels
-must remain unchanged. Indices are sorted, unique and in-range before capture;
+then checks graph-plus-eager-head poses at rtol=atol=1e-4. Cache tensors, pointers
+and labels must remain unchanged. Indices are sorted, unique and in-range before capture;
 the fixed-index path does not read keep-mask values or increment Python counters.
 Only camera-only single-frame cache queries without mass/probe/groups are allowed.
 
+Job 26039 passed all preflight suites, then failed in the first case at Pi3's
+`torch.svd` during CUDA capture. The corrected boundary captures through the camera
+decoder and returns fp32 patch features (`defer_camera_head=True`); the original
+camera head, including its float64 SVD, runs eagerly after replay with autocast
+disabled. Every case first requires this split eager path to match the original
+mask path exactly. Timed host-upload outputs must also meet the declared pose tolerance.
+No upstream Pi3 code or rotation algorithm changes. This is a partial graph query.
+
 Timing alternates eager/replay order, two warmups and ten measured iterations.
-Pinned-host RGB/index copies are included; selector cost, image preprocessing,
-cache rebuild and graph setup are excluded. Setup/capture seconds, setup break-even
+Pinned-host RGB/index copies and the complete eager camera head/SVD are included;
+selector cost, image preprocessing, cache rebuild and graph setup are excluded.
+Setup/capture seconds, setup break-even
 query count, peak/live memory and cache bytes are reported separately. A graph is
 valid for one fixed cache/shape; it is not reused across rebuilds. No profiler runs
 in these processes. These timings diagnose dispatch cost; they are not yet a full
