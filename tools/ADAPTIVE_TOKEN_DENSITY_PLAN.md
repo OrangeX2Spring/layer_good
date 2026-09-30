@@ -850,3 +850,81 @@ reviews above. After each pass, implement the minimal corresponding label /
 scorer/trainer pipeline locally and submit a small label-contract pilot before
 bulk labels/training; training and held-out inference are user-run CAMP work.
 No additional expensive job is queued behind an unreviewed prerequisite.
+
+## 15. Shared training engineering pilot (authorized 2026-09-30)
+
+After the raw26044/26045 review, user explicitly selected "Build shared training
+pipeline and contract pilot". This authorizes preparation and a bounded training
+smoke despite the failed scene teacher gate; it does not turn that failure into a
+pass. This section supersedes the earlier restriction on preparing training code.
+The old oracle/all-top selection and its results remain unchanged.
+
+There is a protocol mismatch to resolve before retesting headroom: Stage2 specifies
+top scores plus spread context, whereas the original oracle gate used all-top
+selection. `select(..., policy='oracle_spread')` and `scorer_keep` now use the same
+allocation: keep ceil(P/2), reserve floor(kept/2) for top scores and fill the rest
+with existing spatial spread. At475 patches this is119 top +119 spread. This is
+an allocation correction, not proof that the first-order labels become useful.
+The original oracle has not been replaced in ARMS or silently rerun.
+
+Entrypoint: `bash tools/kvt_tum.sbatch adaptive-tokens training-pilot`.
+Fork `kv_tracker/atd_training.py` supplies patch features, two scorers, ranking
+loss and the shared selection rule. Parent `tools/kvt_atd_training.py` supplies
+the bounded label/optimizer/checkpoint/provenance workflow.
+
+- Pilot training sequence: freiburg1_desk. Validation: freiburg3_structure_texture_far.
+  These are distinct sequences listed in26045's read-only inventory. This freezes
+  the pilot split only; it does not establish a larger physical-scene-disjoint corpus.
+  Exclude office/with_loop/no_loop; no GT inputs or GT labels.
+- Existing staging requires128 frames; archive128 exact resized pixels per split,
+  process only64. Label arrivals1/8/16/32/48/50/56/63. Prefix processes51 and repeats
+  six labels, including the first real cache rebuild. Three fresh label processes.
+- Dense frozen Pi3 teacher: physical bootstrap[0,0], queries read past cache;
+  rebuild after49 with[0,49]. No pose predictor or future-image features. Geometry
+  and previous pose stay in the same unrebased Pi3 gauge and reset together.
+  Preserve source-sample indices, cache points/confidence/IDs, query poses,
+  calibration, exact pixels, labels/features/masks and checkpoint/source hashes.
+  Verify cache tensors unchanged by sensitivity; Pi3 parameter gradients stay absent.
+- A features: patch RGB means/std and adjacent-pixel energy (7 channels).
+  B adds support presence, log sample count, log depth normalized by supported
+  median, confidence and log secondary gap (5 channels). Unknown channels arezero.
+  Depth normalization removes the arbitrary tracker scale. Projection disables
+  autocast and TF32; Freiburg1 uses recorded RGB distortion, Freiburg3 undistorted
+  calibration from the official TUM file-format table. No inferred current geometry.
+- Both scorers: two32-channel3x3 convolutions and a1x1 score head, GELU activations.
+  Same full within-frame pair ranking loss; ties excluded. No across-frame targets.
+  Train20 Adam steps at0.001 with seed17, deterministic algorithms. Validate on
+  the untouched validation sequence. This is a smoke test, not hyperparameter search.
+- Require train loss decrease, finite validation loss, exact checkpoint reload
+  scores and exact half-budget counts. Checkpoint includes optimizer, seed, split,
+  label/protocol hashes and explicit eligibility=false. Report pre/post validation
+  loss and scorer+selection cost on cached features; live mapping/features/Pi3 costs
+  are excluded and clearly marked. No deployed speed or memory claim.
+
+Output: existing `/mnt/projects/gr/3DRecon/kvt_tum_out/` (matching the wrapper).
+`tum_JOB_training_inputs_{train,validation}.tar` preserve staged model pixels;
+`tum_JOB_training_pilot.tar` preserves labels/caches/maps, training summaries and
+both checkpoints; `tum_JOB_context.tar` preserves source/protocol/tests/logs and
+exit status, including partial work on failure. No new image/dependencies/download.
+
+From CAMP head in Bash, after publication (the pull executes in the allocation):
+
+```bash
+cd /mnt/projects/gr/3DRecon/layer_good
+W='git -c fetch.recurseSubmodules=false pull --ff-only'
+V='bash tools/kvt_tum.sbatch adaptive-tokens training-pilot'
+Q="-A students --qos=students_normal -p 24g -w stuttgart"
+LOG=/mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log
+sbatch $Q --gres=gpu:1 --propagate=NONE -o $LOG --wrap="$W && $V"
+```
+
+Expected: three ATD LABEL CONTRACT OK, ATD LABEL CAUSAL PREFIX OK, ATD TRAINING
+SMOKE OK A and B, ATD SHARED TRAINING PILOT OK and ATD SHARED TRAINING PILOT JOB OK.
+Return job ID and final evidence; inspect the context/labels/checkpoints before
+larger work. No full evaluation is chained behind this job.
+
+Still pending after a contract pass: rerun the coverage-matched oracle headroom
+against fixed controls; validate B on its own evolving sparse history; freeze the
+larger source split/targets; verify end-to-end live scorer/mapping/Pi3 cost and
+tracking accuracy before bulk labels/training. Dense-history B feature labels are
+an engineering starting point, not a deployable sparse-history training contract.
