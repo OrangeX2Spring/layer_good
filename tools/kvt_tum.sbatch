@@ -11,6 +11,11 @@
 #SBATCH --output=/mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log
 set -euo pipefail
 MODE=${1:-sweep}
+TASK_DEADLINE=
+if [ "$MODE" = adaptive-tokens ] && [ "${2:-gate}" = task-policy ]; then
+    # Four-hour allocation: leave ten minutes for the EXIT archives.
+    TASK_DEADLINE=$(( $(date +%s) + 13800 ))
+fi
 case "$MODE" in sweep|combined|correspondence|correspondence-gates|llm-packet|replay-fidelity|llm-compare|append|sensitivity|active-keyframes|patch-select|adaptive-tokens) ;;
     *) echo "Unknown mode: $MODE" >&2; exit 2 ;; esac
 test "$(uname -s)" = Linux
@@ -162,6 +167,10 @@ if [ "$MODE" = adaptive-tokens ]; then
         cp "$REPO/tools/kvt_atd_training.py" "$REPO/tools/test_kvt_atd_training.py" \
            "$WORK/context/"
     fi
+    if [ "${2:-gate}" = task-policy ]; then
+        cp "$REPO/tools/kvt_task_policy.py" "$REPO/tools/test_kvt_task_policy.py" \
+           "$REPO/tools/TRAINABLE_TOKEN_POLICY_RESEARCH.md" "$WORK/context/"
+    fi
 fi
 if [ "$MODE" = sensitivity ]; then
     cp "$REPO/tools/cache_sensitivity_sweep.py" "$REPO/tools/stream_cache_sensitivity.py" \
@@ -273,9 +282,24 @@ elif [ "$MODE" = patch-select ]; then
         2>&1 | tee "$WORK/context/patch_select.log"
 elif [ "$MODE" = adaptive-tokens ]; then
     case "${2:-gate}" in
-        gate|check|prefix|profile|graph|routing|routing-viz|scenes|graph-track|training-pilot|spread-headroom) ;;
+        gate|check|prefix|profile|graph|routing|routing-viz|scenes|graph-track|training-pilot|spread-headroom|task-policy) ;;
         *) echo "Unknown ATD stage: $2" >&2; exit 2 ;;
     esac
+    if [ "${2:-gate}" = task-policy ]; then
+        "${CONTAINER[@]}" python "$REPO/tools/test_kvt_task_policy.py" \
+            2>&1 | tee "$WORK/context/task_policy_tests.log"
+        TASK_REMAINING=$(( TASK_DEADLINE - $(date +%s) ))
+        test "$TASK_REMAINING" -gt 0
+        # The Python deadline saves partial evidence. This outer limit also
+        # bounds a stuck process; allow one minute for cooperative finalization.
+        timeout --signal=TERM --kill-after=60s "$((TASK_REMAINING + 60))s" \
+            "${CONTAINER[@]}" python "$REPO/tools/kvt_task_policy.py" \
+            --work "$WORK" --out "$OUT" --tag "$TAG" --deadline "$TASK_DEADLINE" \
+            2>&1 | tee "$WORK/context/task_policy.log"
+        test -f "$WORK/PILOT_DONE"
+        echo 'ATD TASK POLICY JOB FINISHED: inspect complete and pilot_pass'
+        exit 0
+    fi
     "${CONTAINER[@]}" python "$REPO/tools/test_kvt_adaptive_tokens.py" \
         2>&1 | tee "$WORK/context/adaptive_tokens_tests.log"
     if [ "${2:-gate}" = spread-headroom ]; then
