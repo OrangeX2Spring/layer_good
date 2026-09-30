@@ -34,7 +34,7 @@ class SelectionTests(unittest.TestCase):
         mask[20:80] = True
         score = torch.linspace(0., 1., len(mask))
         for task in ('object', 'scene'):
-            for policy in ('uniform', 'random17', 'random29', 'heuristic', 'oracle'):
+            for policy in ('uniform', 'random17', 'random29', 'heuristic', 'oracle', 'oracle_spread'):
                 chosen = select(score, mask, task, policy, grid, 19)
                 self.assertEqual(int(chosen.sum()), 124 if task == 'object' else 72)
                 self.assertTrue(torch.equal(chosen, select(score, mask, task, policy, grid, 19)))

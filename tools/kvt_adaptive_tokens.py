@@ -131,7 +131,7 @@ def run(path):
         teacher_seconds=0 if policy is None else policy.teacher_seconds,
         selection_seconds=0 if policy is None else policy.selection_seconds,
         student_forward_seconds=None if policy is None else policy.student_seconds,
-        teacher_state_in_peak=config['policy'] in ('oracle', 'come'))
+        teacher_state_in_peak=config['policy'] in ('oracle', 'oracle_spread', 'come'))
     if policy is not None:
         metrics.update(mean_kept_patches=float(np.mean([e['budget'] for e in policy.events])),
             mismatched_budget_frames=sum(e['budget'] != e['target_budget'] for e in policy.events))
@@ -301,7 +301,7 @@ def main():
     parser.add_argument('--out', type=Path)
     parser.add_argument('--tag')
     parser.add_argument('--hours', type=float, default=22.)
-    parser.add_argument('--stage', choices=('gate', 'prefix', 'scenes', 'graph-track'), default='gate')
+    parser.add_argument('--stage', choices=('gate', 'prefix', 'scenes', 'graph-track', 'spread-headroom'), default='gate')
     args = parser.parse_args()
     assert sys.platform == 'linux', 'CAMP only'
     if args.run:
@@ -317,7 +317,35 @@ def main():
     clips = {c: dict(s) for c, s in CLIPS.items()
              if args.stage == 'gate' or
              (args.stage == 'prefix' and c in ('espresso', 'office')) or
-             (args.stage in ('scenes', 'graph-track') and s['task'] == 'scene')}
+             (args.stage in ('scenes', 'graph-track', 'spread-headroom') and s['task'] == 'scene')}
+    reviewed = None
+    if args.stage == 'spread-headroom':
+        # This stage reuses exactly the controls already audited locally, not an arbitrary run.
+        source = args.out / 'tum_26044_context.tar'
+        context_digest = sha256(source)
+        assert context_digest == '92b47204bd5cd6fb4d7b2653b7994561a5565f5fa77a28b63fcf97a667648d8c'
+        with tarfile.open(source) as bundle:
+            assert bundle.extractfile('./context/exit_status.txt').read().strip() == b'0'
+            reviewed = json.load(bundle.extractfile('./protocol.json'))
+            reviewed_results = json.load(bundle.extractfile('./comparison.json'))
+            previous_container = bundle.extractfile('./context/container_tar.sha256').read().split()[0]
+        assert previous_container == (args.work / 'context/container_tar.sha256').read_bytes().split()[0]
+        write_json(args.work / 'context/reviewed_comparison.json', reviewed_results)
+        reviewed_runs = args.work / 'inputs/reviewed_runs'
+        reviewed_runs.mkdir(parents=True)
+        source = args.out / 'tum_26044_all_runs.tar'
+        run_digest = sha256(source)
+        assert run_digest == 'f81975aa6adeab8f43502f63b788cbd8d4733fa4152b8305c38df8b1d86b00bf'
+        with tarfile.open(source) as bundle:
+            for clip in clips:
+                for arm in ('native', 'all'):
+                    for name in ('traj.npy', 'kf_idx.npy', 'kf_poses.npy'):
+                        member = bundle.getmember(f'runs/{clip}/{arm}/{name}')
+                        assert member.isfile()
+                        bundle.extract(member, reviewed_runs)
+        write_json(args.work / 'context/reviewed_sources.json', dict(job=26044,
+            context_sha256=context_digest, all_runs_sha256=run_digest,
+            control_use='accuracy only; timing not paired'))
     if args.stage == 'graph-track':
         for spec in clips.values():
             spec['frames'] = 256
@@ -350,7 +378,18 @@ def main():
             digest = sha256(source)
             inputs[clip] = dict(zip_sha256=digest)
             (staged / 'archive.sha256').write_text(f'{digest}  {source}\n')
-            archive_inputs(staged, args.out / f'{args.tag}_atd_inputs_{clip}.tar')
+            if reviewed is None:
+                archive_inputs(staged, args.out / f'{args.tag}_atd_inputs_{clip}.tar')
+            else:
+                assert digest == reviewed['inputs'][clip]['zip_sha256']
+                pins = dict(office='88c00b3229ce6e454e5f7ec69129c126a283e6e9db5093bb5c6f86a43694ff8d',
+                    with_loop='fd731f32e4316bd3b810f113d1997357f8f08a37ebaaf0d064fca2fcaa480432',
+                    no_loop='e47b84da8cf1883a2dce9f0819a89cb2ba1b83030f0f23a739288a0b0e40367f')
+                original = args.out / f'tum_26044_atd_inputs_{clip}.tar'
+                assert sha256(original) == pins[clip]
+                with tarfile.open(original) as bundle:
+                    assert json.load(bundle.extractfile(f'{clip}/manifest.json')) == json.loads((staged / 'manifest.json').read_text())
+                inputs[clip]['reviewed_model_pixels'] = dict(archive=str(original), sha256=pins[clip])
     checkpoints = Path(os.environ['HF_HOME']) / 'hub' / 'models--yyfz233--Pi3' / 'snapshots'
     weights = list(checkpoints.glob('**/*.safetensors')) + list(checkpoints.glob('**/pytorch_model.bin'))
     assert weights, f'No cached Pi3 checkpoint found at {checkpoints}'
@@ -359,22 +398,30 @@ def main():
                           (checkpoints.parent / 'refs').rglob('*') if ref.is_file()}
     sam = CHECKOUT / 'thirdparty/segment-anything-2-real-time/checkpoints/sam2.1_hiera_small.pt'
     inputs['sam_checkpoint'] = dict(path=str(sam), sha256=sha256(sam))
+    if reviewed is not None:
+        for key in ('pi3_weights', 'pi3_refs', 'sam_checkpoint'):
+            assert inputs[key] == reviewed['inputs'][key], key
     write_json(args.work / 'protocol.json', dict(stage=args.stage, clips=clips,
-        arms=('native', 'all', 'uniform', 'all_graph_checked', 'all_graph',
+        arms=('native', 'all', 'oracle_spread') if args.stage == 'spread-headroom' else
+             ('native', 'all', 'uniform', 'all_graph_checked', 'all_graph',
               'uniform_graph_checked', 'uniform_graph') if args.stage == 'graph-track' else
              ('native', 'oracle', 'oracle_prefix') if args.stage == 'prefix' else
              ('native', 'all_repeat') + ARMS, inputs=inputs,
         routing_arms=('passive', 'passive_prefix') if args.stage == 'scenes' else (),
-        prefixes=('all_graph', 'uniform_graph') if args.stage == 'graph-track' else
+        prefixes=('oracle_spread',) if args.stage == 'spread-headroom' else
+                 ('all_graph', 'uniform_graph') if args.stage == 'graph-track' else
                  ('heuristic', 'oracle', 'random17') if args.stage != 'prefix' else ('oracle',),
         seeds=SEEDS, scene_fraction=.5, object_background=64,
         admission='native schedule replay; arrival choices frozen and reused at rebuild',
         heuristic='scene: half of kept budget highest gradient energy, rest spread; object: bg64',
         oracle='six local body-pose gate derivatives; independent dense teacher cache; not deployable',
+        oracle_spread='half of kept budget top scores, rest spread; same learned allocation',
+        reused_controls=None if reviewed is None else dict(job=26044, policies=CONTROLS,
+            accuracy_only=True, fresh_native_all_arrays_must_match_exactly=True),
         scene_speed='256-frame execution pilot; no training eligibility' if args.stage == 'graph-track' else
-                    'not tested; no training eligibility' if args.stage == 'scenes' else
+                    'not tested; no training eligibility' if args.stage in ('scenes', 'spread-headroom') else
                     'at least 20% faster at all three cache sizes', deadline_hours=args.hours))
-    results = {c: {} for c in clips}
+    results = {c: {} for c in clips} if reviewed is None else reviewed_results
     schedules = {}
 
     def condition(clip, name, length=None):
@@ -488,6 +535,11 @@ def main():
                 assert short == [e for e in original if e['frame'] < frames]
                 print('ATD CAUSAL PREFIX OK', clip, policy, flush=True)
         write_json(target / 'metrics.json', metric)
+        if reviewed is not None and name in ('native', 'all'):
+            for file in ('traj.npy', 'kf_idx.npy', 'kf_poses.npy'):
+                np.testing.assert_array_equal(np.load(target / file),
+                    np.load(reviewed_runs / 'runs' / clip / name / file))
+            print('ATD REVIEWED REFERENCE EXACT OK', clip, name, flush=True)
         archive = args.out / f'{args.tag}_atd_{clip}_{name}.tar'
         with tarfile.open(archive.with_suffix('.tar.partial'), 'w') as bundle:
             bundle.add(target, arcname=f'{clip}/{name}')
@@ -497,6 +549,23 @@ def main():
         results[clip][name] = metric
         write_json(args.work / 'comparison.json', results)
         print('ATD ARCHIVE OK', clip, name, flush=True)
+
+    if args.stage == 'spread-headroom':
+        # Confirm reference fidelity on every scene before spending time on teacher gradients.
+        for clip in clips:
+            condition(clip, 'native')
+            condition(clip, 'all')
+        for clip in clips:
+            condition(clip, 'oracle_spread')
+            condition(clip, 'oracle_spread_prefix', schedules[clip][1] + 2)
+        decision = decide({c: dict(r, oracle=r['oracle_spread']) for c, r in results.items()}, None, clips)
+        decision['teacher_policy'] = 'oracle_spread'
+        decision['reference_job'] = 26044
+        decision['original_oracle_replaced'] = False
+        write_json(args.work / 'decision.json', decision)
+        (args.work / 'JOB_OK').write_text('Coverage-matched teacher retest complete; manual review required.\n')
+        print('ATD SPREAD HEADROOM OK', json.dumps(decision), flush=True)
+        return
 
     if args.stage == 'graph-track':
         report = {}

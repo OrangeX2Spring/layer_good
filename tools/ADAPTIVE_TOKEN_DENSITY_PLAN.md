@@ -928,3 +928,61 @@ against fixed controls; validate B on its own evolving sparse history; freeze th
 larger source split/targets; verify end-to-end live scorer/mapping/Pi3 cost and
 tracking accuracy before bulk labels/training. Dense-history B feature labels are
 an engineering starting point, not a deployable sparse-history training contract.
+
+## 16. Coverage-matched teacher headroom retest after26063 review
+
+26063's raw engineering contracts pass. Both held-out ranking losses worsen from
+initialization; eight labeled frames and20steps do not demonstrate generalization.
+See FINDINGS for values, concordance and limitations. Do not extend training before
+testing whether the proposed teacher allocation supplies tracking headroom.
+
+`adaptive-tokens spread-headroom` runs ONE oracle_spread policy, preserving the old
+all-top oracle/default ARMS and its negative result. No threshold or policy grid.
+It uses office1150 / with_loop1024 / no_loop1024 at308 and the same half budget;
+half of kept tokens are top sensitivity scores, the remainder spatial spread.
+The teacher remains independent, dense, past-only and nondeployable; arrival
+choices are frozen for subsequent sparse rebuilds. This adds no learned arm.
+
+Reuse26044's locally audited controls instead of repeating the full control grid:
+
+- Require exact SHA256 of26044 context, all_runs and three input archives pinned
+  from the independent local review. Exit must be0, container tar hash unchanged,
+  Pi3 weight/ref and SAM identities unchanged, regenerated input manifests exact.
+  The same source ZIP hashes and every model-input hash are checked. Existing
+  resized-input archives are referenced read-only, not duplicated under a new tag.
+- Before gradients, six fresh full native/all runs must exactly match all archived
+  traj.npy/kf_idx.npy/kf_poses.npy arrays. A mismatch stops the job and invalidates
+  reuse; do not silently run a replacement grid. Reviewed references extracted into
+  job-local inputs/reviewed_runs, excluded from output archives.
+- Then run three full oracle_spread cases and three51-frame causal prefixes:
+  **12fresh processes total**. Per-run archives retain configs/outputs/events;
+  context retains checksum-pinned source identity and reviewed comparison JSON.
+  Native schedules replayed, no admission or budget change beyond the allocation.
+- Evaluate existing gate: oracle RMS <=0.95 of every uniform/eight-random control,
+  p99 no worse than every control, on at least two of three scenes. Original
+  controls/heuristic/CoMe/old-oracle metrics stay in comparison.json; decision
+  explicitly names oracle_spread and reference26044. The in-memory oracle key
+  passed to the existing decision function is an alias only, not replacement of
+  the archived old arm. Timing of historical controls is not a paired comparison.
+- Speed not tested by this stage; eligible_for_training_review remains false until
+  separate runtime/selection/data gates. GT coverage limitations from26044 remain.
+  Success markers mean diagnostic execution, not scientific gate passage.
+
+Run from CAMP head in Bash after publication:
+
+```bash
+cd /mnt/projects/gr/3DRecon/layer_good
+W='git -c fetch.recurseSubmodules=false pull --ff-only'
+V='bash tools/kvt_tum.sbatch adaptive-tokens spread-headroom'
+Q="-A students --qos=students_normal -p 24g -w stuttgart"
+LOG=/mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log
+sbatch $Q --gres=gpu:1 --propagate=NONE -o $LOG --wrap="$W && $V"
+```
+
+Expect six ATD REVIEWED REFERENCE EXACT OK, three ATD CAUSAL PREFIX OK
+(oracle_spread),12 ATD ARCHIVE OK, ATD SPREAD HEADROOM OK with decision and
+ATD SPREAD HEADROOM JOB OK. Return job ID and final decision or first failure.
+Default deadline4h. No trainer, bulk labels or full evaluation chained behind it.
+After archive review, determine whether this teacher can justify larger disjoint
+label data; B still requires its own evolving sparse-cache feature contract and
+causal selection benefit. A headroom pass alone does not qualify B.

@@ -273,11 +273,19 @@ elif [ "$MODE" = patch-select ]; then
         2>&1 | tee "$WORK/context/patch_select.log"
 elif [ "$MODE" = adaptive-tokens ]; then
     case "${2:-gate}" in
-        gate|check|prefix|profile|graph|routing|routing-viz|scenes|graph-track|training-pilot) ;;
+        gate|check|prefix|profile|graph|routing|routing-viz|scenes|graph-track|training-pilot|spread-headroom) ;;
         *) echo "Unknown ATD stage: $2" >&2; exit 2 ;;
     esac
     "${CONTAINER[@]}" python "$REPO/tools/test_kvt_adaptive_tokens.py" \
         2>&1 | tee "$WORK/context/adaptive_tokens_tests.log"
+    if [ "${2:-gate}" = spread-headroom ]; then
+        "${CONTAINER[@]}" python "$REPO/tools/kvt_adaptive_tokens.py" \
+            --work "$WORK" --out "$OUT" --tag "$TAG" --stage spread-headroom --hours "${3:-4}" \
+            2>&1 | tee "$WORK/context/adaptive_tokens.log"
+        test -f "$WORK/JOB_OK"
+        echo 'ATD SPREAD HEADROOM JOB OK'
+        exit 0
+    fi
     if [ "${2:-gate}" = training-pilot ]; then
         "${CONTAINER[@]}" python "$REPO/tools/test_kvt_atd_training.py" \
             2>&1 | tee "$WORK/context/training_tests.log"
