@@ -444,7 +444,9 @@ def main():
         print('ATD RUN', clip, name, frames, flush=True)
         with (target / 'run.log').open('w') as log:
             process = subprocess.run([sys.executable, __file__, '--run', str(target / 'config.json')],
-                                     stdout=log, stderr=subprocess.STDOUT)
+                                     stdout=log, stderr=subprocess.STDOUT,
+                                     timeout=(max(0., deadline - time.monotonic())
+                                              if args.stage == 'spread-headroom' else None))
         write_json(target / 'process.json', dict(returncode=process.returncode))
         if process.returncode:
             print((target / 'run.log').read_text()[-10000:], flush=True)
@@ -562,6 +564,10 @@ def main():
         decision['teacher_policy'] = 'oracle_spread'
         decision['reference_job'] = 26044
         decision['original_oracle_replaced'] = False
+        decision['next_action'] = (
+            'Review archives before deciding on further work; training remains gated'
+            if decision['tasks']['scene']['oracle_headroom_pass'] else
+            'Stop this teacher/distillation route; no further sweeps or training')
         write_json(args.work / 'decision.json', decision)
         (args.work / 'JOB_OK').write_text('Coverage-matched teacher retest complete; manual review required.\n')
         print('ATD SPREAD HEADROOM OK', json.dumps(decision), flush=True)

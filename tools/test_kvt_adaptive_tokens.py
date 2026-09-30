@@ -49,6 +49,19 @@ class SelectionTests(unittest.TestCase):
         flat[:, ::2, :] = 1.
         self.assertTrue((energy(flat) > 0).all())
 
+    def test_spread_teacher_matches_learned_allocation(self):
+        from kv_tracker.atd_training import scorer_keep
+        grid = (19, 25)
+        score = torch.arange(math.prod(grid)).float()
+        mask = torch.zeros_like(score, dtype=torch.bool)
+        spread = select(score, mask, 'scene', 'oracle_spread', grid, 0)
+        top = select(score, mask, 'scene', 'oracle', grid, 0)
+        self.assertEqual(int(spread.sum()), 238)
+        self.assertTrue(spread[-119:].all())
+        self.assertTrue(spread[:237].any())
+        self.assertFalse(torch.equal(spread, top))
+        self.assertTrue(torch.equal(spread, scorer_keep(score, grid, 0)))
+
     def test_merging_coverage_count_and_positions(self):
         for grid in ((11, 13), (37, 37)):
             p = math.prod(grid)
