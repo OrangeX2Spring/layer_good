@@ -523,6 +523,7 @@ def visualize_routing(inputs, result, output):
     (output / 'review.json').write_text(json.dumps(dict(
         selection='first/last query, before/after each cache update, minimum support',
         frames=records, verified_model_rgb_frames=len(images), K=calibration['K'],
+        calibration=calibration,
         manifest_sha256=hashlib.sha256((inputs / 'manifest.json').read_bytes()).hexdigest(),
         routing_sha256=hashlib.sha256((result / 'routing.json').read_bytes()).hexdigest(),
         mapping_seconds=dict(median=float(np.median(latency)),

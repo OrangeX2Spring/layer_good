@@ -58,6 +58,29 @@ def run(path):
         source = Frames('cuda:0', scene_dir=scene_dir, obj_mode=False, resize_dim=308, offset=0)
         arguments = ['--cam_only', '--resize_dim', '308', '--kf_auto', '50']
     rows = []
+    observer = None
+    if config.get('observe', False):
+        from kv_tracker.scene_routing import SceneRoutingObserver
+        assert task == 'scene' and config['policy'] == 'native'
+        assert (source.height, source.width) == (480, 640)
+        h, w, _ = manifest['inputs'][0]['shape']
+        if config['scene'].startswith('freiburg3_'):
+            fx, fy, cx, cy = 535.4, 539.2, 320.1, 247.6
+            distortion = None  # Freiburg3 RGB is already undistorted.
+        else:
+            assert config['scene'].startswith('freiburg2_')
+            fx, fy, cx, cy = 520.9, 521., 325.1, 249.7
+            distortion = torch.tensor([.2312, -.7849, -.0033, -.0001, .9172], device='cuda')
+        k = torch.tensor([[fx*w/640, 0, (cx+.5)*w/640-.5],
+                          [0, fy*h/480, (cy+.5)*h/480-.5], [0, 0, 1]], device='cuda')
+        observer = SceneRoutingObserver(target, k, h, w, distortion)
+        write_json(target / 'calibration.json', dict(K=k.cpu().tolist(),
+            distortion=None if distortion is None else distortion.cpu().tolist(),
+            source_size=[480, 640], model_size=[h, w],
+            source='https://cvg.cit.tum.de/data/datasets/rgbd-dataset/file_formats',
+            rgb='original RGB; cv2 linear resize; no crop or undistortion',
+            pose='last estimated camera-to-world; canonical tracker gauge',
+            sampling='source pixel centers 7::14; patch samples, not dense visibility'))
     with (target / 'tokens.jsonl').open('w') as log:
         policy = None if config['policy'] == 'native' else AdaptiveTokens(config['policy'], task, log)
         original = tracker.pi3_inference
@@ -80,7 +103,7 @@ def run(path):
         tracker.pi3_inference = measured
         schedule = config['schedule']
         tracker.run_track3r(cfg=dict(results_path=str(target), que_size=1), args=arguments,
-            frame_source=source, token_policy=policy,
+            frame_source=source, token_policy=policy, scene_observer=observer,
             keyframe_indices=None if schedule is None else schedule[1:])
         torch.cuda.synchronize()
         elapsed = time.perf_counter() - started
@@ -98,7 +121,8 @@ def run(path):
         tracking_seconds=elapsed, peak_allocated_bytes=torch.cuda.max_memory_allocated(),
         peak_reserved_bytes=torch.cuda.max_memory_reserved(), gpu=torch.cuda.get_device_name(),
         max_cache_bytes=max(r['cache_bytes'] for r in rows),
-        timing='synchronized wall time from first inference, including teacher/selection when present',
+        timing='synchronized wall time from first inference; includes teacher/selection and observer serialization when present',
+        routing_observer=observer is not None,
         teacher_seconds=0 if policy is None else policy.teacher_seconds,
         selection_seconds=0 if policy is None else policy.selection_seconds,
         student_forward_seconds=None if policy is None else policy.student_seconds,
@@ -219,17 +243,19 @@ def profile_scene(target):
     print('ATD SCENE PROFILE OK', flush=True)
 
 
-def decide(results, timing):
+def decide(results, timing, clips=CLIPS):
     speeds = []
-    for bank in (1, 10, 20):
-        rows = [r for r in timing if r['task'] == 'scene' and r['resize_dim'] == 308 and r['kind'] == 'query' and r['bank'] == bank]
-        dense = next(r for r in rows if r['fraction'] == 1.)
-        half = next(r for r in rows if r['fraction'] == .5)
-        speeds.append(half['median_seconds'] / dense['median_seconds'])
-    output = dict(scene_query_ratios=speeds, scene_speed_pass=all(r <= .8 for r in speeds), tasks={})
+    if timing is not None:
+        for bank in (1, 10, 20):
+            rows = [r for r in timing if r['task'] == 'scene' and r['resize_dim'] == 308 and r['kind'] == 'query' and r['bank'] == bank]
+            dense = next(r for r in rows if r['fraction'] == 1.)
+            half = next(r for r in rows if r['fraction'] == .5)
+            speeds.append(half['median_seconds'] / dense['median_seconds'])
+    output = dict(scene_query_ratios=speeds,
+                  scene_speed_pass=None if timing is None else all(r <= .8 for r in speeds), tasks={})
     for task in ('object', 'scene'):
         checks = {}
-        for clip, spec in CLIPS.items():
+        for clip, spec in clips.items():
             if spec['task'] != task:
                 continue
             r = results[clip]
@@ -244,9 +270,11 @@ def decide(results, timing):
                     ('rpe_translation_m', 'translation_p99_m', 'tracking_seconds',
                      'mean_kept_patches', 'mismatched_budget_frames')}
                     for name in ('heuristic', 'oracle', 'come')})
+        if not checks:
+            continue
         passed = sum(c['headroom'] for c in checks.values()) >= 2
         output['tasks'][task] = dict(clips=checks, oracle_headroom_pass=passed,
-            eligible_for_training_review=passed and (task == 'object' or output['scene_speed_pass']),
+            eligible_for_training_review=passed and (task == 'object' or output['scene_speed_pass'] is True),
             next='manual archive review; never automatic training')
     return output
 
@@ -260,7 +288,7 @@ def main():
     parser.add_argument('--out', type=Path)
     parser.add_argument('--tag')
     parser.add_argument('--hours', type=float, default=22.)
-    parser.add_argument('--stage', choices=('gate', 'prefix'), default='gate')
+    parser.add_argument('--stage', choices=('gate', 'prefix', 'scenes'), default='gate')
     args = parser.parse_args()
     assert sys.platform == 'linux', 'CAMP only'
     if args.run:
@@ -273,14 +301,18 @@ def main():
     os.chdir(CHECKOUT)
     started = time.monotonic()
     deadline = started + args.hours * 3600
-    from kvt_arctic_run import DATASET_DIR, OUT as ARCTIC_OUT, stage_dataset
-    manifest = json.loads((ARCTIC_OUT / 'initial_frames' / 'manifest.json').read_text())
-    stage_dataset(manifest)
     clips = {c: dict(s) for c, s in CLIPS.items()
-             if args.stage == 'gate' or c in ('espresso', 'office')}
-    inputs = dict(arctic_prepared_sha256=sha256(ARCTIC_OUT / 'prepared.tar'))
-    # Preserve exact source pixels alongside per-run SAM masks and model-input hashes.
-    shutil.copyfile(ARCTIC_OUT / 'prepared.tar', args.out / f'{args.tag}_atd_arctic_inputs.tar')
+             if args.stage == 'gate' or
+             (args.stage == 'prefix' and c in ('espresso', 'office')) or
+             (args.stage == 'scenes' and s['task'] == 'scene')}
+    inputs = {}
+    if any(s['task'] == 'object' for s in clips.values()):
+        from kvt_arctic_run import DATASET_DIR, OUT as ARCTIC_OUT, stage_dataset
+        manifest = json.loads((ARCTIC_OUT / 'initial_frames' / 'manifest.json').read_text())
+        stage_dataset(manifest)
+        inputs['arctic_prepared_sha256'] = sha256(ARCTIC_OUT / 'prepared.tar')
+        # Preserve exact source pixels alongside per-run SAM masks and model-input hashes.
+        shutil.copyfile(ARCTIC_OUT / 'prepared.tar', args.out / f'{args.tag}_atd_arctic_inputs.tar')
     for clip, spec in clips.items():
         if spec['task'] == 'object':
             mask = ARCTIC_OUT / 'masks' / spec['scene'] / 'init_mask.png'
@@ -306,12 +338,16 @@ def main():
     sam = CHECKOUT / 'thirdparty/segment-anything-2-real-time/checkpoints/sam2.1_hiera_small.pt'
     inputs['sam_checkpoint'] = dict(path=str(sam), sha256=sha256(sam))
     write_json(args.work / 'protocol.json', dict(stage=args.stage, clips=clips,
-        arms=ARMS if args.stage == 'gate' else ('native', 'oracle', 'oracle_prefix'), inputs=inputs,
+        arms=('native', 'oracle', 'oracle_prefix') if args.stage == 'prefix' else
+             ('native', 'all_repeat') + ARMS, inputs=inputs,
+        routing_arms=('passive', 'passive_prefix') if args.stage == 'scenes' else (),
+        prefixes=('heuristic', 'oracle', 'random17') if args.stage != 'prefix' else ('oracle',),
         seeds=SEEDS, scene_fraction=.5, object_background=64,
         admission='native schedule replay; arrival choices frozen and reused at rebuild',
         heuristic='scene: half of kept budget highest gradient energy, rest spread; object: bg64',
         oracle='six local body-pose gate derivatives; independent dense teacher cache; not deployable',
-        scene_speed='at least 20% faster at all three cache sizes', deadline_hours=args.hours))
+        scene_speed='not tested; no training eligibility' if args.stage == 'scenes' else
+                    'at least 20% faster at all three cache sizes', deadline_hours=args.hours))
     results = {c: {} for c in clips}
     schedules = {}
 
@@ -320,11 +356,14 @@ def main():
         spec = clips[clip]
         frames = spec['frames'] if length is None else length
         policy = name.removesuffix('_repeat').removesuffix('_prefix')
+        observe = policy == 'passive'
+        if observe:
+            policy = 'native'
         schedule = None if policy == 'native' else [f for f in schedules[clip] if f < frames]
         target = args.work / 'runs' / clip / name
         target.mkdir(parents=True)
         write_json(target / 'config.json', dict(spec, frames=frames, clip=clip, name=name,
-                                              policy=policy, schedule=schedule))
+                                              policy=policy, schedule=schedule, observe=observe))
         print('ATD RUN', clip, name, frames, flush=True)
         with (target / 'run.log').open('w') as log:
             process = subprocess.run([sys.executable, __file__, '--run', str(target / 'config.json')],
@@ -334,7 +373,41 @@ def main():
             print((target / 'run.log').read_text()[-10000:], flush=True)
             raise RuntimeError(f'{clip}/{name} failed; partial run preserved by wrapper')
         metric = json.loads((target / 'metrics.json').read_text())
-        if policy == 'native':
+        if observe:
+            reference = target.parent / ('passive' if name.endswith('_prefix') else 'native')
+            prefix = name.endswith('_prefix')
+            # Later rebuilds refit old keyframe poses. Compare contemporaneous
+            # cache snapshots below, not the full run's final keyframe poses.
+            for file in (('traj.npy', 'kf_idx.npy') if prefix else
+                         ('traj.npy', 'kf_idx.npy', 'kf_poses.npy')):
+                actual, expected = np.load(target / file), np.load(reference / file)
+                if prefix and file == 'traj.npy':
+                    np.testing.assert_allclose(actual, expected[:frames], rtol=1e-4, atol=1e-4)
+                elif prefix:
+                    ids = np.load(reference / 'kf_idx.npy') < frames
+                    np.testing.assert_array_equal(actual, expected[ids])
+                else:
+                    np.testing.assert_array_equal(actual, expected)
+            route_rows = json.loads((target / 'routing.json').read_text())
+            assert [r['frame'] for r in route_rows] == list(range(1, frames))
+            assert all(max(r['frame_ids']) < r['frame'] for r in route_rows)
+            assert len(list(target.glob('route_*.npz'))) == frames - 1
+            assert len(list(target.glob('cache_*.npz'))) == len(metric['keyframes'])
+            if prefix:
+                original = json.loads((reference / 'routing.json').read_text())
+                for short, full in zip(route_rows, original):
+                    for key in ('frame', 'cache', 'frame_ids', 'supported_fraction',
+                                'valid_fraction', 'metadata_bytes'):
+                        assert short[key] == full[key], key
+                for path in (*target.glob('route_*.npz'), *target.glob('cache_*.npz')):
+                    with np.load(path) as short, np.load(reference / path.name) as full:
+                        assert short.files == full.files
+                        for key in short.files:
+                            np.testing.assert_array_equal(short[key], full[key])
+                print('SCENE ROUTING CAUSAL PREFIX OK', clip, flush=True)
+            else:
+                print('SCENE ROUTING CONTROL OK', clip, flush=True)
+        elif policy == 'native':
             schedules[clip] = metric['keyframes']
         else:
             native = args.work / 'runs' / clip / 'native'
@@ -393,33 +466,63 @@ def main():
         condition(clip, 'native')
         condition(clip, 'all')
         condition(clip, 'all_repeat')
-    # Exact model-input grids, recorded by the all-kept path.
-    shapes = []
-    for clip in ('office', 'espresso'):
-        event = json.loads((args.work / 'runs' / clip / 'all' / 'events.json').read_text())[0]
-        height, width = [14 * d for d in event['grid']]
-        task = clips[clip]['task']
-        resize_dim = RESIZE[task]
-        # resize_dim defines a pixel-area budget, not the longest edge.
-        assert height > 0 and width > 0 and height * width <= resize_dim ** 2
-        shapes.append(dict(shape=[height, width], task=task, resize_dim=resize_dim))
-    bench_config = args.work / 'benchmark_config.json'
-    write_json(bench_config, dict(shapes=shapes))
-    subprocess.run([sys.executable, __file__, '--benchmark', str(bench_config)], check=True)
+    if args.stage == 'scenes':
+        (args.work / 'routing_review').mkdir()
+        routing = {}
+        for clip in clips:
+            condition(clip, 'passive')
+            assert len(schedules[clip]) >= 2
+            length = min(clips[clip]['frames'] - 1, schedules[clip][1] + 2)
+            condition(clip, 'passive_prefix', length)
+            target = args.work / 'runs' / clip / 'passive'
+            route_rows = json.loads((target / 'routing.json').read_text())
+            seconds = [r['routing_seconds'] for r in route_rows]
+            routing[clip] = dict(frames=clips[clip]['frames'], prefix_frames=length,
+                mapping_seconds=dict(median=float(np.median(seconds)),
+                    p95=float(np.percentile(seconds, 95)), p99=float(np.percentile(seconds, 99)),
+                    maximum=float(max(seconds))),
+                tracking_seconds=dict(native=results[clip]['native']['tracking_seconds'],
+                                      passive=results[clip]['passive']['tracking_seconds']),
+                supported_fraction_range=[min(r['supported_fraction'] for r in route_rows),
+                                          max(r['supported_fraction'] for r in route_rows)],
+                metadata_bytes_range=[min(r['metadata_bytes'] for r in route_rows),
+                                      max(r['metadata_bytes'] for r in route_rows)],
+                latency='synchronized mapping only; excludes NPZ/JSON serialization',
+                control='exact native/passive arrays; natural admission; no selector',
+                decision='manual map review pending; routing benefit not tested')
+            write_json(args.work / 'routing_summary.json', routing)
+            subprocess.run([sys.executable, str(Path(__file__).with_name('kvt_tum_viz.py')),
+                'routing', '--inputs', clips[clip]['scene_dir'], '--result', str(target),
+                '--out', str(args.work / 'routing_review' / clip)], check=True)
+    else:
+        # Exact model-input grids, recorded by the all-kept path.
+        shapes = []
+        for clip in ('office', 'espresso'):
+            event = json.loads((args.work / 'runs' / clip / 'all' / 'events.json').read_text())[0]
+            height, width = [14 * d for d in event['grid']]
+            task = clips[clip]['task']
+            resize_dim = RESIZE[task]
+            # resize_dim defines a pixel-area budget, not the longest edge.
+            assert height > 0 and width > 0 and height * width <= resize_dim ** 2
+            shapes.append(dict(shape=[height, width], task=task, resize_dim=resize_dim))
+        bench_config = args.work / 'benchmark_config.json'
+        write_json(bench_config, dict(shapes=shapes))
+        subprocess.run([sys.executable, __file__, '--benchmark', str(bench_config)], check=True)
     for policy in ARMS[1:]:
         for clip in clips:
             condition(clip, policy)
-    for clip in ('espresso', 'office'):
+    for clip in (clips if args.stage == 'scenes' else ('espresso', 'office')):
         # Prefix extends beyond first real admission, exercising rebuilt sparse caches.
         assert len(schedules[clip]) >= 2
         length = min(clips[clip]['frames'] - 1, schedules[clip][1] + 2)
         for policy in ('heuristic', 'oracle', 'random17'):
             condition(clip, policy + '_prefix', length)
-    timing = json.loads((args.work / 'benchmark.json').read_text())
-    decision = decide(results, timing)
+    timing = None if args.stage == 'scenes' else json.loads((args.work / 'benchmark.json').read_text())
+    decision = decide(results, timing, clips)
     write_json(args.work / 'decision.json', decision)
-    (args.work / 'JOB_OK').write_text('ATD gate complete; manual archive review required before training.\n')
-    print('ATD GATE OK', json.dumps(decision), flush=True)
+    (args.work / 'JOB_OK').write_text('ATD diagnostics complete; manual archive review required before training.\n')
+    print('ATD SCENE BUNDLE OK' if args.stage == 'scenes' else 'ATD GATE OK',
+          json.dumps(decision), flush=True)
 
 
 if __name__ == '__main__':

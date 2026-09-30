@@ -102,6 +102,12 @@ class DecisionTests(unittest.TestCase):
         for clip in ('espresso', 'ketchup'):
             results[clip]['oracle']['translation_p99_m'] = 2.01
         self.assertFalse(decide(results, timing)['tasks']['object']['oracle_headroom_pass'])
+        scenes = {c: s for c, s in CLIPS.items() if s['task'] == 'scene'}
+        decision = decide({c: results[c] for c in scenes}, None, scenes)
+        self.assertEqual(list(decision['tasks']), ['scene'])
+        self.assertTrue(decision['tasks']['scene']['oracle_headroom_pass'])
+        self.assertIsNone(decision['scene_speed_pass'])
+        self.assertFalse(decision['tasks']['scene']['eligible_for_training_review'])
 
 
 class GPUContracts(unittest.TestCase):

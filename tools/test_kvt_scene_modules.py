@@ -70,6 +70,39 @@ class GraphContracts(unittest.TestCase):
 
 
 class RoutingContracts(unittest.TestCase):
+    def test_freiburg2_distortion_matches_opencv(self):
+        import cv2
+        import numpy as np
+        points = np.array([[.55, .3, 1.], [1.1, .6, 2.], [-.55, -.3, 1.],
+                           [.15, -.25, 1.], [-.32, .35, 1.], [.4, -.2, 1.]], np.float32)
+        h, w = 266, 350
+        k = np.array([[520.9*w/640, 0, (325.1+.5)*w/640-.5],
+                      [0, 521.*h/480, (249.7+.5)*h/480-.5], [0, 0, 1]], np.float32)
+        distortion = np.array([.2312, -.7849, -.0033, -.0001, .9172], np.float32)
+        confidence = torch.arange(1, 7, device='cuda', dtype=torch.float32) / 10
+        tensors = [torch.as_tensor(a, device='cuda') for a in (points, k, distortion)]
+        pose = torch.eye(4, device='cuda')
+        maps = project_cache(tensors[0], confidence, pose, tensors[1], h, w, tensors[2])
+        uv = cv2.projectPoints(points, np.zeros(3), np.zeros(3), k, distortion)[0][:, 0]
+        cells = np.floor((uv + .5) / 14).astype(int)
+        cell = cells[:, 1] * (w // 14) + cells[:, 0]
+        self.assertTrue(maps['valid_samples'].all())
+        np.testing.assert_array_equal(maps['support'].cpu().numpy(),
+                                      np.bincount(cell, minlength=h*w//196))
+        for c in np.unique(cell):
+            ids = np.flatnonzero(cell == c)
+            front = ids[np.argmin(points[ids, 2])]
+            self.assertEqual(int(maps['source_index'][c]), front)
+            self.assertEqual(float(maps['front_depth'][c]), float(points[front, 2]))
+            self.assertEqual(maps['confidence'][c], confidence[front])
+        self.assertEqual(float(maps['secondary_gap'][cell[0]]), 1.)
+        plain = project_cache(tensors[0], confidence, pose, tensors[1], h, w)
+        self.assertFalse(torch.equal(maps['support'], plain['support']))
+        zero = project_cache(tensors[0], confidence, pose, tensors[1], h, w,
+                             torch.zeros(5, device='cuda'))
+        for key in plain:
+            self.assertTrue(torch.equal(plain[key], zero[key]), key)
+
     def test_projection_visibility_and_gauge(self):
         assert torch.cuda.is_available(), 'CAMP GPU required'
         points = torch.tensor([[7., 7., 1.], [14., 14., 2.], [-7., 0., 1.],

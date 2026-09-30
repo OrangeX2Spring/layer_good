@@ -627,3 +627,94 @@ inspect the actual PNGs for misplaced edges, unsupported regions and visibility
 artifacts, then decide the single fixed-budget routing-selector test. Renderer
 success alone does not pass that visual gate. No tracking rerun or training is
 queued behind this review.
+
+## 12. Two overnight jobs: saved-map review and independent scene bundle
+
+The user's 2026-09-30 instruction authorizes collecting all independent scene
+diagnostics together. Submit both jobs now, without a Slurm dependency. This
+supersedes the serial submit/render/review schedule in §11 for these diagnostics.
+It does not advance the manual map-review gate or authorize training or a new
+routing selector. Candidate A is the learned ATD patch-density scorer; candidate
+B is the cache-conditioned geometry/visibility router. Keep their evidence and
+later individual/combined ablations separate. Graph execution is shared support.
+
+1. `adaptive-tokens routing-viz tum_26042`: render the already-reviewed saved
+   office pilot arrays, using §11. No tracking rerun.
+2. `adaptive-tokens scenes`: a scene-only bundle on the existing three clips:
+   office (1150 frames), with_loop and no_loop (1024 each), resize 308. No ARCTIC
+   staging, object evaluation, microbenchmark or graph compilation/replay.
+
+The second job uses the existing ATD driver and fixed policies/budgets/seeds:
+native, all, exact all-repeat, heuristic, oracle, uniform, eight random controls
+and Co-Me on each clip (45 full runs). Native schedules are replayed by the ATD
+arms. Heuristic/oracle/random17 prefixes extend two frames beyond the first
+real admission on every clip (nine runs). The headroom decision retains the
+existing test: oracle RMS at least 5% below **every** fixed control, with p99 no
+worse; at least two scene clips must pass. Co-Me remains a comparison only.
+A scientific headroom failure is a completed result, not an execution failure.
+
+Each clip additionally has a natural-admission passive observer run and a
+post-admission passive prefix (six runs). Require exact native/passive trajectory,
+keyframe IDs and final keyframe poses. Passive prefixes require trajectory
+rtol/atol 1e-4, exact keyframe IDs, exact common route/cache arrays and identical
+causal metadata except timing. Later full-run rebuilds refit old keyframe poses;
+their final values are not a causal prefix reference. All routing records must
+cover every query and use only earlier source IDs. This is 60 tracking processes
+in total, each fresh; completed runs are archived immediately. Contracts fail
+loudly and the wrapper archives partial runs.
+
+Calibration preserves original RGB pixels: Freiburg3 is already undistorted;
+Freiburg2 uses RGB fx/fy/cx/cy 520.9/521.0/325.1/249.7 and Brown-Conrady
+k1/k2/p1/p2/k3 = 0.2312/-0.7849/-0.0033/-0.0001/0.9172 at 640x480.
+Source: [official TUM calibration](https://cvg.cit.tum.de/data/datasets/rgbd-dataset/file_formats).
+Apply cv2 resize scales and pixel-center principal-point mapping, leaving
+normalized distortion coefficients unchanged. Only the observer projection
+uses calibration; tracking pixels and pose inference remain native. Save K,
+distortion, actual size and source URL. A GPU fixture checks Freiburg2 patch
+assignments/depth/source identity against cv2.projectPoints and verifies zero
+distortion reproduces the existing projection exactly. Existing ATD fixtures
+and routing/gauge fixtures run before the bundle; the graph fixture is skipped.
+
+After native/all/repeat controls, collect passive controls/prefixes, summary and
+saved-map previews before the expensive oracle/Co-Me arms. Reuse §11's fixed
+preview selection, pixel hashes, PNG decode checks and manual-review requirement.
+Record median/p95/p99/max mapping time, native/passive total tracking time,
+support and metadata-byte ranges. Mapping time excludes NPZ/JSON serialization;
+total tracking includes it. Metadata bytes exclude temporary tensors/allocator.
+No routing-selector accuracy benefit is tested. No synthetic graph result is
+used as a total-speed gate: scene_speed_pass is null and training eligibility is
+false in this headroom-only report. Training data, labels, small-module code,
+and held-out separate/combined ablation remain subsequent work.
+
+Default start-deadline is 10 hours; `adaptive-tokens scenes HOURS` overrides it.
+This stops starting new conditions, not a hard wall-time cap. An incomplete or
+timed-out bundle is not a negative scientific result. No automatic follow-on job.
+Local validation is source AST, bash -n and both repositories' whitespace checks;
+GPU contracts, child processes, rendering and numerical results require CAMP.
+
+Expected second-job evidence: existing tests and ATD contracts/repeatability OK;
+three routing fixtures pass (graph fixture skipped); three dense repeats; three
+SCENE ROUTING CONTROL OK; three SCENE ROUTING CAUSAL PREFIX OK; three SCENE ROUTING
+VIZ OK; nine ATD CAUSAL PREFIX OK; 60 ATD ARCHIVE OK; ATD SCENE BUNDLE OK and ATD
+SCENE BUNDLE JOB OK, then archive review. Context retains protocol/comparison/
+decision/routing_summary, routing_review/<clip>/ PNGs and review.json, source/logs,
+exit status and provenance. Per-condition archives are tum_JOB_atd_<clip>_<arm>.tar;
+exact input archives tum_JOB_atd_inputs_<clip>.tar; the safety net is
+tum_JOB_all_runs.tar. All persist in kvt_tum_out outside the checkout.
+
+From CAMP head in Bash, after publication (both pulls execute in allocations):
+
+```bash
+cd /mnt/projects/gr/3DRecon/layer_good
+P='git -c fetch.recurseSubmodules=false pull --ff-only'
+Q="-A students --qos=students_normal -p 24g -w stuttgart"
+LOG=/mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log
+for S in "routing-viz tum_26042" "scenes"; do
+  W="$P && bash tools/kvt_tum.sbatch adaptive-tokens $S"
+  sbatch $Q --gres=gpu:1 --propagate=NONE -o $LOG --wrap="$W"
+done
+```
+
+Return both job IDs. They queue independently on the requested stuttgart GPU.
+Review each context separately, then transfer runs/inputs and inspect actual maps
+and ATD selection/error evidence before deciding either candidate's next gate.
