@@ -493,11 +493,46 @@ disabled. Every case first requires this split eager path to match the original
 mask path exactly. Timed host-upload outputs must also meet the declared pose tolerance.
 No upstream Pi3 code or rotation algorithm changes. This is a partial graph query.
 
-Timing alternates eager/replay order, two warmups and ten measured iterations.
+Job 26040 completes capture but fails the first replay's pose fidelity check.
+Archived Pi3 27e96ce source launches cuRoPE with no stream argument: it uses the
+default CUDA stream while the pilot captures on a side stream. This is a concrete
+source defect; its role in the observed replay error requires the isolated probe.
+The graph pilot now opts into `kv_tracker/graph_rope.py`: the same licensed kernel
+with only the launch changed to PyTorch's current stream. Ordinary tracker,
+oracle and routing paths keep the saved backend. Original eager cache and pose
+references are produced before switching the graph case's shared RoPE modules.
+Require exact corrected-eager/native pose equality and side-stream/eager pose
+fidelity at the existing 1e-4 tolerance before capture; save side-stream feature
+and pose errors in `side_stream.json`. Save replay feature and pose errors in
+each case's `fidelity.json` before asserting the unchanged pose tolerance.
+
+One additional preflight fixture compares native and corrected RoPE at 480/243
+tokens, fp32/bf16, changing both token values and positions. It records native
+side-stream/replay errors and requires corrected default, side-stream and replay
+outputs to equal native default-stream eager outputs exactly. Expect four
+SCENE ROPE STREAM PROBE records and SCENE ROPE GRAPH CONTRACTS OK. Native replay
+mismatches are diagnostic records, never a substituted pass for the corrected
+backend. The corrected fixture must pass before model cases or timings.
+
+Only the graph allocation compiles this extension with the existing image's
+toolchain, MAX_JOBS=1 and TORCH_CUDA_ARCH_LIST=8.9 (stuttgart RTX 4090).
+Build/load happens under `/tmp/tum_JOB/graph_rope_build`, reused by fresh case
+processes. No dependency installs, saved-image mutation or source edit on CAMP.
+The context archive preserves this directory, including probe.json, build.ninja,
+compiled backend/hash and build/load duration in backend.json; fork source is
+also archived. C++/CUDA compilation and all numerical contracts remain pending
+until CAMP execution. A missing compiler/toolchain is a blocker, not a fallback.
+
+Timing alternates native eager, corrected eager and replay order, two warmups
+and ten measured iterations. Backend switching occurs outside the timed region;
+all three paths must retain the native reference poses. The native eager control
+prevents new adapter overhead from being mistaken for a graph speed benefit.
 Pinned-host RGB/index copies and the complete eager camera head/SVD are included;
 selector cost, image preprocessing, cache rebuild and graph setup are excluded.
-Setup/capture seconds, setup break-even
-query count, peak/live memory and cache bytes are reported separately. A graph is
+Setup includes backend load plus warmup/capture; one-time job-local compilation
+is reported separately. Setup break-even uses the native eager control and excludes
+that one-time compilation. Setup/capture seconds, break-even query count,
+peak/live memory and cache bytes are reported separately. A graph is
 valid for one fixed cache/shape; it is not reused across rebuilds. No profiler runs
 in these processes. These timings diagnose dispatch cost; they are not yet a full
 adaptive-selector end-to-end speed claim. Expected six SCENE GRAPH CASE OK lines,
@@ -534,7 +569,8 @@ OK routing and SCENE MODULE routing JOB OK. Inspect saved maps visually on CAMP
 before proposing token selection. Mapping time excludes artifact serialization;
 metadata bytes are reported. No speed/accuracy benefit claimed by contract success.
 
-Both modes run existing 17 + nine ATD tests and two routing fixtures first.
+Both modes run existing 17 + nine ATD tests and two routing fixtures first;
+graph additionally requires the RoPE stream/capture fixture (routing skips it).
 Wrapper archives context/summary to `tum_JOB_context.tar`, runs (including failed
 ones) to `tum_JOB_all_runs.tar`; routing also produces `tum_JOB_routing_inputs.tar`
 with input manifests/checksum and exact model pixels. Parent/fork/Pi3 source,

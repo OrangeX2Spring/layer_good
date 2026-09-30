@@ -156,6 +156,10 @@ THIRDPARTY="$REPO/kv_tracker/thirdparty"
 EXTRA_ENV=()
 if [ "$MODE" = adaptive-tokens ]; then
     EXTRA_ENV=(-e CUBLAS_WORKSPACE_CONFIG=:4096:8)
+    if [ "${2:-gate}" = graph ]; then
+        EXTRA_ENV+=(-e "KVT_GRAPH_ROPE_BUILD=$WORK/graph_rope_build"
+                    -e TORCH_CUDA_ARCH_LIST=8.9 -e MAX_JOBS=1)
+    fi
 fi
 OFFLINE_ENV=(-e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1)
 if [ "$MODE" = correspondence-gates ]; then

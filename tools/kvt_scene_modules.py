@@ -20,6 +20,7 @@ def graph_case(config, out):
     from kv_tracker.pi3_utilts import load_pi3_from_pretrained, move_pi3_mlps_to_bfloat32
     from kv_tracker.token_drop import forward_kept
     from kv_tracker.adaptive_tokens import keep_set
+    from kv_tracker.graph_rope import GraphRoPE, load_graph_rope, cuRoPE2D
     bank, fraction = config['bank'], config['fraction']
     torch.manual_seed(17)
     model = move_pi3_mlps_to_bfloat32(load_pi3_from_pretrained('cuda').eval())
@@ -46,6 +47,7 @@ def graph_case(config, out):
         pointers = {i: {k: v.data_ptr() for k, v in layer.items()} for i, layer in model.cache.items()}
         labels = model.kept_cache['labels'].clone()
         expected = []
+        expected_features = []
         for image, index in zip(images, indices):
             mask = torch.zeros_like(keep)
             mask[0, index] = True
@@ -59,6 +61,23 @@ def graph_case(config, out):
                 split = model.camera_head(features, *grid).reshape(1, 1, 4, 4)
             torch.testing.assert_close(split, native, rtol=0, atol=0)
             expected.append(native.clone())
+            expected_features.append(features.clone())
+        # Native eager references/cache above keep the saved Pi3 backend.
+        # Only this fresh graph case opts into the otherwise identical kernel.
+        original = model.rope
+        assert isinstance(original, cuRoPE2D)
+        backend_started = time.perf_counter()
+        replacement = GraphRoPE(load_graph_rope(os.environ['KVT_GRAPH_ROPE_BUILD']),
+                                freq=original.base, F0=original.F0)
+        backend_load_seconds = time.perf_counter() - backend_started
+        rope_modules = [module for module in model.modules()
+                        if getattr(module, 'rope', None) is original]
+        for module in rope_modules:
+            module.rope = replacement
+        for image, index, target in zip(images, indices, expected):
+            adapted = forward_kept(model, image, keep, cam_only=True, use_cache=True,
+                                   query_indices=index)['camera_poses']
+            torch.testing.assert_close(adapted, target, rtol=0, atol=0)
         # CUDA capture requires warmup on a side stream. Retain all static buffers.
         torch.cuda.synchronize()
         setup_started = time.perf_counter()
@@ -66,10 +85,19 @@ def graph_case(config, out):
         stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(stream):
             for _ in range(3):
-                forward_kept(model, image_buffer, keep, cam_only=True, use_cache=True,
-                             query_indices=index_buffer)
+                side_features = forward_kept(model, image_buffer, keep, cam_only=True,
+                    use_cache=True, query_indices=index_buffer,
+                    defer_camera_head=True)['camera_features']
         torch.cuda.current_stream().wait_stream(stream)
         torch.cuda.synchronize()
+        warmup_seconds = time.perf_counter() - setup_started
+        with torch.amp.autocast(device_type='cuda', enabled=False):
+            side_pose = model.camera_head(side_features, *grid).reshape(1, 1, 4, 4)
+        side_check = dict(feature_max_abs=float((side_features - expected_features[0]).abs().max()),
+                          pose_max_abs=float((side_pose - expected[0]).abs().max()))
+        write_json(out / 'side_stream.json', side_check)
+        print('SCENE GRAPH SIDE STREAM', json.dumps(side_check), flush=True)
+        torch.testing.assert_close(side_pose, expected[0], rtol=1e-4, atol=1e-4)
         torch.cuda.reset_peak_memory_stats()
         allocated_before = torch.cuda.memory_allocated()
         started = time.perf_counter()
@@ -80,10 +108,11 @@ def graph_case(config, out):
                 defer_camera_head=True)['camera_features']
         torch.cuda.synchronize()
         capture_seconds = time.perf_counter() - started
-        setup_seconds = time.perf_counter() - setup_started
+        setup_seconds = warmup_seconds + capture_seconds + backend_load_seconds
         capture_peak = torch.cuda.max_memory_allocated()
         max_error = 0.
-        for image, index, target in zip(images, indices, expected):
+        fidelity = []
+        for j, (image, index, target) in enumerate(zip(images, indices, expected)):
             image_buffer.copy_(image)
             index_buffer.copy_(index)
             graph.replay()
@@ -91,17 +120,26 @@ def graph_case(config, out):
             with torch.amp.autocast(device_type='cuda', enabled=False):
                 graph_output = model.camera_head(graph_features, *grid).reshape(1, 1, 4, 4)
             torch.cuda.synchronize()
+            record = dict(input=j,
+                feature_max_abs=float((graph_features - expected_features[j]).abs().max()),
+                pose_max_abs=float((graph_output - target).abs().max()))
+            fidelity.append(record)
+            write_json(out / 'fidelity.json', fidelity)
+            print('SCENE GRAPH FIDELITY', json.dumps(record), flush=True)
             torch.testing.assert_close(graph_output, target, rtol=1e-4, atol=1e-4)
             max_error = max(max_error, float((graph_output - target).abs().max()))
         assert not torch.equal(expected[0], expected[1]), 'Input variation must exercise outputs'
         if fraction < 1.:
             assert not torch.equal(expected[0], expected[-1]), 'Index variation must exercise outputs'
-        times = {'eager': [], 'graph': []}
-        # Alternate order; charge pinned-host RGB and index uploads in both paths.
+        times = {'native_eager': [], 'eager': [], 'graph': []}
+        # Alternate order; charge pinned-host RGB and index uploads in all paths.
         # Selection/model-input preparation are excluded and explicitly reported.
         for repeat in range(12):
             j = repeat % len(images)
-            for mode in (('eager', 'graph') if repeat % 2 == 0 else ('graph', 'eager')):
+            modes = ('native_eager', 'eager', 'graph')
+            for mode in (modes if repeat % 2 == 0 else reversed(modes)):
+                for module in rope_modules:
+                    module.rope = original if mode == 'native_eager' else replacement
                 torch.cuda.synchronize()
                 started = time.perf_counter()
                 image_buffer.copy_(host_images[j], non_blocking=True)
@@ -126,14 +164,17 @@ def graph_case(config, out):
                 assert model.cache[i][key].data_ptr() == pointers[i][key]
         assert torch.equal(labels, model.kept_cache['labels'])
     medians = {k: float(np.median(v)) for k, v in times.items()}
-    savings = medians['eager'] - medians['graph']
+    savings = medians['native_eager'] - medians['graph']
     result = dict(config, seconds=times, median_seconds=medians,
         capture_seconds=capture_seconds, setup_seconds=setup_seconds,
+        backend_load_seconds=backend_load_seconds,
         replay_max_abs_pose_error=max_error, capture_peak_bytes=capture_peak,
         graph_live_extra_bytes=torch.cuda.memory_allocated() - allocated_before,
         setup_break_even_queries=None if savings <= 0 else math.ceil(setup_seconds / savings),
+        setup_break_even_reference='native_eager; excludes one-time job-local backend compilation reported in graph_rope_build/backend.json',
         cache_bytes=sum(v.numel()*v.element_size() for layer in model.cache.values() for v in layer.values()),
         gpu=torch.cuda.get_device_name(), torch_version=torch.__version__,
+        rope_backend='opt-in current-stream Pi3 kernel; exact native eager pose equality required',
         timing='pinned-host RGB/index uploads + query including unchanged eager camera head/SVD; excludes selector, image preparation, capture and rebuild',
         graph_scope='encoder, decoder and camera decoder; fp32 camera features returned to eager head',
         scope='fixed cache per graph; no automatic replay across rebuilds; not end-to-end speed gate')
