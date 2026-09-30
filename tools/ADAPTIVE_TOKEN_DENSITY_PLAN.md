@@ -983,6 +983,13 @@ Expect six ATD REVIEWED REFERENCE EXACT OK, three ATD CAUSAL PREFIX OK
 (oracle_spread),12 ATD ARCHIVE OK, ATD SPREAD HEADROOM OK with decision and
 ATD SPREAD HEADROOM JOB OK. Return job ID and final decision or first failure.
 Default deadline4h. No trainer, bulk labels or full evaluation chained behind it.
+The deadline also limits each tracking subprocess to the remaining time. A timeout
+is incomplete execution, not a negative scientific result; the wrapper preserves
+partial evidence. The CAMP selection fixture checks the 238-token allocation,
+119 protected top scores, added spatial coverage and equality with learned selection.
+The final decision records an explicit stop on headroom failure: no further sweeps
+or training on this teacher/distillation route. A pass requires archive review and
+a separate decision before further work; it does not authorize training.
 After archive review, determine whether this teacher can justify larger disjoint
 label data; B still requires its own evolving sparse-cache feature contract and
 causal selection benefit. A headroom pass alone does not qualify B.
