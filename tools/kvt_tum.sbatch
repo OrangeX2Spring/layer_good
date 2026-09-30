@@ -16,7 +16,10 @@ case "$MODE" in sweep|combined|correspondence|correspondence-gates|llm-packet|re
 test "$(uname -s)" = Linux
 test "$(hostname)" != head
 ROOT=/mnt/projects/gr/3DRecon
-REPO="$ROOT/layer_good"
+REPO=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+if [ "$MODE" = adaptive-tokens ] && [ "${2:-gate}" = graph-track ]; then
+    [[ "$REPO" == /tmp/kvt_graph_checkout_* ]]
+fi
 OUT="$ROOT/kvt_tum_out"
 TAG="tum_${SLURM_JOB_ID:?Submit through sbatch}"
 WORK="/tmp/$TAG"
@@ -68,6 +71,21 @@ nvidia-smi
 sinfo -N -o '%.10N %.6P %.9T %.15G' > "$WORK/context/sinfo.txt"
 scontrol show job "$SLURM_JOB_ID" > "$WORK/context/slurm_job.txt"
 git -C "$REPO" -c fetch.recurseSubmodules=false pull --ff-only
+if [ "$MODE" = adaptive-tokens ] && [ "${2:-gate}" = graph-track ]; then
+    # This concurrent pilot must use its own checkout, never 26044's live source.
+    git -C "$REPO" -c url.https://github.com/.insteadOf=git@github.com: \
+        submodule update --init kv_tracker
+    for module in Pi3 segment-anything-2-real-time; do
+        git -C "$REPO/kv_tracker" -c url.https://github.com/.insteadOf=git@github.com: \
+            submodule update --init --reference "$ROOT/layer_good/kv_tracker/thirdparty/$module" \
+            -- "thirdparty/$module"
+        test "$(git -C "$REPO/kv_tracker/thirdparty/$module" rev-parse HEAD)" = \
+             "$(git -C "$ROOT/layer_good/kv_tracker/thirdparty/$module" rev-parse HEAD)"
+    done
+    mkdir -p "$REPO/kv_tracker/thirdparty/segment-anything-2-real-time/checkpoints"
+    ln -s "$ROOT/layer_good/kv_tracker/thirdparty/segment-anything-2-real-time/checkpoints/sam2.1_hiera_small.pt" \
+        "$REPO/kv_tracker/thirdparty/segment-anything-2-real-time/checkpoints/sam2.1_hiera_small.pt"
+fi
 git -C "$REPO/kv_tracker" -c fetch.recurseSubmodules=false \
     -c url.https://github.com/.insteadOf=git@github.com: fetch origin
 git -C "$REPO" submodule update --no-fetch kv_tracker
@@ -156,7 +174,7 @@ THIRDPARTY="$REPO/kv_tracker/thirdparty"
 EXTRA_ENV=()
 if [ "$MODE" = adaptive-tokens ]; then
     EXTRA_ENV=(-e CUBLAS_WORKSPACE_CONFIG=:4096:8)
-    if [ "${2:-gate}" = graph ]; then
+    if [ "${2:-gate}" = graph ] || [ "${2:-gate}" = graph-track ]; then
         EXTRA_ENV+=(-e "KVT_GRAPH_ROPE_BUILD=$WORK/graph_rope_build"
                     -e TORCH_CUDA_ARCH_LIST=8.9 -e MAX_JOBS=1)
     fi
@@ -251,13 +269,23 @@ elif [ "$MODE" = patch-select ]; then
         2>&1 | tee "$WORK/context/patch_select.log"
 elif [ "$MODE" = adaptive-tokens ]; then
     case "${2:-gate}" in
-        gate|check|prefix|profile|graph|routing|routing-viz|scenes) ;;
+        gate|check|prefix|profile|graph|routing|routing-viz|scenes|graph-track) ;;
         *) echo "Unknown ATD stage: $2" >&2; exit 2 ;;
     esac
     "${CONTAINER[@]}" python "$REPO/tools/test_kvt_adaptive_tokens.py" \
         2>&1 | tee "$WORK/context/adaptive_tokens_tests.log"
     if [ "${2:-gate}" = check ]; then
         echo 'ATD REPEATABILITY CHECK JOB OK'
+        exit 0
+    fi
+    if [ "${2:-gate}" = graph-track ]; then
+        "${CONTAINER[@]}" python "$REPO/tools/test_kvt_scene_modules.py" \
+            2>&1 | tee "$WORK/context/scene_module_tests.log"
+        "${CONTAINER[@]}" python "$REPO/tools/kvt_adaptive_tokens.py" \
+            --work "$WORK" --out "$OUT" --tag "$TAG" --stage graph-track --hours "${3:-8}" \
+            2>&1 | tee "$WORK/context/adaptive_tokens.log"
+        test -f "$WORK/JOB_OK"
+        echo 'ATD TRACKING GRAPH JOB OK'
         exit 0
     fi
     if [ "${2:-gate}" = scenes ]; then

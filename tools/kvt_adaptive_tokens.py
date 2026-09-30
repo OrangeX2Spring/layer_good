@@ -82,7 +82,12 @@ def run(path):
             pose='last estimated camera-to-world; canonical tracker gauge',
             sampling='source pixel centers 7::14; patch samples, not dense visibility'))
     with (target / 'tokens.jsonl').open('w') as log:
-        policy = None if config['policy'] == 'native' else AdaptiveTokens(config['policy'], task, log)
+        executor = None
+        if config.get('graph', False):
+            from kv_tracker.graph_query import GraphQueries
+            executor = GraphQueries(os.environ['KVT_GRAPH_ROPE_BUILD'], config['graph_checked'])
+        policy = None if config['policy'] == 'native' else AdaptiveTokens(
+            config['policy'], task, log, query_executor=executor)
         original = tracker.pi3_inference
         started = None
 
@@ -132,6 +137,14 @@ def run(path):
             mismatched_budget_frames=sum(e['budget'] != e['target_budget'] for e in policy.events))
     metrics.update(evaluate_object(config['scene'], target, frames) if task == 'object'
                    else evaluate_scene(Path(config['scene_dir']), target, frames))
+    if executor is not None:
+        assert executor.queries == frames - 1
+        write_json(target / 'graph.json', dict(checked=executor.checked,
+            captures=executor.rows, queries=executor.queries,
+            max_checked_pose_error=executor.max_pose_error,
+            backend_load_seconds=executor.backend_load_seconds,
+            timing='tracking includes graph setup/validation; backend load precedes tracking'))
+        print('ATD TRACKING GRAPH RUN OK', config['name'], flush=True)
     write_json(target / 'inference.json', rows)
     write_json(target / 'events.json', [] if policy is None else policy.events)
     write_json(target / 'metrics.json', metrics)
@@ -288,7 +301,7 @@ def main():
     parser.add_argument('--out', type=Path)
     parser.add_argument('--tag')
     parser.add_argument('--hours', type=float, default=22.)
-    parser.add_argument('--stage', choices=('gate', 'prefix', 'scenes'), default='gate')
+    parser.add_argument('--stage', choices=('gate', 'prefix', 'scenes', 'graph-track'), default='gate')
     args = parser.parse_args()
     assert sys.platform == 'linux', 'CAMP only'
     if args.run:
@@ -304,7 +317,16 @@ def main():
     clips = {c: dict(s) for c, s in CLIPS.items()
              if args.stage == 'gate' or
              (args.stage == 'prefix' and c in ('espresso', 'office')) or
-             (args.stage == 'scenes' and s['task'] == 'scene')}
+             (args.stage in ('scenes', 'graph-track') and s['task'] == 'scene')}
+    if args.stage == 'graph-track':
+        for spec in clips.values():
+            spec['frames'] = 256
+        # Read-only inventory; no training pixels or labels are processed here.
+        write_json(args.work / 'training_dataset_inventory.json', dict(
+            root=str(TUM_ZIPS), zips=[dict(name=p.name, bytes=p.stat().st_size)
+                for p in sorted(TUM_ZIPS.glob('*.zip'))],
+            excluded_evaluation_scenes=[s['scene'] for s in clips.values()],
+            decision='inventory only; training split/labels require reviewed gates'))
     inputs = {}
     if any(s['task'] == 'object' for s in clips.values()):
         from kvt_arctic_run import DATASET_DIR, OUT as ARCTIC_OUT, stage_dataset
@@ -338,15 +360,19 @@ def main():
     sam = CHECKOUT / 'thirdparty/segment-anything-2-real-time/checkpoints/sam2.1_hiera_small.pt'
     inputs['sam_checkpoint'] = dict(path=str(sam), sha256=sha256(sam))
     write_json(args.work / 'protocol.json', dict(stage=args.stage, clips=clips,
-        arms=('native', 'oracle', 'oracle_prefix') if args.stage == 'prefix' else
+        arms=('native', 'all', 'uniform', 'all_graph_checked', 'all_graph',
+              'uniform_graph_checked', 'uniform_graph') if args.stage == 'graph-track' else
+             ('native', 'oracle', 'oracle_prefix') if args.stage == 'prefix' else
              ('native', 'all_repeat') + ARMS, inputs=inputs,
         routing_arms=('passive', 'passive_prefix') if args.stage == 'scenes' else (),
-        prefixes=('heuristic', 'oracle', 'random17') if args.stage != 'prefix' else ('oracle',),
+        prefixes=('all_graph', 'uniform_graph') if args.stage == 'graph-track' else
+                 ('heuristic', 'oracle', 'random17') if args.stage != 'prefix' else ('oracle',),
         seeds=SEEDS, scene_fraction=.5, object_background=64,
         admission='native schedule replay; arrival choices frozen and reused at rebuild',
         heuristic='scene: half of kept budget highest gradient energy, rest spread; object: bg64',
         oracle='six local body-pose gate derivatives; independent dense teacher cache; not deployable',
-        scene_speed='not tested; no training eligibility' if args.stage == 'scenes' else
+        scene_speed='256-frame execution pilot; no training eligibility' if args.stage == 'graph-track' else
+                    'not tested; no training eligibility' if args.stage == 'scenes' else
                     'at least 20% faster at all three cache sizes', deadline_hours=args.hours))
     results = {c: {} for c in clips}
     schedules = {}
@@ -356,6 +382,9 @@ def main():
         spec = clips[clip]
         frames = spec['frames'] if length is None else length
         policy = name.removesuffix('_repeat').removesuffix('_prefix')
+        graph = policy.endswith(('_graph', '_graph_checked'))
+        checked = policy.endswith('_graph_checked')
+        policy = policy.removesuffix('_graph_checked').removesuffix('_graph')
         observe = policy == 'passive'
         if observe:
             policy = 'native'
@@ -363,7 +392,8 @@ def main():
         target = args.work / 'runs' / clip / name
         target.mkdir(parents=True)
         write_json(target / 'config.json', dict(spec, frames=frames, clip=clip, name=name,
-                                              policy=policy, schedule=schedule, observe=observe))
+                                              policy=policy, schedule=schedule, observe=observe,
+                                              graph=graph, graph_checked=checked))
         print('ATD RUN', clip, name, frames, flush=True)
         with (target / 'run.log').open('w') as log:
             process = subprocess.run([sys.executable, __file__, '--run', str(target / 'config.json')],
@@ -373,7 +403,27 @@ def main():
             print((target / 'run.log').read_text()[-10000:], flush=True)
             raise RuntimeError(f'{clip}/{name} failed; partial run preserved by wrapper')
         metric = json.loads((target / 'metrics.json').read_text())
-        if observe:
+        if graph:
+            prefix = name.endswith('_prefix')
+            reference = target.parent / (name.removesuffix('_prefix') if prefix else policy)
+            np.testing.assert_allclose(np.load(target / 'traj.npy'),
+                np.load(reference / 'traj.npy')[:frames], rtol=1e-4, atol=1e-4)
+            expected_ids = np.load(reference / 'kf_idx.npy')
+            np.testing.assert_array_equal(np.load(target / 'kf_idx.npy'),
+                                          expected_ids[expected_ids < frames])
+            if not prefix:
+                np.testing.assert_allclose(np.load(target / 'kf_poses.npy'),
+                    np.load(reference / 'kf_poses.npy'), rtol=1e-4, atol=1e-4)
+            full_events = json.loads((reference / 'events.json').read_text())
+            short_events = json.loads((target / 'events.json').read_text())
+            assert short_events == [e for e in full_events if e['frame'] < frames]
+            captures = json.loads((target / 'graph.json').read_text())['captures']
+            assert len(captures) == sum(f < frames - 1 for f in metric['keyframes'])
+            if not prefix:
+                assert len(captures) >= 2, 'Pilot must exercise a real recapture'
+            print('ATD TRACKING GRAPH PREFIX OK' if prefix else
+                  'ATD TRACKING GRAPH FIDELITY OK', clip, name, flush=True)
+        elif observe:
             reference = target.parent / ('passive' if name.endswith('_prefix') else 'native')
             prefix = name.endswith('_prefix')
             # Later rebuilds refit old keyframe poses. Compare contemporaneous
@@ -447,6 +497,44 @@ def main():
         results[clip][name] = metric
         write_json(args.work / 'comparison.json', results)
         print('ATD ARCHIVE OK', clip, name, flush=True)
+
+    if args.stage == 'graph-track':
+        report = {}
+        for clip in clips:
+            for name in ('native', 'all', 'uniform', 'all_graph_checked', 'all_graph',
+                         'uniform_graph_checked', 'uniform_graph'):
+                condition(clip, name)
+            length = min(clips[clip]['frames'] - 1, schedules[clip][1] + 2)
+            for name in ('all_graph', 'uniform_graph'):
+                condition(clip, name + '_prefix', length)
+            report[clip] = dict(frames=clips[clip]['frames'], prefix_frames=length, policies={})
+            for policy in ('all', 'uniform'):
+                eager, replay = results[clip][policy], results[clip][policy + '_graph']
+                target = args.work / 'runs' / clip / (policy + '_graph')
+                graph_record = json.loads((target / 'graph.json').read_text())
+                queries = [r['seconds'] for r in json.loads((target / 'inference.json').read_text())
+                           if r['kind'] == 'query']
+                native_queries = [r['seconds'] for r in json.loads((target.parent / 'native' /
+                                    'inference.json').read_text()) if r['kind'] == 'query']
+                report[clip]['policies'][policy] = dict(
+                    tracking_seconds=dict(eager=eager['tracking_seconds'], graph=replay['tracking_seconds']),
+                    graph_to_eager_tracking_ratio=replay['tracking_seconds'] / eager['tracking_seconds'],
+                    graph_to_native_tracking_ratio=replay['tracking_seconds'] /
+                                                   results[clip]['native']['tracking_seconds'],
+                    graph_to_native_query_sum_ratio=sum(queries) / sum(native_queries),
+                    query_seconds=dict(median=float(np.median(queries)), p95=float(np.percentile(queries, 95)),
+                                       maximum=max(queries), total=sum(queries)),
+                    peak_allocated_bytes=dict(eager=eager['peak_allocated_bytes'], graph=replay['peak_allocated_bytes']),
+                    peak_reserved_bytes=dict(eager=eager['peak_reserved_bytes'], graph=replay['peak_reserved_bytes']),
+                    setup_seconds=sum(c['setup_seconds'] for c in graph_record['captures']),
+                    backend_load_seconds=graph_record['backend_load_seconds'],
+                    captures=len(graph_record['captures']))
+            write_json(args.work / 'graph_tracking_summary.json', dict(clips=report,
+                decision='bounded engineering pilot; full-sequence speed/memory and training gates pending',
+                timing='timed runs include selection, recapture and first-cache checks; checked runs excluded'))
+        (args.work / 'JOB_OK').write_text('Real-scene graph pilot complete; manual review required.\n')
+        print('ATD TRACKING GRAPH PILOT OK', flush=True)
+        return
 
     if args.stage == 'prefix':
         # Fresh processes and real inputs; cover the first native cache rebuild.

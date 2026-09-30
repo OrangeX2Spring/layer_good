@@ -11,6 +11,39 @@ from kv_tracker.scene_routing import project_cache
 
 @unittest.skipUnless('KVT_GRAPH_ROPE_BUILD' in os.environ, 'graph pilot only')
 class GraphContracts(unittest.TestCase):
+    def test_query_recapture_and_changing_indices(self):
+        from kv_tracker.graph_query import GraphQueries
+        from kv_tracker.pi3_utilts import load_pi3_from_pretrained, move_pi3_mlps_to_bfloat32
+        from kv_tracker.token_drop import forward_kept
+        model = move_pi3_mlps_to_bfloat32(load_pi3_from_pretrained('cuda').eval())
+        model.requires_grad_(False)
+        executor = GraphQueries(os.environ['KVT_GRAPH_ROPE_BUILD'], checked=True)
+        torch.manual_seed(17)
+        with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
+            for bank, count in ((1, 475), (2, 238)):
+                executor.reset()
+                model.cache = {}
+                keep = torch.zeros(bank, 475, device='cuda', dtype=torch.bool)
+                keep[:, :count] = True
+                forward_kept(model, torch.rand(1, bank, 3, 266, 350, device='cuda'),
+                             keep, store_cache=True, cam_only=True)
+                cache = {i: {k: v.clone() for k, v in row.items()}
+                         for i, row in model.cache.items()}
+                for _ in range(3):
+                    query = torch.rand(1, 1, 3, 266, 350, device='cuda')
+                    mask = torch.zeros(1, 475, device='cuda', dtype=torch.bool)
+                    mask[0, torch.randperm(475, device='cuda')[:count]] = True
+                    expected = forward_kept(model, query, mask, cam_only=True,
+                                            use_cache=True)['camera_poses']
+                    actual = executor.forward(model, query, mask)['camera_poses']
+                    torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-4)
+                    for i, row in cache.items():
+                        for key, tensor in row.items():
+                            self.assertTrue(torch.equal(model.cache[i][key], tensor))
+        self.assertEqual(len(executor.rows), 2)
+        self.assertEqual(executor.queries, 6)
+        print('SCENE TRACKING GRAPH CONTRACT OK', flush=True)
+
     def test_rope_stream_capture(self):
         from kv_tracker.graph_rope import GraphRoPE, load_graph_rope, cuRoPE2D
         build = Path(os.environ['KVT_GRAPH_ROPE_BUILD'])
