@@ -138,7 +138,8 @@ fi
 if [ "$MODE" = adaptive-tokens ]; then
     cp "$REPO/tools/kvt_adaptive_tokens.py" "$REPO/tools/test_kvt_adaptive_tokens.py" \
        "$REPO/tools/ADAPTIVE_TOKEN_DENSITY_PLAN.md" "$REPO/tools/kvt_patch_select.py" \
-       "$REPO/tools/kvt_arctic_run.py" "$WORK/context/"
+       "$REPO/tools/kvt_arctic_run.py" "$REPO/tools/kvt_scene_modules.py" \
+       "$REPO/tools/test_kvt_scene_modules.py" "$WORK/context/"
 fi
 if [ "$MODE" = sensitivity ]; then
     cp "$REPO/tools/cache_sensitivity_sweep.py" "$REPO/tools/stream_cache_sensitivity.py" \
@@ -229,13 +230,23 @@ elif [ "$MODE" = patch-select ]; then
         2>&1 | tee "$WORK/context/patch_select.log"
 elif [ "$MODE" = adaptive-tokens ]; then
     case "${2:-gate}" in
-        gate|check|prefix|profile) ;;
+        gate|check|prefix|profile|graph|routing) ;;
         *) echo "Unknown ATD stage: $2" >&2; exit 2 ;;
     esac
     "${CONTAINER[@]}" python "$REPO/tools/test_kvt_adaptive_tokens.py" \
         2>&1 | tee "$WORK/context/adaptive_tokens_tests.log"
     if [ "${2:-gate}" = check ]; then
         echo 'ATD REPEATABILITY CHECK JOB OK'
+        exit 0
+    fi
+    if [ "${2:-gate}" = graph ] || [ "${2:-gate}" = routing ]; then
+        "${CONTAINER[@]}" python "$REPO/tools/test_kvt_scene_modules.py" \
+            2>&1 | tee "$WORK/context/scene_module_tests.log"
+        "${CONTAINER[@]}" python "$REPO/tools/kvt_scene_modules.py" \
+            --mode "$2" --work "$WORK" --out "$OUT" --tag "$TAG" \
+            2>&1 | tee "$WORK/context/scene_modules.log"
+        test -f "$WORK/JOB_OK"
+        echo "SCENE MODULE $2 JOB OK"
         exit 0
     fi
     if [ "${2:-gate}" = profile ]; then

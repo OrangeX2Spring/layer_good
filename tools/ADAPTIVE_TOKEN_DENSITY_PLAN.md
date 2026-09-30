@@ -412,3 +412,137 @@ Review traces and latency before selecting an optimization. CUDA operator sums
 are not end-to-end latency; instrumented trace duration is not the speed gate.
 No graph replay or synchronization removal has been implemented speculatively.
 This profile submission supersedes full-gate, prefix and object-check next actions.
+
+
+## 9. Separate cache-conditioned routing pilot (approved direction, 2026-09-30)
+
+User approved testing the VGGT-Diff-inspired idea separately, then integrating
+only after evidence. Scenes are mandatory. This is a prospective experiment,
+not an implemented runner or a claim that VGGT-Diff improves tracking. Keep the
+published ATD paths and active profiling job 26038 unchanged.
+
+Source: https://arxiv.org/html/2609.33253v1 . Borrow the idea of geometric
+source-to-query correspondence, not diffusion generation or synthesized views.
+Our query pose is unknown, unlike posed NVS. The first diagnostic must use only
+the last estimated tracker pose, never the current GT pose, future observations,
+or a dense current-frame inference whose cost is hidden from the method.
+
+First gate: passive routing on office with native tracking and its actual cache
+schedule. Consume already-produced keyframe geometry/confidence at rebuilds;
+use model-input intrinsics derived from the existing calibrated TUM preprocessing.
+Verify the resize/crop mapping and coordinate gauge in code before implementation.
+The main tracker rebases geometry at rebuilds; routing must explicitly transform
+cached points and the previous estimated pose into one coordinate frame.
+No generated evidence, token replacement, cache eviction or changed admission.
+
+Produce at patch resolution projected support, front depth, confidence and
+secondary-depth separation. Retain original evidence identifiers for inspection;
+absence of projected support means unknown, not proof of an empty region.
+Projection uses the last estimated pose (no additional pose model). At bootstrap,
+no previous estimate exists: report routing unavailable and use the native path.
+Treat moving-camera misprojection as a measured limitation, not a silent fallback.
+
+Required checks before selection: (1) tracker outputs match passive-control run;
+(2) prefix maps match under identical observed history; (3) known geometric
+fixtures verify projection and visibility; (4) per-frame map support/invalid
+fractions and synchronized routing cost are archived; (5) inspect actual scenes
+for misplaced projection, disocclusions and sparse point artifacts. These are
+engineering contracts, not an accuracy benefit claim. Any comparison using GT
+poses is offline diagnostic only and must be labeled noncausal, never deployed.
+
+After review, define ONE fixed-budget cache-conditioned selector compared with
+matched image-only selection and uniform at the existing half-token budget.
+Do not introduce a weight/threshold grid. Use office for implementation checks;
+require other scene clips for validation. Its total latency includes mapping,
+selection and model execution; the existing scene speed and tracking criteria
+remain. Training requires a demonstrated causal selection signal and disjoint
+training scenes. Gradient sensitivity alone is not an upper bound for this design.
+
+Merge criteria: causal/prefix contracts, held-out scene tracking benefit, total
+query speed gate, and memory accounting for geometric metadata. A useful map or
+better single-scene result alone does not authorize integration. No code merge,
+new cluster job, new environment or training was performed for this proposal.
+Next dependency remains 26038 trace review; prepare the passive pilot only after
+that evidence determines whether routing cost can fit the query budget.
+
+
+## 10. Implemented separate scene pilots (2026-09-30)
+
+Supersedes §9's unimplemented-runner status. Parent driver:
+`tools/kvt_scene_modules.py`; GPU fixtures `tools/test_kvt_scene_modules.py`.
+Fork additions: fixed-size query indices in `forward_kept`, passive observer
+hooks in `main.py`, `kv_tracker/scene_routing.py`. Existing paths are opt-in;
+no trained selector, diffusion module or production graph integration is added.
+
+### CUDA Graph pilot: `adaptive-tokens graph`
+
+Six fresh processes: office input grid 266x350, cache banks 1/10/20, kept counts
+475/238. Each process compares the original boolean-mask forward with the
+fixed-index eager path exactly, captures on a warmed side stream, changes RGB
+and indices (including the same RGB with a different half-budget index set),
+then checks graph poses at rtol=atol=1e-4. Cache tensors, pointers and labels
+must remain unchanged. Indices are sorted, unique and in-range before capture;
+the fixed-index path does not read keep-mask values or increment Python counters.
+Only camera-only single-frame cache queries without mass/probe/groups are allowed.
+
+Timing alternates eager/replay order, two warmups and ten measured iterations.
+Pinned-host RGB/index copies are included; selector cost, image preprocessing,
+cache rebuild and graph setup are excluded. Setup/capture seconds, setup break-even
+query count, peak/live memory and cache bytes are reported separately. A graph is
+valid for one fixed cache/shape; it is not reused across rebuilds. No profiler runs
+in these processes. These timings diagnose dispatch cost; they are not yet a full
+adaptive-selector end-to-end speed claim. Expected six SCENE GRAPH CASE OK lines,
+SCENE MODULE PILOT OK graph and SCENE MODULE graph JOB OK.
+
+### Passive geometry pilot: `adaptive-tokens routing`
+
+Office first 128 frames: native, passive, and 64-frame passive prefix, each in a
+fresh process. Natural native admission unchanged. Observer consumes aligned,
+scene-centered keyframe points/confidence and last estimated camera-to-world
+pose; refresh sets that pose to the latest keyframe's reconstructed pose. Queries
+are projected before their inference and update the previous pose afterwards.
+Every source frame must precede the query. No GT pose is supplied to the observer.
+Scene-only/no Sim3/no token-drop restriction is explicit for this first pilot.
+
+Freiburg3 RGB calibration from the official TUM file-formats page is used:
+fx/fy/cx/cy = 535.4/539.2/320.1/247.6 at 640x480, already undistorted.
+`pi3_resize_image` uses cv2 linear resize with no crop; apply separate x/y scales
+and pixel-center principal-point mapping. Save actual model size and K per run.
+https://cvg.cit.tum.de/data/datasets/rgbd-dataset/file_formats
+
+One sample at pixel 7::14 per source patch is projected into target patches.
+Save support count, nearest depth/confidence/source index, secondary relative
+separation (fixed >4% depth margin), source validity and projection pose. Cache
+snapshots retain sampled points/confidence/source frame IDs, enabling reconstruction
+of sample identity. Missing support is UNKNOWN, not demonstrated disocclusion.
+This is a passive map diagnostic, not the full VGGT-Diff router or a selector.
+
+GPU fixtures test visibility/front/back ordering, missing support, deterministic
+ties and rigid-gauge invariance. Real runs require exact native/passive poses,
+keyframe IDs/poses and exact prefix maps/cache snapshots (trajectory prefix uses
+1e-4). Expect SCENE ROUTING RUN OK for native/passive/prefix, SCENE MODULE PILOT
+OK routing and SCENE MODULE routing JOB OK. Inspect saved maps visually on CAMP
+before proposing token selection. Mapping time excludes artifact serialization;
+metadata bytes are reported. No speed/accuracy benefit claimed by contract success.
+
+Both modes run existing 17 + nine ATD tests and two routing fixtures first.
+Wrapper archives context/summary to `tum_JOB_context.tar`, runs (including failed
+ones) to `tum_JOB_all_runs.tar`; routing also produces `tum_JOB_routing_inputs.tar`
+with input manifests/checksum and exact model pixels. Parent/fork/Pi3 source,
+container and checkpoint hashes are preserved. No new container/dependency.
+Local checks: Python source compilation without imports, bash -n, whitespace.
+Runtime verification is pending on CAMP. Run graph first; review results before
+submitting the separate routing pilot. Do not chain jobs or launch a full sweep.
+
+CAMP head, one chunk (pull executes only in the allocation):
+
+```bash
+cd /mnt/projects/gr/3DRecon/layer_good
+W='git -c fetch.recurseSubmodules=false pull --ff-only'
+W="$W && bash tools/kvt_tum.sbatch adaptive-tokens graph"
+Q="-A students --qos=students_normal -p 24g -w stuttgart"
+LOG=/mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log
+sbatch $Q --gres=gpu:1 --propagate=NONE -o $LOG --wrap="$W"
+```
+
+The second pilot uses `routing` instead of `graph`, after graph output review.
