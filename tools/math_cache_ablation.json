@@ -1,0 +1,21 @@
+{
+  "seed": 17,
+  "bank_frames": 8,
+  "query_frames": 5,
+  "query_rows": 64,
+  "timing_repeats": 10,
+  "cases": [
+    {"name": "exact", "method": "exact"},
+    {"name": "uniform", "method": "uniform", "tokens": 512},
+    {"name": "probe_balance", "method": "probe_balance", "tokens": 512},
+    {"name": "kernel", "method": "kernel", "features": 128},
+    {"name": "centroid", "method": "centroid", "groups": 32},
+    {"name": "moments", "method": "moments", "groups": 32, "rank": 8},
+    {"name": "lowrank", "method": "lowrank", "rank": 16},
+    {"name": "query_lowrank", "method": "query_lowrank", "rank": 16},
+    {"name": "quant4", "method": "quant", "bits": 4},
+    {"name": "quant4_corrected", "method": "quant", "bits": 4, "bias_correction": true},
+    {"name": "waterfill4", "method": "waterfill", "bits": 4},
+    {"name": "waterfill4_corrected", "method": "waterfill", "bits": 4, "bias_correction": true}
+  ]
+}
