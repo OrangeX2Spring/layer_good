@@ -139,8 +139,8 @@ def train(work, candidate):
     parameter_count = sum(p.numel() for p in model.parameters())
     optimizer = torch.optim.Adam(model.parameters(), lr=.001)
     x, y = data['train']
-    initial = float(ranking_loss(model(x), y))
     with torch.no_grad():
+        initial = float(ranking_loss(model(x), y))
         initial_validation = float(ranking_loss(model(data['validation'][0]), data['validation'][1]))
     losses = []
     for _ in range(20):
@@ -148,7 +148,7 @@ def train(work, candidate):
         loss = ranking_loss(model(x), y)
         assert torch.isfinite(loss)
         loss.backward(); optimizer.step()
-        losses.append(float(loss))
+        losses.append(float(loss.detach()))
     model.eval()
     with torch.no_grad():
         final = float(ranking_loss(model(x), y))
