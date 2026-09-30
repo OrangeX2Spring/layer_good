@@ -591,3 +591,39 @@ sbatch $Q --gres=gpu:1 --propagate=NONE -o $LOG --wrap="$W"
 ```
 
 The second pilot uses `routing` instead of `graph`, after graph output review.
+
+## 11. Saved routing map review (26042; no tracking or training)
+
+26042's context and companion archives have been inspected locally. Numerical
+findings and limitations are in FINDINGS.md. Exact native/passive arrays, all
+common prefix NPZ arrays and the archived input-pixel hashes agree. Keep two
+candidate modules separate for ablation: the ATD patch-density scorer and the
+cache-conditioned geometry/visibility router. CUDA Graphs are shared execution
+support. A routing contract pass is not evidence for either learned module's
+tracking benefit; training readiness must be assessed separately.
+
+Next is user-operated CAMP rendering from saved archives:
+`bash tools/kvt_tum.sbatch adaptive-tokens routing-viz tum_26042`.
+This stage skips model imports, tracking, GPU fixtures and checkpoint inference.
+It uses the existing image, extracts source runs/inputs under job-local /tmp,
+records all three source-archive hashes, and calls `kvt_tum_viz.py routing`.
+No geometry, pose, selection or training model runs. The usual wrapper preserves
+the renderer/source revisions, source hashes, log and plots in the new context.
+
+Preview selection is fixed: first/last query, immediately before/after each cache
+update and minimum supported fraction. For 26042 these are frames 1, 49, 50, 98,
+99, 100 and 127. Every archived RGB is checked against its model-pixel hash.
+Each PNG shows current RGB, front-source patch-centre RGB, offline RGB disagreement,
+front source frame ID, support count, front depth, confidence and secondary depth
+gap. Grey means unknown; source RGB is one sample per patch, not a dense warped
+image. RGB disagreement is diagnostic only, not a deployed score or training label.
+Depth is in the tracker gauge. Rendering does not use GT poses. Decode every PNG
+and write routing_review/review.json with exact route/input identities.
+
+Local Python syntax, bash syntax and whitespace checks are the permitted local
+validation. No local rendering or project entry point runs. CAMP must print
+SCENE ROUTING VIZ OK and SCENE ROUTING VIZ JOB OK. Transfer the resulting context,
+inspect the actual PNGs for misplaced edges, unsupported regions and visibility
+artifacts, then decide the single fixed-budget routing-selector test. Renderer
+success alone does not pass that visual gate. No tracking rerun or training is
+queued behind this review.

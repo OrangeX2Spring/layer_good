@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import sys
 
 import cv2
 import matplotlib
@@ -437,6 +438,100 @@ def visualize_summary(work, scene):
     print('SUMMARY VIZ OK', scene, flush=True)
 
 
+def visualize_routing(inputs, result, output):
+    """Inspect saved causal patch projections against exact RGB, without inference."""
+    assert sys.platform == 'linux', 'Render on CAMP'
+    manifest = json.loads((inputs / 'manifest.json').read_text())
+    rows = json.loads((result / 'routing.json').read_text())
+    calibration = json.loads((result / 'calibration.json').read_text())
+    height, width = calibration['model_size']
+    grid = (height // 14, width // 14)
+    cells = grid[0] * grid[1]
+    images = []
+    for entry in manifest['inputs']:
+        path = inputs / 'model_rgb' / Path(entry['file']).name
+        bgr = cv2.imread(str(path))
+        assert bgr is not None, path
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        assert list(rgb.shape) == entry['shape'] == [height, width, 3]
+        assert hashlib.sha256(rgb.tobytes()).hexdigest() == entry['model_rgb_sha256']
+        images.append(rgb)
+    assert [r['frame'] for r in rows] == list(range(1, len(images)))
+    assert all(max(r['frame_ids']) < r['frame'] for r in rows)
+    chosen = {rows[0]['frame'], rows[-1]['frame'],
+              min(rows, key=lambda r: r['supported_fraction'])['frame']}
+    for previous, current in zip(rows, rows[1:]):
+        if current['cache'] != previous['cache']:
+            chosen.update((previous['frame'], current['frame']))
+    output.mkdir()
+    records = []
+    scalar_cmap = plt.get_cmap('viridis').with_extremes(bad='#bcbcbc')
+    for frame in sorted(chosen):
+        row = rows[frame - 1]
+        path = result / f'route_{frame:06d}.npz'
+        with np.load(path) as saved:
+            maps = {k: saved[k] for k in saved.files}
+        with np.load(result / f"cache_{row['cache']}.npz") as cache:
+            np.testing.assert_array_equal(cache['frame_ids'], row['frame_ids'])
+            assert cache['points'].shape == (cells * len(row['frame_ids']), 3)
+            source_confidence = cache['confidence']
+        support = maps['support'] > 0
+        indices = maps['source_index'][support]
+        assert maps['support'].shape == (cells,)
+        assert (indices >= 0).all() and (indices < cells * len(row['frame_ids'])).all()
+        assert int(maps['support'].sum()) == int(maps['valid_samples'].sum())
+        np.testing.assert_array_equal(maps['confidence'][support], source_confidence[indices])
+        source_colors = np.concatenate([images[i][7::14, 7::14].reshape(-1, 3)
+                                        for i in row['frame_ids']])
+        projected = np.full((cells, 3), 188, np.uint8)
+        projected[support] = source_colors[indices]
+        source_frames = np.full(cells, -1, dtype=int)
+        source_frames[support] = np.repeat(row['frame_ids'], cells)[indices]
+        disagreement = np.abs(images[frame][7::14, 7::14].astype(float) -
+                              projected.reshape(*grid, 3)).mean(-1) / 255
+        figure, axes = plt.subplots(2, 4, figsize=(16, 8), constrained_layout=True)
+        axes[0, 0].imshow(images[frame])
+        axes[0, 0].set_title('Current RGB: offline reference only')
+        axes[0, 1].imshow(projected.reshape(*grid, 3), interpolation='nearest')
+        axes[0, 1].set_title('Cached patch-centre RGB at target patches')
+        panels = [
+            ('Patch-centre RGB disagreement', disagreement, 0., 1.),
+            ('Front source frame ID', source_frames.reshape(grid), 0., len(images) - 1),
+            ('Projected sample count', maps['support'].reshape(grid), 0., None),
+            ('Front depth: tracker gauge', maps['front_depth'].reshape(grid), 0., None),
+            ('Native front confidence', maps['confidence'].reshape(grid), 0., 1.),
+            ('Secondary depth gap: 0 means no sample', maps['secondary_gap'].reshape(grid), 0., None)]
+        for axis, (title, values, low, high) in zip(list(axes.flat)[2:], panels):
+            values = np.ma.masked_where(~support.reshape(grid), values)
+            artist = axis.imshow(values, cmap=scalar_cmap, interpolation='nearest',
+                                 vmin=low, vmax=high)
+            axis.set_title(title)
+            figure.colorbar(artist, ax=axis, shrink=.75)
+        for axis in axes.flat:
+            axis.set_xticks([])
+            axis.set_yticks([])
+        figure.suptitle(f"Frame {frame} | cached frames {row['frame_ids']} | "
+            f"supported {row['supported_fraction']:.1%} | "
+            f"mapping {row['routing_seconds'] * 1000:.3f} ms\n"
+            'Previous estimated pose; one source sample per patch. '
+            'Grey is unknown. RGB disagreement is diagnostic, not a selection score.')
+        save_figure(figure, output / f'frame_{frame:06d}.png')
+        records.append(dict(frame=frame, cache=row['cache'], source_frames=row['frame_ids'],
+            route_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+            model_rgb_sha256=manifest['inputs'][frame]['model_rgb_sha256']))
+    latency = np.array([r['routing_seconds'] for r in rows])
+    (output / 'review.json').write_text(json.dumps(dict(
+        selection='first/last query, before/after each cache update, minimum support',
+        frames=records, verified_model_rgb_frames=len(images), K=calibration['K'],
+        manifest_sha256=hashlib.sha256((inputs / 'manifest.json').read_bytes()).hexdigest(),
+        routing_sha256=hashlib.sha256((result / 'routing.json').read_bytes()).hexdigest(),
+        mapping_seconds=dict(median=float(np.median(latency)),
+            p95=float(np.percentile(latency, 95)), p99=float(np.percentile(latency, 99)),
+            maximum=float(latency.max())),
+        decision='PNG decode checks passed; manual visual review pending; no selector benefit'), indent=2))
+    print('SCENE ROUTING VIZ OK', sorted(chosen), flush=True)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest='mode', required=True)
@@ -447,8 +542,14 @@ if __name__ == '__main__':
     summary = subparsers.add_parser('summary')
     summary.add_argument('--work', type=Path, required=True)
     summary.add_argument('--scene', required=True)
+    routing = subparsers.add_parser('routing')
+    routing.add_argument('--inputs', type=Path, required=True)
+    routing.add_argument('--result', type=Path, required=True)
+    routing.add_argument('--out', type=Path, required=True)
     args = parser.parse_args()
     if args.mode == 'run':
         visualize_run(args.inputs, args.result, args.video)
-    else:
+    elif args.mode == 'summary':
         visualize_summary(args.work, args.scene)
+    else:
+        visualize_routing(args.inputs, args.result, args.out)

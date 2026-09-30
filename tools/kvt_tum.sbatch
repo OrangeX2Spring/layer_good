@@ -177,6 +177,23 @@ CONTAINER=(podman run --rm --network=host
 nvidia-smi --query-gpu=timestamp,uuid,memory.used,memory.total,utilization.gpu \
     --format=csv -l 1 > "$WORK/context/gpu_samples.csv" &
 MONITOR_PID=$!
+if [ "$MODE" = adaptive-tokens ] && [ "${2:-gate}" = routing-viz ]; then
+    SOURCE="${3:?Supply the reviewed routing job tag, e.g. tum_26042}"
+    [[ "$SOURCE" =~ ^tum_[0-9]+$ ]]
+    sha256sum "$OUT/${SOURCE}_context.tar" "$OUT/${SOURCE}_all_runs.tar" \
+        "$OUT/${SOURCE}_routing_inputs.tar" > "$WORK/context/routing_source_archives.sha256"
+    mkdir "$WORK/inputs"
+    tar -xf "$OUT/${SOURCE}_all_runs.tar" -C "$WORK"
+    tar -xf "$OUT/${SOURCE}_routing_inputs.tar" -C "$WORK/inputs"
+    "${CONTAINER[@]}" python "$REPO/tools/kvt_tum_viz.py" routing \
+        --inputs "$WORK/inputs/office" --result "$WORK/runs/routing/passive" \
+        --out "$WORK/routing_review" \
+        2>&1 | tee "$WORK/context/routing_viz.log"
+    test -f "$WORK/routing_review/review.json"
+    echo 'routing PNG decode checks passed; manual visual review pending' > "$WORK/JOB_OK"
+    echo 'SCENE ROUTING VIZ JOB OK'
+    exit 0
+fi
 if [ "$MODE" = llm-packet ]; then
     "${CONTAINER[@]}" python "$REPO/tools/kvt_tum_llm_packet.py" \
         --work "$WORK" --out "$OUT" --tag "$TAG" \
@@ -234,7 +251,7 @@ elif [ "$MODE" = patch-select ]; then
         2>&1 | tee "$WORK/context/patch_select.log"
 elif [ "$MODE" = adaptive-tokens ]; then
     case "${2:-gate}" in
-        gate|check|prefix|profile|graph|routing) ;;
+        gate|check|prefix|profile|graph|routing|routing-viz) ;;
         *) echo "Unknown ATD stage: $2" >&2; exit 2 ;;
     esac
     "${CONTAINER[@]}" python "$REPO/tools/test_kvt_adaptive_tokens.py" \
