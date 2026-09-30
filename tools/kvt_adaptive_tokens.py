@@ -165,6 +165,60 @@ def benchmark(target):
     print('ATD BENCHMARK OK', flush=True)
 
 
+
+def profile_scene(target):
+    """Diagnose scene query latency without changing the policy or timing gate."""
+    from kv_tracker.pi3_utilts import load_pi3_from_pretrained, move_pi3_mlps_to_bfloat32
+    from torch.profiler import profile, ProfilerActivity
+    target.mkdir()
+    torch.manual_seed(0)
+    model = move_pi3_mlps_to_bfloat32(load_pi3_from_pretrained('cuda').eval())
+    model.requires_grad_(False)
+    height, width = 266, 350  # Recorded office model-input grid, resize_dim=308.
+    grid = (height // 14, width // 14)
+    patches = math.prod(grid)
+    records = []
+    for bank in (1, 10, 20):
+        imgs = torch.rand(1, bank, 3, height, width, device='cuda')
+        query = torch.rand(1, 1, 3, height, width, device='cuda')
+        for fraction in (1., .5):
+            model.cache = {}
+            model.kept_cache = None
+            keep = keep_set(torch.zeros(patches, dtype=torch.bool, device='cuda'),
+                            math.ceil(patches * fraction), grid)
+            with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
+                forward_kept(model, imgs, keep[None].expand(bank, -1), store_cache=True)
+                times = []
+                for repeat in range(7):
+                    torch.cuda.synchronize()
+                    started = time.perf_counter()
+                    output = forward_kept(model, query, keep[None], cam_only=True, use_cache=True)
+                    torch.cuda.synchronize()
+                    if repeat >= 2:
+                        times.append(time.perf_counter() - started)
+                expected = output['camera_poses'].clone()
+                with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                             record_shapes=True, with_stack=True) as prof:
+                    output = forward_kept(model, query, keep[None], cam_only=True, use_cache=True)
+                    torch.cuda.synchronize()
+                torch.testing.assert_close(output['camera_poses'], expected, rtol=0, atol=0)
+            name = f'bank{bank}_fraction{fraction}'
+            prof.export_chrome_trace(str(target / f'{name}.json'))
+            averages = prof.key_averages(group_by_input_shape=True)
+            (target / f'{name}_cpu.txt').write_text(averages.table(
+                sort_by='self_cpu_time_total', row_limit=40))
+            (target / f'{name}_cuda.txt').write_text(averages.table(
+                sort_by='self_cuda_time_total', row_limit=40))
+            record = dict(bank=bank, fraction=fraction, kept=int(keep.sum()),
+                shape=[height, width], seconds=times, median_seconds=float(np.median(times)),
+                gpu=torch.cuda.get_device_name(), torch_version=torch.__version__,
+                timing='uninstrumented synchronized wall time; separate one-query profiler trace')
+            records.append(record)
+            write_json(target / 'summary.json', records)
+            print('ATD SCENE PROFILE', json.dumps(record), flush=True)
+    print('ATD SCENE PROFILE OK', flush=True)
+
+
 def decide(results, timing):
     speeds = []
     for bank in (1, 10, 20):
@@ -201,6 +255,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run', type=Path)
     parser.add_argument('--benchmark', type=Path)
+    parser.add_argument('--profile-scene', type=Path)
     parser.add_argument('--work', type=Path)
     parser.add_argument('--out', type=Path)
     parser.add_argument('--tag')
@@ -212,6 +267,8 @@ def main():
         return run(args.run)
     if args.benchmark:
         return benchmark(args.benchmark)
+    if args.profile_scene:
+        return profile_scene(args.profile_scene)
     assert args.work.is_relative_to('/tmp')
     os.chdir(CHECKOUT)
     started = time.monotonic()

@@ -386,3 +386,29 @@ in place of `adaptive-tokens check`. Expected: tests pass, two
 `ATD CAUSAL PREFIX OK ... oracle` messages, six archived runs,
 `ATD ORACLE PREFIX PILOT OK`, `JOB OK`. Review this output before the full gate.
 This supersedes the tests-only submission as the next action.
+
+
+### Scene requirement and query-latency diagnostic (2026-09-30)
+
+User requires scenes; the earlier object-only fallback is superseded. Do not
+advance training based on object results. Keep the frozen scene speed/headroom
+gates. 26037 repaired oracle reproducibility, but scene efficiency still fails.
+Source inspection confirms original patches are removed before encoder blocks,
+and camera-only queries return before point/confidence heads. No established
+per-stage profile exists. Launch/synchronization overhead is a hypothesis.
+
+Next: `bash tools/kvt_tum.sbatch adaptive-tokens profile`, using the same
+allocation wrapper as above. Tests precede a synthetic scene-only diagnostic at
+the recorded office 266x350 grid, full/half kept tokens and cache sizes 1/10/20.
+Two warmups/five measured synchronized wall times per case are collected without
+profiler instrumentation. A separate query records CPU/CUDA operations, input
+shapes and stacks to Chrome traces plus top CPU/CUDA operator tables. Profiled
+poses must equal the preceding query exactly. No new budget sweep, model change,
+real-data tracking, headroom decision or training is included.
+
+Expected: six ATD SCENE PROFILE records, ATD SCENE PROFILE OK, ATD SCENE
+PROFILE JOB OK. EXIT trap saves `scene_profile/` within `tum_JOB_context.tar`.
+Review traces and latency before selecting an optimization. CUDA operator sums
+are not end-to-end latency; instrumented trace duration is not the speed gate.
+No graph replay or synchronization removal has been implemented speculatively.
+This profile submission supersedes full-gate, prefix and object-check next actions.

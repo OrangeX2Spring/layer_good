@@ -229,13 +229,20 @@ elif [ "$MODE" = patch-select ]; then
         2>&1 | tee "$WORK/context/patch_select.log"
 elif [ "$MODE" = adaptive-tokens ]; then
     case "${2:-gate}" in
-        gate|check|prefix) ;;
+        gate|check|prefix|profile) ;;
         *) echo "Unknown ATD stage: $2" >&2; exit 2 ;;
     esac
     "${CONTAINER[@]}" python "$REPO/tools/test_kvt_adaptive_tokens.py" \
         2>&1 | tee "$WORK/context/adaptive_tokens_tests.log"
     if [ "${2:-gate}" = check ]; then
         echo 'ATD REPEATABILITY CHECK JOB OK'
+        exit 0
+    fi
+    if [ "${2:-gate}" = profile ]; then
+        "${CONTAINER[@]}" python "$REPO/tools/kvt_adaptive_tokens.py" \
+            --profile-scene "$WORK/scene_profile" \
+            2>&1 | tee "$WORK/context/scene_profile.log"
+        echo 'ATD SCENE PROFILE JOB OK'
         exit 0
     fi
     "${CONTAINER[@]}" python "$REPO/tools/kvt_adaptive_tokens.py" \
