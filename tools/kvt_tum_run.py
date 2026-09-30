@@ -183,6 +183,12 @@ def run(config_path):
     if config.get('compression') is not None:
         from stream_cache_sensitivity import CacheCompression
         compression = CacheCompression(config['compression'])
+    layer_cache = None
+    if config.get('historical_kv') is not None:
+        from kv_tracker.layer_cache import LayerCache
+        assert compression is None and config['policy'] == 'fixed'
+        assert not config.get('append_only', False)
+        layer_cache = LayerCache(**config['historical_kv'])
     length = config['frames']
     assert 2 <= length <= manifest['frames']
     occluder = config.get('occluder')
@@ -256,12 +262,15 @@ def run(config_path):
                       '--kf_auto', str(config['interval'])], frame_source=source,
                 keyframe_selector=selector, snapshot_callback=recorder,
                 keyframe_append=append_cache, active_keyframes=active_keyframes,
-                cache_transform=None if compression is None else compression.kvt, **cache_args)
+                cache_transform=(layer_cache if layer_cache is not None else
+                                 None if compression is None else compression.kvt), **cache_args)
         finally:
             if active_keyframes is not None:
                 write_json(result / 'active_keyframes.json', active_keyframes.events)
             if compression is not None:
                 compression.save(result / 'compression.json')
+            if layer_cache is not None:
+                write_json(result / 'historical_kv.json', layer_cache.events)
             if selector is not None:
                 selector.close(result)
             if append_cache is not None:
