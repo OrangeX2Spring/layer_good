@@ -90,7 +90,15 @@ CONTAINER=(podman run --rm --network=host
             --checkpoint "$3" --work "$1" --width 308 --sweep tools/stream_cache_sweep.json
     fi
     set -o pipefail
-    python -m unittest discover -s tools -p test_online_cache.py \
+    contracts=(
+        test_online_cache.OnlineContracts.test_sensitivity_matches_explicit_removal
+        test_online_cache.OnlineContracts.test_pi3_fixed_cap_and_protected_values
+        test_online_cache.OnlineContracts.test_pi3_probe_does_not_change_query
+    )
+    if [ "$2" = streamvggt ]; then
+        contracts+=(test_online_cache.OnlineContracts.test_stream_caps_and_original_positions)
+    fi
+    python -m unittest "${contracts[@]}" \
         2>&1 | tee "$1/context/contracts.log"
     if [ "$2" = streamvggt ]; then
         python -m unittest discover -s tools -p test_stream_depth.py \

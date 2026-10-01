@@ -60,7 +60,12 @@ cost on24GB; longer operation is not claimed. Every arm uses the same suffix
 Contracts run first: local sensitivity vs explicit intervention; Pi3 fixed byte
 caps, original anchor/latest values and sensitivity-driven quota differences;
 probe hook leaves query output bit-identical; StreamVGGT fixed caps and original
-anchor K/positions through repeated admissions. CAMP only. Mac AST/Bash/diff
+anchor K/positions through repeated admissions. Pi3 runs the first three
+contracts; only the StreamVGGT container runs the fourth, after its dependency
+bootstrap. Job26096 failed before tracking because the previous wrapper also
+ran that StreamVGGT test in the Pi3 image (missing einops). Its archive exit1
+contains no experiment summary; it provides no policy-quality evidence.
+CAMP only. Mac AST/Bash/diff
 checks are static; no local inference or project test execution.
 
 Pass: all planned runs and prefix checks complete, budgets bind (or explicitly
