@@ -104,6 +104,8 @@ class TumSelector:
                       seconds=time.perf_counter() - self.inference_started,
                       cache_bytes=self.cache_bytes(), allocated_bytes=torch.cuda.memory_allocated(),
                       reserved_bytes=torch.cuda.memory_reserved())
+        if self.config.get('record_input_frames', False):
+            record['input_frame_count'] = int(args[0].shape[1])
         self.inference_log.write(json.dumps(record) + '\n')
         self.inference_log.flush()
 

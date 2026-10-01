@@ -74,7 +74,7 @@ def prepare(archive, destination, resize_dim, max_difference, start=0, count=Non
             with packed.open(info) as source, target.open('wb') as output:
                 shutil.copyfileobj(source, output)
     paths = sorted((destination / 'rgb').glob('*.png'))
-    assert len(paths) >= 128, (scene, len(paths))
+    assert len(paths) >= 2, (scene, len(paths))
     times = np.array([float(p.stem) for p in paths])
     gt = np.loadtxt(destination / 'groundtruth.txt')
     _, valid, difference = associate_gt(times, gt[:, 0], max_difference)

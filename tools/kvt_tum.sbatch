@@ -16,12 +16,12 @@ if [ "$MODE" = adaptive-tokens ] && [ "${2:-gate}" = task-policy ]; then
     # Four-hour allocation: leave ten minutes for the EXIT archives.
     TASK_DEADLINE=$(( $(date +%s) + 13800 ))
 fi
-case "$MODE" in sweep|bank-pilot|combined|correspondence|correspondence-gates|llm-packet|replay-fidelity|llm-compare|append|sensitivity|active-keyframes|patch-select|adaptive-tokens) ;;
+case "$MODE" in sweep|office-segments|bank-pilot|combined|correspondence|correspondence-gates|llm-packet|replay-fidelity|llm-compare|append|sensitivity|active-keyframes|patch-select|adaptive-tokens) ;;
     *) echo "Unknown mode: $MODE" >&2; exit 2 ;; esac
 test "$(uname -s)" = Linux
 test "$(hostname)" != head
 ROOT=/mnt/projects/gr/3DRecon
-if [ "$MODE" = bank-pilot ]; then
+if [ "$MODE" = bank-pilot ] || [ "$MODE" = office-segments ]; then
     # sbatch executes a spool copy, not the script in the checkout.
     REPO="$ROOT/layer_good"
 else
@@ -130,6 +130,10 @@ fi
 if [ "$MODE" = append ]; then
     cp "$REPO/tools/kvt_tum_append.py" "$REPO/tools/test_kvt_append.py" \
        "$REPO/tools/KVT_APPEND.md" "$WORK/context/"
+fi
+if [ "$MODE" = office-segments ]; then
+    cp "$REPO/tools/kvt_office_segments.py" "$REPO/tools/KVT_OFFICE_SEGMENTS.md" \
+       "$WORK/context/"
 fi
 if [ "$MODE" = bank-pilot ]; then
     cp "$REPO/tools/kvt_tum_combined.py" "$REPO/tools/kvt_bank_pilot.py" \
@@ -400,6 +404,10 @@ elif [ "$MODE" = append ]; then
         --work "$WORK" --out "$OUT" --tag "$TAG" "${APPEND_ARGS[@]}" \
         2>&1 | tee "$WORK/context/append.log"
     test -f "$WORK/comparison.json"
+elif [ "$MODE" = office-segments ]; then
+    "${CONTAINER[@]}" python "$REPO/tools/kvt_office_segments.py" \
+        --work "$WORK" --out "$OUT" --tag "$TAG" \
+        2>&1 | tee "$WORK/context/office_segments.log"
 elif [ "$MODE" = bank-pilot ]; then
     "${CONTAINER[@]}" python "$REPO/tools/test_kvt_bank.py" \
         2>&1 | tee "$WORK/context/bank_tests.log"
