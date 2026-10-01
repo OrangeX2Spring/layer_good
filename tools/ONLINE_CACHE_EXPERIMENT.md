@@ -21,7 +21,10 @@ Online score: every16th query,8 uniformly sampled query rows per layer. Compare
 local attention output using available history against anchor+latest+current
 only. Relative squared output deviation is smoothed with EMA0.9. Allocate
 remaining rows in proportion to sqrt(score), capacity-clipped largest-remainder
-integer quotas. Uniform uses equal weights. Within each layer, uniformly gather
+integer quotas. Initial scores are zero, so unobserved allocations are uniform.
+Reserve up to8 optional rows per layer, charged before weighted allocation, to
+avoid permanently starving a layer's importance observations. Uniform shares
+the same reserve and uses equal weights. Within each layer, uniformly gather
 eligible history rows; no K/V averaging, RoPE changes or model-block pruning.
 This estimates value of the available optional history, not a dense teacher or
 task oracle. Joint compression effects and long-term utility remain hypotheses.
@@ -68,6 +71,13 @@ time and keyframe schedule. A completed pilot does not prove quality superiority
 No automatic full-stage job, retry or training.
 
 ## Rebuild time
+
+Pi3 native cache-byte samples from the existing instrumentation are logical
+K/V sizes; final_physical_kv_bytes deduplicates actual backing storage, including
+native V views into QKV projections. Native growing history's final physical
+storage is its persistent maximum. Compact online/uniform actual storage and
+row metadata are checked at every rebuild. Do not compare logical native bytes
+to an actual-byte cap without identifying that distinction.
 
 These pilots preserve Pi3's dense rebuilds. Measure their share before claiming
 end-to-end speed. Reusing per-frame encoder features is a potential optimization

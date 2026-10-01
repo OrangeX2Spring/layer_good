@@ -44,6 +44,8 @@ class OnlineContracts(unittest.TestCase):
                     self.assertEqual(int((rows // 10 == 0).sum()), 20 if count == 2 else 10)
                     self.assertEqual(int((rows // 10 == ids[-1]).sum()), 20 if count == 2 else 10)
                     self.assertTrue(torch.equal(cache.model.cache[i]['k'][:, :, :10], original[:, :, :10]))
+                    if count > 2:
+                        self.assertGreaterEqual(event['tokens_by_layer'][i] - 20, 8)
                 if count == 12 and policy == 'online':
                     self.assertGreater(event['tokens_by_layer'][5], event['tokens_by_layer'][1])
 

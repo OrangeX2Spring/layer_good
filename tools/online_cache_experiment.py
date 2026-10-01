@@ -90,10 +90,18 @@ def pi3_arm(config, result):
         metrics[kind + '_p50_seconds'] = float(np.median(times)) if times else None
         metrics[kind + '_p95_seconds'] = float(np.quantile(times, .95)) if times else None
     metrics['max_query_cache_bytes'] = max(r['cache_bytes'] for r in rows if r['kind'] == 'query')
+    physical = {(t.device, t.untyped_storage().data_ptr()): t.untyped_storage().nbytes()
+                for layer in instrument.model.cache.values() for t in layer.values()}
+    metrics['final_physical_kv_bytes'] = sum(physical.values())
+    metrics['keyframe_indices'] = (np.load(result / 'kf_idx.npy').tolist()
+                                  if (result / 'kf_idx.npy').exists() else [0])
+    metrics['cache_accounting'] = 'query cache_bytes are logical K/V; final_physical_kv_bytes deduplicates backing storage'
     if selection is not None:
         metrics.update(budget_bytes=selection.limit, max_persistent_bytes=max(e['persistent_bytes'] for e in selection.events),
                        budget_binding=any(e['persistent_bytes'] == selection.limit for e in selection.events),
                        probe_count=len(selection.probes))
+    else:
+        metrics['max_persistent_bytes'] = sum(physical.values())
     return metrics
 
 
