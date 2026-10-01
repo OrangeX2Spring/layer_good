@@ -55,8 +55,13 @@ def main(args):
     assert checkpoint == expected_checkpoint, 'Checkpoint differs from oracle'
     write_json(args.work / 'oracle_sources.json', dict(archives=provenance, checkpoint=checkpoint))
     inputs = args.work / 'inputs' / 'office'
-    manifest = prepare(Path('/mnt/datasets/tum-rgbd/rgbd_dataset_freiburg3_long_office_household.zip'),
-                       inputs, 308, .02, count=2585)
+    archive = Path('/mnt/datasets/tum-rgbd/rgbd_dataset_freiburg3_long_office_household.zip')
+    manifest = prepare(archive, inputs, 308, .02, count=2585)
+    digest = hashlib.sha256()
+    with archive.open('rb') as source:
+        for chunk in iter(lambda: source.read(8388608), b''):
+            digest.update(chunk)
+    (inputs / 'archive.sha256').write_text(f'{digest.hexdigest()}  {archive}\n')
     for reference, start, end in zip(references, BOUNDARIES, BOUNDARIES[1:]):
         for actual, expected in zip(manifest['inputs'][start:end],
                                     reference['manifest']['inputs'], strict=True):

@@ -105,3 +105,11 @@ oracle/checkpoint identities and remote contracts. Log uses the existing
 
 Review first failure or returned artifacts before changing the bridge, boundary
 placement or pair policy. No promised runtime outcome before that review.
+
+## Staging correction after job26124
+
+Job26124 passed the three new contracts but stopped before model loading because
+the driver omitted `archive.sha256`, required by the shared input archiver. The
+driver now hashes the source ZIP and writes that manifest before archiving. Other
+required metadata/model pixels come from prepare. No tracking result was produced;
+this correction changes no bank policy, bridge threshold or accuracy criterion.
