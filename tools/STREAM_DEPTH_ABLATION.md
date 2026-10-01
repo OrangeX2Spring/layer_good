@@ -1,5 +1,74 @@
 # StreamVGGT historical-KV depth pilot
 
+## Overnight diagnostics and separately gated full validation
+
+User requests broader overnight experiments after26089 review; anchor pilot
+is already submitted as26090. Do not duplicate it. `overnight` is an independent
+FIFO diagnostic suite; serialize it after26090 to prevent allocation-time pulls
+from changing the shared checkout while another driver's child processes read it.
+No anchor result is selected, trusted or promoted automatically by this suite.
+
+One sequential GPU allocation,4h cap,40 fresh-process runs,14848 frame queries:
+
+| Question | Fixed cases | New runs |
+|---|---|---:|
+| Is the layer choice meaningful? | Worst eight calibration layers and one random eight (seed17), two exact26089 windows, equal byte budget |4|
+| Does the timing advantage repeat? | Native/omit/special-uniform, three process repeats per window, shuffled order seed29 |18|
+| How do bytes/time/errors scale with history? |8/32/64 slots, all three arms, office/loop source0..511 |18|
+
+Teacher[0..7] stays frozen. Reverse selection derives once from the archived
+single-layer scores, random choice derives once from a declared seed. These
+are negative/equal-byte controls, not a search that selects a new winning policy.
+No new calibration/model/training/quantization/threshold sweep. All architecture,
+precision, admission stride4 and camera memory semantics are unchanged. Original
+ref/native/omit/uniform outputs are copied as labelled historical evidence;
+the first two groups read byte-identical archived model inputs. Scaling cases
+share one prepared512-frame input per sequence. For capacity C, steady metrics
+start at4*C, when every query has C history slots. Full and steady GT-valid
+metrics, actual bytes/peak GPU usage, all raw poses/events and first-eviction
+RPE at4*C->4*C+1 are saved. Scaling uses FIFO and cannot establish an anchor
+quality result; its event alignment tests the existing eviction hypothesis.
+
+Every repeat must reproduce its reviewed FIFO raw trajectory at atol/rtol1e-5.
+Time summaries keep all three process medians/min/max, rather than reporting the
+best run. No cross-job historical timing claim. Each independent subprocess
+failure is logged with traceback and retained in the incremental summary;
+other independent cases continue. The suite finishes nonzero if any case failed.
+Do not automatically retry failed negative controls or hide them as successes.
+Setup/reference/source or orchestration assertion failures stop immediately.
+
+Archive `stream_depth_out/stream_depth_overnight_JOB.tar` includes the declared
+plan, incremental/final overnight_summary.json, old references, exact pixels,
+all new configs/trajectories/evaluations/events/logs and source/package/container
+provenance. Shared images are stored once, no saved environment changes.
+Runtime pass requires contracts/reference gates and40 recorded successful cases,
+complete=true and archive exit0. Scientific conclusions require raw review.
+
+Submit on CAMP head after publication, using existing Q/W/R:
+
+```bash
+sbatch $Q --gres=gpu:1 --time=04:00:00 --propagate=NONE \
+  --dependency=afterany:26090 \
+  -o /mnt/projects/gr/3DRecon/stream_depth_overnight_slurm-%j.log \
+  --wrap="$W && bash $R/tools/stream_depth.sbatch overnight"
+```
+
+The dependency serializes source updates; afterany is intentional because these
+FIFO diagnostics do not depend on a successful or reviewed anchor result. The
+recorded students_normal limit permits one running and two submitted jobs, so
+one sequential suite fits beside26090. Actual scheduling remains user-observed.
+
+**Prepared but not submitted:** `full` stage runs native/omit/special-uniform
+with32 anchor slots on complete office2585/with-loop5182/no-loop3359 frames,
+nine runs33378 queries. It requires manually supplied REVIEWED_ANCHOR_ARCHIVE
+and REVIEWED_ANCHOR_SHA256 from a scientifically reviewed exit0 anchor pilot,
+checks SHA/completion/six prefix+byte comparisons, and records the review identity.
+Missing fields stop before full-data preparation. There is no automatic
+diagnostic/pilot-to-full chain and no full submission command for the unreviewed
+26090. AGENTS.md requires reviewing pilot evidence before full evaluation.
+After that review, supply one short full-stage submission chunk separately.
+Output would be stream_depth_out/stream_depth_full_JOB.tar; none exists yet.
+
 ## Accepted anchor comparison after reviewed26089
 
 Entry: `bash tools/stream_depth.sbatch anchor`. Controller revision `b5b4f05`.

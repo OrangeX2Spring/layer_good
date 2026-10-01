@@ -120,7 +120,7 @@ def calibrate(args):
     print('STREAM DEPTH SELECTION FROZEN', chosen, flush=True)
 
 
-def quality(poses, records, result):
+def quality(poses, records, result, steady_start=128):
     from stream3r_ycbv_metrics import umeyama_sim3
     valid = np.asarray([i for i, row in enumerate(records) if row.get('gt_c2w') is not None
                        and abs(row['timestamp'] - row['gt_timestamp']) <= .02])
@@ -146,8 +146,8 @@ def quality(poses, records, result):
              timestamps=times, ate_per_frame_m=errors, rpe_translation_per_pair_m=rpe,
              rpe_rotation_per_pair_deg=angles, rpe_pair_start_indices=valid[:-1][pairs],
              alignment_scale=scale, alignment_rotation=rotation, alignment_translation=translation)
-    steady_frames = valid >= 128
-    steady_pairs = valid[:-1][pairs] >= 128
+    steady_frames = valid >= steady_start
+    steady_pairs = valid[:-1][pairs] >= steady_start
     assert steady_frames.any() and steady_pairs.any()
     return dict(ate_m=float(np.sqrt(np.mean(errors ** 2))), translation_p99_m=float(np.quantile(errors, .99)),
                 rpe_translation_m=float(np.sqrt(np.mean(rpe ** 2))),
@@ -164,16 +164,17 @@ def quality(poses, records, result):
 def arm(args):
     inputs = args.work / 'inputs' / args.scene
     records = json.loads((inputs / 'manifest.json').read_text())['frames']
-    chosen = json.loads((args.work / 'selection.json').read_text())['omitted_layers']
-    result = args.work / 'runs' / args.scene / args.mode
+    chosen = (args.omitted_layers if args.omitted_layers is not None else
+              json.loads((args.work / 'selection.json').read_text())['omitted_layers'])
+    result = args.work / 'runs' / args.scene / (args.condition or args.mode)
     write_json(result / 'config.json', dict(mode=args.mode, omitted_layers=chosen,
-        history_capacity=32, admission_stride=4, frames=len(records), dtype='float32',
+        history_capacity=args.capacity, admission_stride=4, frames=len(records), dtype='float32',
         checkpoint=str(args.checkpoint), input_manifest_sha256=digest(inputs / 'manifest.json'),
         camera_policy='unchanged upstream camera-head cache', seed=17,
         history_policy=args.history_policy))
     model = load_model(SimpleNamespace(host='streamvggt', checkpoint=args.checkpoint))
     torch.manual_seed(17)
-    cache = DepthCache(model.aggregator, args.mode, chosen, capacity=32,
+    cache = DepthCache(model.aggregator, args.mode, chosen, capacity=args.capacity,
                        history_policy=args.history_policy)
     camera = [None] * model.camera_head.trunk_depth
     # Unscored warmup has no influence on the subsequently reset stream.
@@ -204,8 +205,8 @@ def arm(args):
         start = time.perf_counter()
         event = cache.retain(frame % 4 == 0)
         admitted = list(range(0, frame + 1, 4))
-        expected = (admitted[:1] + admitted[-31:] if args.history_policy == 'anchor'
-                    and len(admitted) > 32 else admitted[-32:])
+        expected = (admitted[:1] + admitted[-(args.capacity - 1):] if args.history_policy == 'anchor'
+                    and len(admitted) > args.capacity else admitted[-args.capacity:])
         assert event['history_frames'] == expected
         torch.cuda.synchronize()
         event.update(query_seconds=query_seconds, write_seconds=time.perf_counter() - start,
@@ -217,10 +218,13 @@ def arm(args):
         hook.remove()
     poses = np.asarray(poses)
     np.save(result / 'traj.npy', poses)
-    metrics = quality(poses, records, result)
-    steady = [event for event in events if event['frame'] >= 128]
-    assert len(steady) == 128 and all(len(event['history_frames']) == 32 for event in steady)
+    steady_start = args.capacity * 4
+    metrics = quality(poses, records, result, steady_start)
+    steady = [event for event in events if event['frame'] >= steady_start]
+    assert len(steady) == len(records) - steady_start > 0
+    assert all(len(event['history_frames']) == args.capacity for event in steady)
     metrics.update(mode=args.mode, frames=len(records), omitted_layers=chosen,
+        history_capacity=args.capacity, steady_start_frame=steady_start,
         max_persistent_bytes=max(event['persistent_bytes'] for event in events),
         max_kv_bytes=max(event['kv_bytes'] for event in events),
         max_camera_bytes=max(event['camera_bytes'] for event in events),
@@ -273,7 +277,7 @@ def reference26089(args):
     write_json(args.work / 'reference.json', dict(job=26089, archive=str(archive), sha256=checksum,
         calibration='historical frozen teacher; not rerun', records=summary['records'],
         timing='FIFO measurements are historical; no cross-job causal speed comparison'))
-    print('STREAM DEPTH ANCHOR REFERENCE OK; NO CALIBRATION REFIT', flush=True)
+    print('STREAM DEPTH REVIEWED REFERENCE OK; NO CALIBRATION REFIT', flush=True)
     return reference
 
 
@@ -385,7 +389,12 @@ def main():
     parser.add_argument('--mode', choices=('native', 'omit', 'uniform_special'), default='native')
     parser.add_argument('--history-policy', choices=('fifo', 'anchor'), default='fifo')
     parser.add_argument('--reference-archive', type=Path)
+    parser.add_argument('--capacity', type=int, default=32)
+    parser.add_argument('--condition', default='')
+    parser.add_argument('--omitted-layers', type=lambda value: [int(i) for i in value.split(',')])
     args = parser.parse_args()
+    assert args.capacity >= 2
+    assert not args.condition or (Path(args.condition).name == args.condition and args.condition not in ('.', '..'))
     assert sys.platform.startswith('linux') and torch.cuda.is_available()
     {'pilot': pilot, 'calibrate': calibrate, 'arm': arm}[args.stage](args)
 
