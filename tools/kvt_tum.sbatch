@@ -21,7 +21,12 @@ case "$MODE" in sweep|bank-pilot|combined|correspondence|correspondence-gates|ll
 test "$(uname -s)" = Linux
 test "$(hostname)" != head
 ROOT=/mnt/projects/gr/3DRecon
-REPO=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+if [ "$MODE" = bank-pilot ]; then
+    # sbatch executes a spool copy, not the script in the checkout.
+    REPO="$ROOT/layer_good"
+else
+    REPO=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+fi
 if [ "$MODE" = adaptive-tokens ] && [ "${2:-gate}" = graph-track ]; then
     [[ "$REPO" == /tmp/kvt_graph_checkout_* ]]
 fi

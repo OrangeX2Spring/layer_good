@@ -71,6 +71,11 @@ are a structural result; lower measured time/memory must be observed independent
 ## CAMP execution and artifacts
 
 Entry: `tools/kvt_tum.sbatch bank-pilot`. The existing wrapper pulls code inside
+the fixed `/mnt/projects/gr/3DRecon/layer_good` checkout; bank-pilot must not
+derive that path from BASH_SOURCE because sbatch executes a spool copy.
+Job26109 failed at the initial git pull for this reason, before model/tests.
+Refresh the wrapper inside an allocation before submitting a replacement.
+The wrapper runs inside
 the allocation, uses the read-only borrowed kvt image without rebuilding it,
 records parent/fork source, image hash, Pi3 source and package inventory, and
 archives failures. Publish the fork and parent gitlink before submitting.
