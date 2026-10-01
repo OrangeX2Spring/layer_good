@@ -358,7 +358,9 @@ def run(config_path):
                 final_feature_bytes=selector.cache_policy.feature_bytes(),
                 final_query_cache_bytes=events[-1]['query_cache_bytes'],
                 max_query_cache_bytes=max(event['query_cache_bytes'] for event in events),
-                cache_policy=('redundancy eviction + confidence/novelty half patches'
+                cache_policy=(f"whole-image {config['bank_policy']}; full patches"
+                              if 'bank_policy' in config else
+                              'redundancy eviction + confidence/novelty half patches'
                               if config['policy'] == 'combined' else
                               f"FIFO + {config['patch_policy']} patch retention"),
                 keyframes_meaning='simultaneous retained frames; insertions counted separately')

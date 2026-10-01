@@ -14,8 +14,12 @@ from kvt_tum_selector import TumSelector
 class CombinedSelector(TumSelector):
     def __init__(self, config, log, inference_log):
         super().__init__(config, log, inference_log)
-        self.cache_policy = CombinedCache(config['cap'], config['interval'],
-                                          config.get('patch_fraction', 0.5))
+        if 'bank_policy' in config:
+            from kv_tracker.bank_cache import BankCache
+            self.cache_policy = BankCache(config['cap'], config['interval'], config['bank_policy'])
+        else:
+            self.cache_policy = CombinedCache(config['cap'], config['interval'],
+                                              config.get('patch_fraction', 0.5))
 
     def attach(self, model):
         from pi3.models.layers.attention import FlashAttentionRope

@@ -16,7 +16,7 @@ if [ "$MODE" = adaptive-tokens ] && [ "${2:-gate}" = task-policy ]; then
     # Four-hour allocation: leave ten minutes for the EXIT archives.
     TASK_DEADLINE=$(( $(date +%s) + 13800 ))
 fi
-case "$MODE" in sweep|combined|correspondence|correspondence-gates|llm-packet|replay-fidelity|llm-compare|append|sensitivity|active-keyframes|patch-select|adaptive-tokens) ;;
+case "$MODE" in sweep|bank-pilot|combined|correspondence|correspondence-gates|llm-packet|replay-fidelity|llm-compare|append|sensitivity|active-keyframes|patch-select|adaptive-tokens) ;;
     *) echo "Unknown mode: $MODE" >&2; exit 2 ;; esac
 test "$(uname -s)" = Linux
 test "$(hostname)" != head
@@ -125,6 +125,10 @@ fi
 if [ "$MODE" = append ]; then
     cp "$REPO/tools/kvt_tum_append.py" "$REPO/tools/test_kvt_append.py" \
        "$REPO/tools/KVT_APPEND.md" "$WORK/context/"
+fi
+if [ "$MODE" = bank-pilot ]; then
+    cp "$REPO/tools/kvt_tum_combined.py" "$REPO/tools/kvt_bank_pilot.py" \
+       "$REPO/tools/test_kvt_bank.py" "$REPO/tools/KVT_BANK_PILOT.md" "$WORK/context/"
 fi
 if [ "$MODE" = combined ]; then
     cp "$REPO/tools/kvt_tum_combined.py" "$REPO/tools/kvt_combined_run.py" \
@@ -391,6 +395,12 @@ elif [ "$MODE" = append ]; then
         --work "$WORK" --out "$OUT" --tag "$TAG" "${APPEND_ARGS[@]}" \
         2>&1 | tee "$WORK/context/append.log"
     test -f "$WORK/comparison.json"
+elif [ "$MODE" = bank-pilot ]; then
+    "${CONTAINER[@]}" python "$REPO/tools/test_kvt_bank.py" \
+        2>&1 | tee "$WORK/context/bank_tests.log"
+    "${CONTAINER[@]}" python "$REPO/tools/kvt_bank_pilot.py" \
+        --work "$WORK" --out "$OUT" --tag "$TAG" \
+        2>&1 | tee "$WORK/context/bank_pilot.log"
 elif [ "$MODE" = combined ]; then
     "${CONTAINER[@]}" python "$REPO/tools/test_kvt_combined.py" \
         2>&1 | tee "$WORK/context/combined_tests.log"
