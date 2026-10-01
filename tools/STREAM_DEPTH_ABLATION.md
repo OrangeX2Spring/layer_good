@@ -1,5 +1,61 @@
 # StreamVGGT historical-KV depth pilot
 
+## Accepted anchor comparison after reviewed26089
+
+Entry: `bash tools/stream_depth.sbatch anchor`. Controller revision `b5b4f05`.
+This is one fixed intervention selected by the user after archive review. The
+reviewed FIFO protocol below remains the reference, not a run to repeat.
+
+- Preserve the first admitted frame0 plus the latest31 other admitted frames.
+  Capacity remains32, admission every fourth frame, all layers/current tokens/
+  weights/heads unchanged, frozen omissions[0..7]. Compression remains exactly
+  two thirds of native historical KV+positions+IDs at every frame.
+- Pin the existing `stream_depth_out/stream_depth_26089.tar` SHA256
+  `389b561efc782d3aab6fc7465d16cc4a2371ea7a51423991a4b91beabb27e205`.
+  Require saved exit0, six complete records and original fork18b3d23. Extract
+  exact source/model pixels, manifests/GT, selection/raw teacher/fidelity and
+  labelled historical FIFO results. No data preparation, teacher calibration
+  or native-fidelity rerun. Copied teacher/fidelity records are historical.
+- Verify current checkpoint SHA equals the archived identity and current
+  dependency package/version inventory equals the reviewed post-setup inventory.
+  Reuse the established constrained setup in one disposable container; no saved
+  image or model/checkpoint download/change.
+- Run the affected two existing GPU contracts plus one new contract verifying
+  original anchor K/V/positions/IDs remain bit-identical across admissions and
+  skipped frames, with exact fixed-capacity/equal-byte three-arm budgets.
+- Six new fresh-process anchor runs use office/with-loop source256..511 and
+  native/omit/special-preserving uniform. Assert actual retained IDs match the
+  anchor schedule after every query, and every frame's physical history/camera
+  bytes match the corresponding FIFO reference. All three new arms must match
+  each other's frame IDs and the existing two-thirds budget.
+- Check first129 raw poses against their FIFO reference at rtol/atol1e-5:
+  query128 precedes the first differing post-query eviction, query129 follows it.
+  A failure stops this pilot; do not waive it or queue another run automatically.
+- Report all full/steady quality and current-job timing/peak metrics, and pair
+  128->129 translation/rotation RPE, squared-error fraction, raw translation
+  step, and translation RPE under the **fixed old FIFO alignment**. This prevents
+  a new full-trajectory scale fit alone from explaining the event improvement.
+  Historical FIFO timing is descriptive only; compare new arms within this job.
+
+Runtime gate:3 contracts pass, reference/checkpoint/packages pass, six runs,
+prefix and byte comparisons pass, complete summary with six paired comparisons
+and labelled historical records, final archive exit0. Scientific success is
+reviewed separately: does the anchor shrink the targeted discontinuity under
+the fixed alignment and improve overall errors without unacceptable regression?
+The common-FIFO diagnostic is a hypothesis, not proof before this intervention.
+
+New archive: `stream_depth_out/stream_depth_anchor_JOB.tar`. Includes original
+shared pixels/teacher and FIFO reference outputs once, six new results,
+reference identity, package/source provenance and pair comparisons. Construction
+is job-local; old archive/image/checkpoint remain read-only. No sweep/training/
+automatic successor. On CAMP head, with existing Q/W/R:
+
+```bash
+sbatch $Q --gres=gpu:1 --time=01:00:00 --propagate=NONE \
+  -o /mnt/projects/gr/3DRecon/stream_depth_anchor_slurm-%j.log \
+  --wrap="$W && bash $R/tools/stream_depth.sbatch anchor"
+```
+
 This is the accepted bounded second-backbone/longer-history follow-up to the
 reviewed Pi3 26086/26087 archives. Numerical findings and their caveats live in
 FINDINGS.md. No Pi3 layer indices transfer. No weights, blocks, FFNs, current

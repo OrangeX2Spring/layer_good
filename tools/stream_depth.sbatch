@@ -11,6 +11,8 @@
 #SBATCH --propagate=NONE
 #SBATCH --output=/mnt/projects/gr/3DRecon/stream_depth_slurm-%j.log
 set -euo pipefail
+MODE=${1:-pilot}
+case "$MODE" in pilot|anchor) ;; *) echo "Unknown mode: $MODE" >&2; exit 2 ;; esac
 test "$(uname -s)" = Linux
 test "$(hostname -s)" != head
 : "${SLURM_JOB_ID:?Submit through sbatch}"
@@ -18,7 +20,9 @@ ROOT=/mnt/projects/gr/3DRecon
 REPO="$ROOT/layer_good"
 WORK="$(mktemp -d "/tmp/stream_depth_${SLURM_JOB_ID}_XXXXXX")"
 mkdir -p "$ROOT/stream_depth_out" "$WORK/context"
-ARCHIVE="$ROOT/stream_depth_out/stream_depth_${SLURM_JOB_ID}.tar"
+TAG=stream_depth
+if [ "$MODE" = anchor ]; then TAG=stream_depth_anchor; fi
+ARCHIVE="$ROOT/stream_depth_out/${TAG}_${SLURM_JOB_ID}.tar"
 finish() {
     status=$?
     trap - EXIT
@@ -56,6 +60,9 @@ fi
 podman image inspect localhost/optpose > "$WORK/context/container.json"
 CKPT="$ROOT/streamvggt_ckpt/checkpoints.pth"
 test -f "$CKPT"
+if [ "$MODE" = anchor ]; then
+    test -f "$ROOT/stream_depth_out/stream_depth_26089.tar"
+fi
 CONTAINER=(podman run --rm --network=host
     --device="nvidia.com/gpu=${CUDA_VISIBLE_DEVICES:?GPU allocation required}"
     -v /mnt:/mnt:ro -v /tmp:/tmp:rw -w "$REPO"
@@ -71,7 +78,11 @@ CONTAINER=(podman run --rm --network=host
     set -o pipefail
     python -m unittest discover -s tools -p test_stream_depth.py \
         2>&1 | tee "$1/context/contracts.log"
-    python tools/stream_depth_ablation.py pilot --work "$1" --checkpoint "$2"
-' -- "$WORK" "$CKPT"
+    extra=()
+    if [ "$3" = anchor ]; then
+        extra=(--history-policy anchor --reference-archive "$4")
+    fi
+    python tools/stream_depth_ablation.py pilot --work "$1" --checkpoint "$2" "${extra[@]}"
+' -- "$WORK" "$CKPT" "$MODE" "$ROOT/stream_depth_out/stream_depth_26089.tar"
 touch "$WORK/STREAM_DEPTH_PILOT_COMPLETE"
 echo 'STREAM DEPTH JOB COMPLETE: inspect summary; no automatic next job'

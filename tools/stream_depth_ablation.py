@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
 import time
 from types import SimpleNamespace
 
@@ -168,10 +169,12 @@ def arm(args):
     write_json(result / 'config.json', dict(mode=args.mode, omitted_layers=chosen,
         history_capacity=32, admission_stride=4, frames=len(records), dtype='float32',
         checkpoint=str(args.checkpoint), input_manifest_sha256=digest(inputs / 'manifest.json'),
-        camera_policy='unchanged upstream camera-head cache', seed=17))
+        camera_policy='unchanged upstream camera-head cache', seed=17,
+        history_policy=args.history_policy))
     model = load_model(SimpleNamespace(host='streamvggt', checkpoint=args.checkpoint))
     torch.manual_seed(17)
-    cache = DepthCache(model.aggregator, args.mode, chosen, capacity=32)
+    cache = DepthCache(model.aggregator, args.mode, chosen, capacity=32,
+                       history_policy=args.history_policy)
     camera = [None] * model.camera_head.trunk_depth
     # Unscored warmup has no influence on the subsequently reset stream.
     image, _ = load_frame(inputs, records[0])
@@ -200,6 +203,10 @@ def arm(args):
         poses.append(pose.cpu().numpy())
         start = time.perf_counter()
         event = cache.retain(frame % 4 == 0)
+        admitted = list(range(0, frame + 1, 4))
+        expected = (admitted[:1] + admitted[-31:] if args.history_policy == 'anchor'
+                    and len(admitted) > 32 else admitted[-32:])
+        assert event['history_frames'] == expected
         torch.cuda.synchronize()
         event.update(query_seconds=query_seconds, write_seconds=time.perf_counter() - start,
                      camera_bytes=storage_bytes(camera))
@@ -232,7 +239,123 @@ def arm(args):
     print('STREAM DEPTH RUN OK', args.scene, args.mode, metrics, flush=True)
 
 
+def reference26089(args):
+    archive = args.reference_archive
+    checksum = digest(archive)
+    assert checksum == '389b561efc782d3aab6fc7465d16cc4a2371ea7a51423991a4b91beabb27e205'
+    reference = args.work / 'reference26089'
+    reference.mkdir()
+    with tarfile.open(archive) as packed:
+        assert packed.extractfile('./exit_status.txt').read().strip() == b'0'
+        assert packed.extractfile('./context/model_commit.txt').read().strip() == b'18b3d23b998ba8a01bd87709d11a61b06964b37c'
+        for member in packed:
+            relative = Path(member.name)
+            assert not relative.is_absolute() and '..' not in relative.parts
+            name = relative.as_posix()
+            shared = (name.startswith('inputs/') or name.startswith('source/') or name in
+                      ('selection.json', 'calibration_poses.npz', 'native_fidelity.json', 'identity.json'))
+            old = name.startswith('runs/') or name in ('summary.json', 'packages_after.json')
+            if member.isdir() or not (shared or old):
+                continue
+            assert member.isfile(), 'Reference must contain ordinary files'
+            target = (args.work if shared else reference) / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(packed.extractfile(member).read())
+    selection = json.loads((args.work / 'selection.json').read_text())
+    summary = json.loads((reference / 'summary.json').read_text())
+    assert selection['omitted_layers'] == list(range(8)) and summary['complete']
+    assert len(summary['records']) == 6
+    identity = json.loads((args.work / 'identity.json').read_text())
+    assert digest(args.checkpoint) == identity['checkpoint_sha256']
+    previous = json.loads((reference / 'packages_after.json').read_text())
+    current = json.loads((args.work / 'packages_after.json').read_text())
+    assert {r['name']: r['version'] for r in current} == {r['name']: r['version'] for r in previous}
+    write_json(args.work / 'reference.json', dict(job=26089, archive=str(archive), sha256=checksum,
+        calibration='historical frozen teacher; not rerun', records=summary['records'],
+        timing='FIFO measurements are historical; no cross-job causal speed comparison'))
+    print('STREAM DEPTH ANCHOR REFERENCE OK; NO CALIBRATION REFIT', flush=True)
+    return reference
+
+
 def pilot(args):
+    if args.reference_archive is not None:
+        assert args.history_policy == 'anchor'
+        reference = reference26089(args)
+    else:
+        assert args.history_policy == 'fifo'
+        reference = None
+        prepare_pilot(args)
+
+    def child(stage, scene='', mode='native'):
+        log_path = args.work / (f'runs/{scene}/{mode}/run.log' if scene else 'calibration.log')
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open('w') as log:
+            process = subprocess.run([sys.executable, __file__, stage, '--work', str(args.work),
+                '--checkpoint', str(args.checkpoint), '--scene', scene, '--mode', mode,
+                '--history-policy', args.history_policy], stdout=log, stderr=subprocess.STDOUT)
+        print('\n'.join(log_path.read_text().splitlines()[-35:]), flush=True)
+        process.check_returncode()
+    if reference is None:
+        child('calibrate')
+    records, comparisons = [], []
+    for scene in ('office', 'with_loop'):
+        for mode in ('native', 'omit', 'uniform_special'):
+            child('arm', scene, mode)
+            result = args.work / f'runs/{scene}/{mode}'
+            metrics = json.loads((result / 'metrics.json').read_text())
+            records.append(dict(scene=scene, **metrics))
+            if reference is not None:
+                old = reference / f'runs/{scene}/{mode}'
+                config = json.loads((result / 'config.json').read_text())
+                old_config = json.loads((old / 'config.json').read_text())
+                assert {k: v for k, v in config.items() if k != 'history_policy'} == old_config
+                np.testing.assert_allclose(np.load(result / 'traj.npy')[:129],
+                                           np.load(old / 'traj.npy')[:129], atol=1e-5, rtol=1e-5)
+                old_events = [json.loads(line) for line in (old / 'inference.jsonl').read_text().splitlines()]
+                new_events = [json.loads(line) for line in (result / 'inference.jsonl').read_text().splitlines()]
+                for new, previous in zip(new_events, old_events):
+                    for key in ('persistent_bytes', 'kv_bytes', 'positions_bytes', 'ids_bytes', 'camera_bytes'):
+                        assert new[key] == previous[key]
+                jumps = {}
+                with np.load(old / 'evaluation.npz') as evaluation:
+                    old_scale = float(evaluation['alignment_scale'])
+                    old_rotation = evaluation['alignment_rotation'].copy()
+                    old_translation = evaluation['alignment_translation'].copy()
+                    gt_pair = evaluation['reference'][128:130].copy()
+                for label, folder in (('fifo26089', old), ('anchor', result)):
+                    raw_pair = np.load(folder / 'traj.npy')[128:130].astype(np.float64)
+                    fixed_pair = raw_pair.copy()
+                    fixed_pair[:, :3, :3] = old_rotation @ raw_pair[:, :3, :3]
+                    fixed_pair[:, :3, 3] = old_scale * raw_pair[:, :3, 3] @ old_rotation.T + old_translation
+                    fixed_error = np.linalg.inv(np.linalg.inv(gt_pair[0]) @ gt_pair[1]) @ (
+                        np.linalg.inv(fixed_pair[0]) @ fixed_pair[1])
+                    with np.load(folder / 'evaluation.npz') as evaluation:
+                        pair_ids = evaluation['rpe_pair_start_indices']
+                        error = evaluation['rpe_translation_per_pair_m']
+                        jumps[label] = dict(translation_rpe_m=float(error[pair_ids == 128][0]),
+                            squared_error_fraction=float(error[pair_ids == 128][0] ** 2 / np.sum(error ** 2)),
+                            rotation_rpe_deg=float(evaluation['rpe_rotation_per_pair_deg'][pair_ids == 128][0]),
+                            raw_c2w_translation_step=float(np.linalg.norm(raw_pair[1, :3, 3] - raw_pair[0, :3, 3])),
+                            fixed_fifo_alignment_translation_rpe_m=float(np.linalg.norm(fixed_error[:3, 3])))
+                comparisons.append(dict(scene=scene, mode=mode, prefix_pose_equivalence_pass=True,
+                    prefix_frames=129, equal_per_frame_storage_pass=True, pair128_to129=jumps))
+        events = {mode: [json.loads(line) for line in (args.work / f'runs/{scene}/{mode}/inference.jsonl').read_text().splitlines()]
+                  for mode in ('native', 'omit', 'uniform_special')}
+        for native, omitted, uniform in zip(*events.values()):
+            assert native['history_frames'] == omitted['history_frames'] == uniform['history_frames']
+            assert omitted['persistent_bytes'] == uniform['persistent_bytes']
+            assert 3 * omitted['persistent_bytes'] == 2 * native['persistent_bytes']
+            assert native['camera_bytes'] == omitted['camera_bytes'] == uniform['camera_bytes']
+    write_json(args.work / 'summary.json', dict(complete=True, records=records,
+        history_policy=args.history_policy, comparisons=comparisons,
+        reference_records=(json.loads((reference / 'summary.json').read_text())['records']
+                           if reference is not None else []),
+        timing='Compare current arms within job; historical FIFO timings are descriptive only',
+        next='manual review only; no automatic full evaluation or training'))
+    print('STREAM DEPTH PILOT COMPLETE', flush=True)
+
+
+def prepare_pilot(args):
     for scene, start, count, label in (
             ('freiburg1_desk', 0, 40, 'calibration'),
             ('freiburg3_long_office_household', 256, 256, 'office'),
@@ -251,33 +374,6 @@ def pilot(args):
     write_json(args.work / 'identity.json', dict(checkpoint=str(args.checkpoint),
         checkpoint_sha256=digest(args.checkpoint), seed=17, history_capacity=32, admission_stride=4))
 
-    def child(stage, scene='', mode='native'):
-        log_path = args.work / (f'runs/{scene}/{mode}/run.log' if scene else 'calibration.log')
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open('w') as log:
-            process = subprocess.run([sys.executable, __file__, stage, '--work', str(args.work),
-                '--checkpoint', str(args.checkpoint), '--scene', scene, '--mode', mode],
-                stdout=log, stderr=subprocess.STDOUT)
-        print('\n'.join(log_path.read_text().splitlines()[-35:]), flush=True)
-        process.check_returncode()
-    child('calibrate')
-    records = []
-    for scene in ('office', 'with_loop'):
-        for mode in ('native', 'omit', 'uniform_special'):
-            child('arm', scene, mode)
-            metrics = json.loads((args.work / f'runs/{scene}/{mode}/metrics.json').read_text())
-            records.append(dict(scene=scene, **metrics))
-        events = {mode: [json.loads(line) for line in (args.work / f'runs/{scene}/{mode}/inference.jsonl').read_text().splitlines()]
-                  for mode in ('native', 'omit', 'uniform_special')}
-        for native, omitted, uniform in zip(*events.values()):
-            assert native['history_frames'] == omitted['history_frames'] == uniform['history_frames']
-            assert omitted['persistent_bytes'] == uniform['persistent_bytes']
-            assert 3 * omitted['persistent_bytes'] == 2 * native['persistent_bytes']
-            assert native['camera_bytes'] == omitted['camera_bytes'] == uniform['camera_bytes']
-    write_json(args.work / 'summary.json', dict(complete=True, records=records,
-        next='manual review only; no automatic full evaluation or training'))
-    print('STREAM DEPTH PILOT COMPLETE', flush=True)
-
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -287,6 +383,8 @@ def main():
     parser.add_argument('--dataset', type=Path, default=Path('/mnt/datasets/tum-rgbd'))
     parser.add_argument('--scene', default='')
     parser.add_argument('--mode', choices=('native', 'omit', 'uniform_special'), default='native')
+    parser.add_argument('--history-policy', choices=('fifo', 'anchor'), default='fifo')
+    parser.add_argument('--reference-archive', type=Path)
     args = parser.parse_args()
     assert sys.platform.startswith('linux') and torch.cuda.is_available()
     {'pilot': pilot, 'calibrate': calibrate, 'arm': arm}[args.stage](args)

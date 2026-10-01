@@ -88,6 +88,36 @@ class StreamDepthTests(unittest.TestCase):
                 assert omitted['persistent_bytes'] == uniform['persistent_bytes']
                 assert 3 * omitted['persistent_bytes'] == 2 * dense['persistent_bytes']
 
+    @torch.inference_mode()
+    def test_anchor_keeps_original_rows_at_fixed_capacity_and_bytes(self):
+        model = self.model()
+        image = torch.rand(1, 1, 3, 42, 42, device='cuda')
+        events = {}
+        for mode in ('native', 'omit', 'uniform_special'):
+            cache = DepthCache(model, mode, (0,), capacity=2, history_policy='anchor')
+            anchor = []
+            rows = []
+            for frame in range(6):
+                cache.forward(image, frame)
+                rows.append(cache.retain(frame % 2 == 0))
+                latest = frame - frame % 2
+                assert cache.frames == ([0] if latest == 0 else [0, latest])
+                for layer, ids in enumerate(cache.ids):
+                    indices = (ids // cache.tokens == 0).nonzero().flatten()
+                    values = [ids.index_select(0, indices), cache.positions[layer].index_select(1, indices)]
+                    values += [value.index_select(3, indices) for value in cache.cache[layer]]
+                    if frame == 0:
+                        anchor.append(values)
+                    else:
+                        for actual, original in zip(values, anchor[layer]):
+                            torch.testing.assert_close(actual, original, rtol=0, atol=0)
+                assert cache.calls == [0, 1, 2]
+            events[mode] = rows
+            cache.close()
+        for dense, omitted, uniform in zip(*events.values()):
+            assert omitted['persistent_bytes'] == uniform['persistent_bytes']
+            assert 3 * omitted['persistent_bytes'] == 2 * dense['persistent_bytes']
+
 
 if __name__ == '__main__':
     assert torch.cuda.is_available(), 'GPU contract must run on CAMP'
