@@ -187,6 +187,7 @@ def main():
     inputs.mkdir()
     if args.host == 'pi3':
         from kvt_arctic_run import stage_dataset, OUT, DATASET_DIR
+        DATASET_DIR = ROOT / 'kv_tracker' / DATASET_DIR
         with tarfile.open(OUT / 'prepared.tar') as packed:
             manifest = json.load(packed.extractfile('manifest.json'))
         stage_dataset(manifest)

@@ -65,6 +65,11 @@ contracts; only the StreamVGGT container runs the fourth, after its dependency
 bootstrap. Job26096 failed before tracking because the previous wrapper also
 ran that StreamVGGT test in the Pi3 image (missing einops). Its archive exit1
 contains no experiment summary; it provides no policy-quality evidence.
+Replacement26098 passed all three Pi3 contracts, then failed before tracking:
+the orchestrator resolved DATASET_DIR from the parent cwd instead of the
+KV-Tracker checkout. Preparation now anchors that path to ROOT/kv_tracker,
+matching stage_dataset's symlink location; child tracking already changes cwd
+to the checkout. No model or experiment policy change. Corrected runtime pending.
 CAMP only. Mac AST/Bash/diff
 checks are static; no local inference or project test execution.
 
@@ -74,6 +79,18 @@ Inspect per-sequence ATE/RPE/p99, allocation/probe traces, peak allocation,
 query/probe-inclusive time, retention time, rebuild calls/time, total tracking
 time and keyframe schedule. A completed pilot does not prove quality superiority.
 No automatic full-stage job, retry or training.
+
+Accuracy acceptance (user-selected margin,2026-10-01): for each sequence and
+fixed budget, require online error <=1.05 times matched native error for each
+of full-window ATE, translation RPE and translation p99. This is a relative
+5% margin, not five percentage points or an absolute distance tolerance.
+Apply per sequence, not to a pooled average; report rotation RPE separately.
+Compare identical inputs, evaluated timestamps and alignment conventions.
+Report accuracy acceptance separately from completion and measured speed/memory
+benefits. This criterion does not change already-submitted26098 or schedule
+additional runs. Short single-run passes remain pilot evidence, not robustness
+claims. Reviewed Stream26097 has no tested online budget passing this criterion:
+each online condition already exceeds native ATE by more than5%.
 
 ## Rebuild time
 
