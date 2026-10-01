@@ -18,6 +18,8 @@ def main():
     parser.add_argument('--sweep', type=Path, required=True)
     parser.add_argument('--width', type=int, required=True)
     parser.add_argument('--max-pair-gap', type=float, default=.1)
+    parser.add_argument('--setup-only', action='store_true',
+                        help='Prepare dependencies and verify model import, then stop')
     args = parser.parse_args()
     assert sys.platform == 'linux' and args.work.resolve().is_relative_to('/tmp')
     repo = Path(__file__).resolve().parents[1]
@@ -49,6 +51,8 @@ def main():
                'longstream': 'longstream.core.model'}
     importlib.import_module(modules[args.host])
     print(f'MODEL IMPORT OK {args.host}', flush=True)
+    if args.setup_only:
+        return
     subprocess.run([python, '-m', 'unittest', 'discover', '-s', 'tools',
                     '-p', 'test_*cache*.py'], cwd=repo, check=True)
     if json.loads(args.sweep.read_text()).get('dynamic_history'):

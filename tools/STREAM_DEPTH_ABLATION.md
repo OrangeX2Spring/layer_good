@@ -10,8 +10,20 @@ Controller revision: StreamVGGT `18b3d23` (published main).
 
 Use the existing strict-load StreamVGGT checkpoint
 `/mnt/projects/gr/3DRecon/streamvggt_ckpt/checkpoints.pth`, FP32 weights/activations/
-KV with no autocast, and the borrowed read-only `optpose.tar` image. No installs,
-downloads, image changes, training, budget sweep or automatic next job.
+KV with no autocast, and the borrowed read-only `optpose.tar` image. The existing
+stream_cache_job.py dependency bootstrap installs only absent inference packages
+inside the disposable job container, constrains all existing package versions,
+archives before/after inventories and the pip report, and verifies full model
+import before contracts or data preparation. Setup and all pilot subprocesses
+share one container. No saved-image changes, model/data downloads, training,
+budget sweep or automatic next job.
+
+Job26088 stopped before calibration because the original wrapper bypassed this
+bootstrap and optpose lacks transformers. The corrected wrapper uses the same
+constrained setup as established StreamVGGT jobs; the scientific protocol is
+unchanged. Its package installation/import and all pilot gates require remote
+verification. The supplied failure tail does not establish final archive exit
+status or the earlier contracts' result.
 
 1. Two GPU contract tests cover untouched-native equivalence, zero-storage
    first-layer history, current-only attention equivalence, preservation of

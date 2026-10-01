@@ -48,7 +48,7 @@ git -C "$REPO/streamvggt" archive HEAD > "$WORK/context/model_source.tar"
 cp "$REPO/tools/stream_depth.sbatch" "$REPO/tools/stream_depth_ablation.py" \
    "$REPO/tools/test_stream_depth.py" "$REPO/tools/STREAM_DEPTH_ABLATION.md" \
    "$REPO/tools/stream_cache_sweep.py" "$REPO/tools/stream_cache_tum.py" \
-   "$REPO/tools/stream3r_ycbv_metrics.py" "$WORK/context/"
+   "$REPO/tools/stream3r_ycbv_metrics.py" "$REPO/tools/stream_cache_job.py" "$WORK/context/"
 sha256sum "$ROOT/optpose.tar" > "$WORK/context/container_tar.sha256"
 if ! podman image exists localhost/optpose; then
     podman load -i "$ROOT/optpose.tar"
@@ -56,15 +56,22 @@ fi
 podman image inspect localhost/optpose > "$WORK/context/container.json"
 CKPT="$ROOT/streamvggt_ckpt/checkpoints.pth"
 test -f "$CKPT"
-CONTAINER=(podman run --rm --network=none
+CONTAINER=(podman run --rm --network=host
     --device="nvidia.com/gpu=${CUDA_VISIBLE_DEVICES:?GPU allocation required}"
     -v /mnt:/mnt:ro -v /tmp:/tmp:rw -w "$REPO"
     -e "PYTHONPATH=$REPO/streamvggt/src:$REPO/tools"
     -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1
     -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONUNBUFFERED=1 localhost/optpose)
-"${CONTAINER[@]}" python -m unittest discover -s tools -p test_stream_depth.py \
-    2>&1 | tee "$WORK/context/contracts.log"
-"${CONTAINER[@]}" python tools/stream_depth_ablation.py pilot \
-    --work "$WORK" --checkpoint "$CKPT"
+# The setup and all subprocesses share this disposable container. Separate
+# --rm invocations would discard the missing packages installed during setup.
+"${CONTAINER[@]}" bash -ec '
+    python tools/stream_cache_job.py --setup-only --host streamvggt \
+        --checkpoint "$2" --work "$1" --width 308 \
+        --sweep tools/stream_cache_sweep.json
+    set -o pipefail
+    python -m unittest discover -s tools -p test_stream_depth.py \
+        2>&1 | tee "$1/context/contracts.log"
+    python tools/stream_depth_ablation.py pilot --work "$1" --checkpoint "$2"
+' -- "$WORK" "$CKPT"
 touch "$WORK/STREAM_DEPTH_PILOT_COMPLETE"
 echo 'STREAM DEPTH JOB COMPLETE: inspect summary; no automatic next job'
