@@ -11,6 +11,8 @@
 #SBATCH --propagate=NONE
 #SBATCH --output=/mnt/projects/gr/3DRecon/layer_cache_slurm-%j.log
 set -euo pipefail
+MODE=${1:-pilot}
+case "$MODE" in pilot|special) ;; *) echo "Unknown mode: $MODE" >&2; exit 2 ;; esac
 test "$(uname -s)" = Linux
 test "$(hostname -s)" != head
 : "${SLURM_JOB_ID:?Submit through sbatch}"
@@ -19,7 +21,9 @@ REPO="$ROOT/layer_good"
 WORK="$(mktemp -d "/tmp/layer_cache_${SLURM_JOB_ID}_XXXXXX")"
 OUT="$ROOT/layer_cache_out"
 mkdir -p "$OUT" "$WORK/context"
-ARCHIVE="$OUT/layer_cache_${SLURM_JOB_ID}.tar"
+TAG=layer_cache
+if [ "$MODE" = special ]; then TAG=layer_cache_special; fi
+ARCHIVE="$OUT/${TAG}_${SLURM_JOB_ID}.tar"
 finish() {
     status=$?
     trap - EXIT
@@ -66,8 +70,18 @@ CONTAINER=(podman run --rm --network=none
     -e "PYTHONPATH=$THIRDPARTY/Pi3:$THIRDPARTY/segment-anything-2-real-time:$REPO/kv_tracker:$REPO/tools"
     -e "HF_HOME=$ROOT/.hf_cache" -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1
     -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONUNBUFFERED=1 -e MPLBACKEND=Agg localhost/kvt)
-"${CONTAINER[@]}" python -m unittest discover -s "$REPO/tools" -p test_layer_cache.py \
-    2>&1 | tee "$WORK/context/contracts.log"
-"${CONTAINER[@]}" python "$REPO/tools/layer_cache_ablation.py" --work "$WORK"
+extra=()
+if [ "$MODE" = special ]; then
+    REFERENCE="$OUT/layer_cache_26086.tar"
+    test -f "$REFERENCE"
+    extra=(--reference-archive "$REFERENCE")
+    "${CONTAINER[@]}" python -m unittest \
+        test_layer_cache.LayerCacheTests.test_special_control_preserves_every_frame_special_and_exact_bytes \
+        2>&1 | tee "$WORK/context/contracts.log"
+else
+    "${CONTAINER[@]}" python -m unittest discover -s "$REPO/tools" -p test_layer_cache.py \
+        2>&1 | tee "$WORK/context/contracts.log"
+fi
+"${CONTAINER[@]}" python "$REPO/tools/layer_cache_ablation.py" --work "$WORK" "${extra[@]}"
 touch "$WORK/LAYER_CACHE_PILOT_COMPLETE"
 echo 'LAYER CACHE JOB COMPLETE: inspect summary; no automatic next job'

@@ -4,6 +4,61 @@ User authorized implementation after job26085 summaries,2026-10-01. All model
 layers, weights, current tokens, normalization/RoPE, projections, residuals and
 FFNs remain active. Only historical KV data changes. No module training.
 
+## Current follow-up: special-preserving uniform only
+
+User authorizes this control after verified26086,2026-10-01. Run wrapper with
+`special`; default `pilot` still names the original experiment and should not
+be submitted again for this follow-up. Model fork adds `uniform_special`:
+retain all5 special tokens in every physical historical frame slot, then evenly
+sample only patch positions across the flattened history. Subtract preserved
+special tokens from the existing per-layer uniform token count. Rounded total
+counts are unchanged, so actual compact KV bytes exactly equal26086 omission.
+The bootstrap's duplicate frame0 has two physical slots, both preserved.
+No additional anchors, learned score, budget search or admission changes.
+
+Driver pins the reviewed source archive SHA256
+f3f9bf62b4cd31795002a3afea46ee56ae004305b6625bf13fbcf5bd4a892e7f,
+requires saved exit0, matches unchanged tracker driver/selector source, reuses
+frozen layers[1,3,5,7,9,19], exact archived evaluation pixels/GT/manifests and
+native/omit reference evidence. No preparation, calibration or old arm rerun.
+New configs retain all old experiment fields except arm/paths/cache mode.
+Dense keyframe poses must agree with old native within numerical tolerance.
+Persistent bytes and history IDs must match old omission at every rebuild.
+Archive reader validates file paths and accepts ordinary files only.
+
+One new GPU contract tests actual gathered token identities across two physical
+frame slots, exact-byte matching with divisible/nondivisible layer counts,
+ordered unique IDs, unchanged special values and compact storage. Only this
+new contract runs in `special` mode; previous4 contracts already passed26086.
+Static syntax/whitespace checks only on Mac. New runtime remains unverified.
+
+Two new128-frame arms only: desk128–255 and textureless0–127, same fixed
+31/63/95 admission, model and dense rebuild behavior. Summary contains new
+records plus explicitly labelled historical26086 native/omit records. Compare
+ATE, translation p99 and both RPE metrics to omission per scene. A remaining
+advantage supports depth allocation beyond the omitted-special-token confound;
+an erased gap weakens that interpretation. Either outcome needs no automatic
+next job. Cross-job timing comparisons are descriptive, not speed evidence.
+
+From CAMP head, after publication, submit the follow-up (30-minute allocation):
+
+```bash
+R=/mnt/projects/gr/3DRecon/layer_good
+Q="-A students --qos=students_normal -p 24g -w stuttgart"
+W="git -C $R -c fetch.recurseSubmodules=false pull --ff-only"
+sbatch $Q --gres=gpu:1 --time=00:30:00 --propagate=NONE \
+  -o /mnt/projects/gr/3DRecon/layer_cache_special_slurm-%j.log \
+  --wrap="$W && bash $R/tools/layer_cache.sbatch special"
+```
+
+Reference required on CAMP:
+/mnt/projects/gr/3DRecon/layer_cache_out/layer_cache_26086.tar.
+Failure to find/match it stops the job; no automatic refit or reference rerun.
+Output: layer_cache_out/layer_cache_special_<job>.tar, preserving reference
+metadata/raw comparison artifacts/evaluation inputs, new runs and source/context.
+No installs/downloads/container changes. Current next action supersedes original
+pilot submission below, which remains documentation of26086.
+
 ## Why this experiment
 
 26085's pasted summaries favor probe balancing over equal-byte uniform subsets

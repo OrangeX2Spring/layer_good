@@ -58,3 +58,24 @@ class LayerCacheTests(unittest.TestCase):
             for n, t in values.items():
                 torch.testing.assert_close(t, original[i][n], rtol=0, atol=0)
                 self.assertEqual(t.untyped_storage().nbytes(), t.numel() * t.element_size())
+
+    def test_special_control_preserves_every_frame_special_and_exact_bytes(self):
+        # Token-coded values identify the actual gathered entries, not just counts.
+        for per_frame in (11, 12):
+            count = 2 * per_frame
+            cache = {i: {n: torch.arange(count, device='cuda', dtype=torch.bfloat16)
+                         .reshape(1, 1, count, 1).clone() for n in ('k', 'v')}
+                     for i in (1, 3, 5)}
+            omitted = {i: {n: t.clone() for n, t in values.items()} for i, values in cache.items()}
+            reference = LayerCache('omit', [1])
+            control = LayerCache('uniform_special', [1])
+            reference(omitted, [0, 31])
+            control(cache, [0, 31])
+            self.assertEqual(reference.events[0]['persistent_bytes'], control.events[0]['persistent_bytes'])
+            for values in cache.values():
+                ids = values['k'].flatten().long().tolist()
+                self.assertEqual(ids, sorted(set(ids)))
+                self.assertTrue(set(range(5)).issubset(ids))
+                self.assertTrue(set(range(per_frame, per_frame + 5)).issubset(ids))
+                self.assertEqual(values['k'].untyped_storage().nbytes(), values['k'].numel() * 2)
+                torch.testing.assert_close(values['k'], values['v'], rtol=0, atol=0)
