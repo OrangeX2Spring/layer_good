@@ -16,13 +16,13 @@ if [ "$MODE" = adaptive-tokens ] && [ "${2:-gate}" = task-policy ]; then
     # Four-hour allocation: leave ten minutes for the EXIT archives.
     TASK_DEADLINE=$(( $(date +%s) + 13800 ))
 fi
-case "$MODE" in sweep|oracle-maps|bridge-cameras|handoff-pilot|office-segments|bank-pilot|combined|correspondence|correspondence-gates|llm-packet|replay-fidelity|llm-compare|append|sensitivity|active-keyframes|patch-select|adaptive-tokens) ;;
+case "$MODE" in sweep|oracle-maps|bridge-cameras|reanchor-maps|handoff-pilot|office-segments|bank-pilot|combined|correspondence|correspondence-gates|llm-packet|replay-fidelity|llm-compare|append|sensitivity|active-keyframes|patch-select|adaptive-tokens) ;;
     *) echo "Unknown mode: $MODE" >&2; exit 2 ;; esac
 test "$(uname -s)" = Linux
 test "$(hostname)" != head
 ROOT=/mnt/projects/gr/3DRecon
 if [ "$MODE" = bank-pilot ] || [ "$MODE" = office-segments ] || [ "$MODE" = handoff-pilot ] || [ "$MODE" = oracle-maps ] || \
-   [ "$MODE" = bridge-cameras ]; then
+   [ "$MODE" = bridge-cameras ] || [ "$MODE" = reanchor-maps ]; then
     # sbatch executes a spool copy, not the script in the checkout.
     REPO="$ROOT/layer_good"
 else
@@ -141,6 +141,11 @@ if [ "$MODE" = bridge-cameras ]; then
     cp "$REPO/tools/kvt_bridge_cameras.py" "$REPO/tools/KVT_BRIDGE_CAMERAS.md" \
        "$REPO/tools/test_kvt_oracle_maps.py" "$REPO/tools/test_kvt_handoff.py" \
        "$REPO/tools/kvt_office_segments.py" "$WORK/context/"
+fi
+if [ "$MODE" = reanchor-maps ]; then
+    cp "$REPO/tools/kvt_reanchor_maps.py" "$REPO/tools/KVT_REANCHOR_MAPS.md" \
+       "$REPO/tools/test_kvt_reanchor.py" "$REPO/tools/test_kvt_handoff.py" \
+       "$REPO/tools/kvt_bridge_cameras.py" "$REPO/tools/kvt_office_segments.py" "$WORK/context/"
 fi
 if [ "$MODE" = handoff-pilot ]; then
     cp "$REPO/tools/kvt_handoff_pilot.py" "$REPO/tools/test_kvt_handoff.py" \
@@ -435,6 +440,14 @@ elif [ "$MODE" = bridge-cameras ]; then
     "${CONTAINER[@]}" python "$REPO/tools/kvt_bridge_cameras.py" \
         --work "$WORK" --out "$OUT" --tag "$TAG" \
         2>&1 | tee "$WORK/context/bridge_cameras.log"
+elif [ "$MODE" = reanchor-maps ]; then
+    "${CONTAINER[@]}" python "$REPO/tools/test_kvt_handoff.py" \
+        2>&1 | tee "$WORK/context/handoff_contracts.log"
+    "${CONTAINER[@]}" python "$REPO/tools/test_kvt_reanchor.py" \
+        2>&1 | tee "$WORK/context/reanchor_contracts.log"
+    "${CONTAINER[@]}" python "$REPO/tools/kvt_reanchor_maps.py" \
+        --work "$WORK" --out "$OUT" --tag "$TAG" \
+        2>&1 | tee "$WORK/context/reanchor_maps.log"
 elif [ "$MODE" = handoff-pilot ]; then
     "${CONTAINER[@]}" python "$REPO/tools/test_kvt_handoff.py" \
         2>&1 | tee "$WORK/context/handoff_contracts.log"
