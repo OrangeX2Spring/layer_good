@@ -52,7 +52,8 @@ def main(args):
     result = args.work / 'runs' / 'reanchor_maps'
     result.mkdir(parents=True)
     write_json(result / 'config.json', dict(boundaries=BOUNDARIES, sources=SOURCES,
-        checkpoint=checkpoint, keyframes='segment first frame + latest, rebuilt every 50',
+        checkpoint=checkpoint, keyframes='segment first frame + latest, rebuilt every 50; '
+        'later rebuilds rescaled to the first via the anchor pointmap',
         connection='pose-anchored at b, point-fit scale, always committed, 49-frame delay',
         history='old KV and images deleted at b', native=NATIVE, margin=MARGIN,
         gt_used_by_tracker=False, seed=0))

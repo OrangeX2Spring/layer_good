@@ -27,7 +27,9 @@ class ReanchorTests(unittest.TestCase):
 
         def reconstruct(images, ids, frame, kind):
             calls.append((frame, kind, ids))
-            return (torch.zeros(2, 28, 28, 3), torch.eye(4).repeat(2, 1, 1),
+            if frame == 49:
+                tracker.anchor_points, tracker.anchor_conf = torch.ones(28, 28, 3), torch.ones(28, 28)
+            return (torch.ones(2, 28, 28, 3), torch.eye(4).repeat(2, 1, 1),
                     torch.ones(2, 28, 28), torch.eye(4))
 
         tracker.reconstruct = reconstruct
@@ -40,6 +42,31 @@ class ReanchorTests(unittest.TestCase):
         self.assertEqual(calls, [(0, 'bootstrap', [0, 0]), (49, 'rebuild', [0, 49]),
                                  (99, 'rebuild', [0, 99]), (149, 'rebuild', [0, 149]),
                                  (199, 'rebuild', [0, 199])])
+
+    def test_refresh_rebuild_restores_first_rebuild_scale(self):
+        model = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]), cache={})
+        tracker = MapHandoff(model, 'reanchor', lambda row: None, None)
+        base = torch.ones(2, 28, 28, 3)
+
+        def reconstruct(images, ids, frame, kind):
+            # The second rebuild returns the anchor's pointmap at twice the scale.
+            points = base * (2. if frame > 49 else 1.)
+            if frame == 49:
+                tracker.anchor_points, tracker.anchor_conf = points[0].clone(), torch.ones(28, 28)
+            return points, torch.eye(4).repeat(2, 1, 1), torch.ones(2, 28, 28), torch.eye(4)
+
+        tracker.reconstruct = reconstruct
+        raw = torch.eye(4)
+        raw[0, 3] = 1.
+        image = np.zeros((28, 28, 3), dtype=np.uint8)
+        with patch('torch.cuda.synchronize'), patch('kv_tracker.map_handoff.pi3_inference',
+                return_value=raw[None, None]):
+            tracker.bootstrap(image)  # centering translation is -1 on every axis
+            before = [tracker.step(image, frame) for frame in range(1, 100)][-1]
+            after = tracker.step(image, 100)
+        self.assertEqual(tracker.rebuild_scale, .5)
+        np.testing.assert_allclose(before[:3, 3], [0., -1., -1.])
+        np.testing.assert_allclose(after[:3, 3], [-.5, -1., -1.])
 
     def test_immediate_retirement_and_pose_anchored_connection(self):
         old_b, new_b = pose(.4, [1., 2., 3.]), pose(-.3, [.2, -.1, .5])

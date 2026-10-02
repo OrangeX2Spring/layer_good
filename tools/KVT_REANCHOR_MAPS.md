@@ -47,6 +47,19 @@ connection: better than native on 0–700, but worse once the weak 975/1400
 segments join (full ATE 141.9cm). The keyframe refresh is the untested part that
 must fix those segments. No outcome is promised.
 
+## Correction after job 26135: scale at refresh rebuilds
+
+Job 26135 tracked all 2585 frames and committed all five connections, then crashed
+building the global trajectory (zip over 7 boundaries; fixed in parent bbf7cf8).
+Offline scoring of its saved arrays (FINDINGS, reanchor 26135) showed the refresh
+working between rebuilds but jumping at each one. The median distance from the
+anchor camera changed 8.4% across a rebuild, against 0.9% otherwise. Each
+[b, latest] rebuild re-normalizes Pi3's scale about camera b. Now every later
+rebuild is rescaled to the first rebuild's scale. The scale is the median
+norm ratio of the anchor's confident pointmap: both maps are expressed in camera
+b's frame, so only scale differs. Queries and dense queries apply that scale.
+`update_total` logs it (1.0 in other modes, whose poses are unchanged).
+
 ## Checks and CAMP procedure
 
 Local: Python AST 3.10, Bash syntax, whitespace. CAMP contracts:
