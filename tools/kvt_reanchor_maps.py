@@ -99,7 +99,7 @@ def main(args):
     global_poses = np.concatenate([np.stack([
         transform_pose(torch.from_numpy(pose), transform).numpy()
         for pose in local_poses[start:end]])
-        for start, end, transform in zip(BOUNDARIES, BOUNDARIES[1:], tracker.transforms, strict=True)])
+        for start, end, transform in zip(BOUNDARIES[:-1], BOUNDARIES[1:], tracker.transforms, strict=True)])
     np.save(result / 'traj.npy', global_poses)
     write_json(result / 'events.json', tracker.events)
     write_json(result / 'transforms.json', [dict(start=start, scale=float(s),
