@@ -1,0 +1,161 @@
+"""Causal anchor-overlap boundary diagnostic; CAMP only, no Pi3 or GT."""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import tarfile
+import time
+
+import cv2
+import numpy as np
+
+from kvt_tum_run import write_json
+from kvt_tum_sweep import archive_directory
+
+
+SOURCE = 'tum_26127_oracle_maps_inputs.tar'
+SOURCE_SHA256 = '9ecd7546a56f2135bfbfc2d33a1be4de45c1670cb8cf56e1bedf2639a2933b33'
+POLICY = dict(features=1000, ratio=.75, ransac_pixels=2., minimum_features=40,
+              minimum_inliers=20, grid=4, minimum_cells=4,
+              persistence=5, minimum_segment_frames=50)
+
+
+class SegmentDetector:
+    def __init__(self):
+        self.orb = cv2.ORB_create(nfeatures=POLICY['features'])
+        self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
+        self.anchor = None
+        self.last_frame = -1
+        self.low_run = 0
+
+    def step(self, rgb, frame):
+        assert frame == self.last_frame + 1
+        assert rgb.ndim == 3 and rgb.shape[2] == 3 and rgb.dtype == np.uint8
+        self.last_frame = frame
+        started = time.perf_counter()
+        keypoints, descriptors = self.orb.detectAndCompute(
+            cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY), None)
+        points = np.array([p.pt for p in keypoints], dtype=np.float32).reshape(-1, 2)
+        evidence = dict(anchor_points=np.empty((0, 2), np.float32),
+                        current_points=np.empty((0, 2), np.float32),
+                        inliers=np.empty(0, bool))
+        row = dict(frame=frame, anchor_frame=self.anchor[0] if self.anchor else frame,
+                   features=len(points), ratio_matches=0, inliers=0, cells=0,
+                   status='bootstrap', boundary=False, low_run=0)
+        if self.anchor is None:
+            self.anchor = (frame, points, descriptors)
+        else:
+            anchor_frame, anchor_points, anchor_descriptors = self.anchor
+            row['anchor_features'] = len(anchor_points)
+            if min(len(points), len(anchor_points)) < POLICY['minimum_features']:
+                # Insufficient texture is unknown overlap, not evidence of a cut.
+                row['status'] = 'unknown_texture'
+                self.low_run = 0
+            else:
+                pairs = self.matcher.knnMatch(anchor_descriptors, descriptors, k=2)
+                matches = [a for a, b in pairs if a.distance < POLICY['ratio'] * b.distance]
+                # Each current feature contributes at most once to support.
+                matches.sort(key=lambda match: match.distance)
+                unique = {}
+                for match in matches:
+                    unique.setdefault(match.trainIdx, match)
+                matches = list(unique.values())
+                source = np.array([anchor_points[m.queryIdx] for m in matches],
+                                  dtype=np.float32).reshape(-1, 2)
+                target = np.array([points[m.trainIdx] for m in matches],
+                                  dtype=np.float32).reshape(-1, 2)
+                inliers = np.zeros(len(matches), dtype=bool)
+                # Explicit two-model verification: planar/rotation and general
+                # epipolar motion. Take the model with the most inliers.
+                if len(matches) >= 4:
+                    _, mask = cv2.findHomography(source, target, cv2.RANSAC,
+                                                POLICY['ransac_pixels'])
+                    if mask is not None:
+                        inliers = mask.ravel().astype(bool)
+                if len(matches) >= 8:
+                    _, mask = cv2.findFundamentalMat(source, target, cv2.FM_RANSAC,
+                                                    POLICY['ransac_pixels'], .99)
+                    if mask is not None and int(mask.sum()) > int(inliers.sum()):
+                        inliers = mask.ravel().astype(bool)
+                h, w = rgb.shape[:2]
+                grid = POLICY['grid']
+                cells = np.floor(target[inliers] * [grid / w, grid / h]).astype(int)
+                occupied = len(np.unique(cells, axis=0))
+                low = int(inliers.sum()) < POLICY['minimum_inliers'] or occupied < POLICY['minimum_cells']
+                eligible = frame - anchor_frame >= POLICY['minimum_segment_frames']
+                self.low_run = self.low_run + 1 if low and eligible else 0
+                boundary = self.low_run >= POLICY['persistence']
+                row.update(ratio_matches=len(matches), inliers=int(inliers.sum()),
+                           cells=occupied, status='low_overlap' if low else 'supported',
+                           boundary=boundary, low_run=self.low_run)
+                evidence = dict(anchor_points=source, current_points=target, inliers=inliers)
+                if boundary:
+                    # Commit at the current frame, never backdate using future evidence.
+                    self.anchor = (frame, points, descriptors)
+                    self.low_run = 0
+        row['seconds'] = time.perf_counter() - started
+        return row, evidence
+
+
+def main(args):
+    cv2.setNumThreads(1)
+    cv2.setRNGSeed(0)
+    source = args.out / SOURCE
+    digest = hashlib.sha256()
+    with source.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(8388608), b''):
+            digest.update(chunk)
+    assert digest.hexdigest() == SOURCE_SHA256, 'Input archive differs from reviewed 26127'
+    result = args.work / 'runs' / 'segment_detector'
+    result.mkdir(parents=True)
+    write_json(result / 'config.json', dict(policy=POLICY, source=SOURCE,
+        source_sha256=SOURCE_SHA256, opencv=cv2.__version__, seed=0, threads=1,
+        causal=True, gt_used=False, tracking=False, thresholds_calibrated=False))
+    detector = SegmentDetector()
+    boundaries = [0]
+    rows = []
+    with tarfile.open(source) as packed, (result / 'scores.jsonl').open('w') as log:
+        manifest = json.load(packed.extractfile('office/manifest.json'))['inputs']
+        assert len(manifest) == 2585
+        for frame, entry in enumerate(manifest):
+            data = packed.extractfile('office/model_rgb/' + Path(entry['file']).name).read()
+            bgr = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+            assert bgr is not None, frame
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            assert hashlib.sha256(rgb.tobytes()).hexdigest() == entry['model_rgb_sha256'], frame
+            row, evidence = detector.step(rgb, frame)
+            row['timestamp'] = entry['timestamp']
+            rows.append(row)
+            log.write(json.dumps(row, allow_nan=False) + '\n')
+            log.flush()
+            if row['boundary']:
+                boundaries.append(frame)
+                anchor = row['anchor_frame']
+                # Save the source pair and verified matches for every decision.
+                anchor_data = packed.extractfile('office/model_rgb/' +
+                    Path(manifest[anchor]['file']).name).read()
+                (result / f'boundary_{frame:04d}_anchor.png').write_bytes(anchor_data)
+                (result / f'boundary_{frame:04d}_current.png').write_bytes(data)
+                np.savez(result / f'boundary_{frame:04d}.npz', **evidence)
+                print('SEGMENT BOUNDARY', frame, 'anchor', anchor, 'inliers', row['inliers'],
+                      'cells', row['cells'], flush=True)
+    assert len(rows) == 2585
+    assert all(r['anchor_frame'] <= r['frame'] for r in rows)
+    seconds = np.array([r['seconds'] for r in rows])
+    write_json(result / 'summary.json', dict(frames=len(rows), boundaries=boundaries,
+        end_exclusive=len(rows), unknown_texture_frames=sum(
+            r['status'] == 'unknown_texture' for r in rows),
+        detector_seconds=float(seconds.sum()), median_ms=float(np.median(seconds) * 1000),
+        p99_ms=float(np.quantile(seconds, .99) * 1000),
+        execution_passed=True, boundary_quality_verified=False))
+    archive_directory(result, args.out / f'{args.tag}_segment_detector.tar')
+    (args.work / 'JOB_OK').write_text('Detector executed; boundary quality review pending\n')
+    print('SEGMENT DETECTOR COMPLETE:', len(rows), 'frames; boundaries', boundaries, flush=True)
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--work', type=Path, required=True)
+    parser.add_argument('--out', type=Path, required=True)
+    parser.add_argument('--tag', required=True)
+    main(parser.parse_args())
