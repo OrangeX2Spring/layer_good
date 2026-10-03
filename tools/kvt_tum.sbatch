@@ -445,10 +445,15 @@ elif [ "$MODE" = bridge-cameras ]; then
         --work "$WORK" --out "$OUT" --tag "$TAG" \
         2>&1 | tee "$WORK/context/bridge_cameras.log"
 elif [ "$MODE" = segment-detector ]; then
+    case "${2:-single}" in
+        single) DETECTOR_ARGS=() ;;
+        sweep) DETECTOR_ARGS=(--sweep) ;;
+        *) echo "Unknown segment-detector stage: $2" >&2; exit 2 ;;
+    esac
     "${CONTAINER[@]}" python "$REPO/tools/test_kvt_segment_detector.py" \
         2>&1 | tee "$WORK/context/segment_detector_contracts.log"
     "${CONTAINER[@]}" python "$REPO/tools/kvt_segment_detector.py" \
-        --work "$WORK" --out "$OUT" --tag "$TAG" \
+        --work "$WORK" --out "$OUT" --tag "$TAG" "${DETECTOR_ARGS[@]}" \
         2>&1 | tee "$WORK/context/segment_detector.log"
 elif [ "$MODE" = reanchor-maps ]; then
     "${CONTAINER[@]}" python "$REPO/tools/test_kvt_handoff.py" \

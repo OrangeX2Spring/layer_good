@@ -18,10 +18,13 @@ SOURCE_SHA256 = '9ecd7546a56f2135bfbfc2d33a1be4de45c1670cb8cf56e1bedf2639a2933b3
 POLICY = dict(features=1000, ratio=.75, ransac_pixels=2., minimum_features=40,
               minimum_inliers=20, grid=4, minimum_cells=4,
               persistence=5, minimum_segment_frames=50)
+INLIER_THRESHOLDS = (10, 15, 20, 25, 30)
 
 
 class SegmentDetector:
-    def __init__(self):
+    def __init__(self, minimum_inliers=20):
+        assert minimum_inliers in INLIER_THRESHOLDS
+        self.minimum_inliers = minimum_inliers
         self.orb = cv2.ORB_create(nfeatures=POLICY['features'])
         self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
         self.anchor = None
@@ -81,7 +84,7 @@ class SegmentDetector:
                 grid = POLICY['grid']
                 cells = np.floor(target[inliers] * [grid / w, grid / h]).astype(int)
                 occupied = len(np.unique(cells, axis=0))
-                low = int(inliers.sum()) < POLICY['minimum_inliers'] or occupied < POLICY['minimum_cells']
+                low = int(inliers.sum()) < self.minimum_inliers or occupied < POLICY['minimum_cells']
                 eligible = frame - anchor_frame >= POLICY['minimum_segment_frames']
                 self.low_run = self.low_run + 1 if low and eligible else 0
                 boundary = self.low_run >= POLICY['persistence']
@@ -97,24 +100,19 @@ class SegmentDetector:
         return row, evidence
 
 
-def main(args):
-    cv2.setNumThreads(1)
+def run_policy(args, minimum_inliers):
+    # Independent RNG and anchor history per arm; thresholds change future anchors.
     cv2.setRNGSeed(0)
-    source = args.out / SOURCE
-    digest = hashlib.sha256()
-    with source.open('rb') as stream:
-        for chunk in iter(lambda: stream.read(8388608), b''):
-            digest.update(chunk)
-    assert digest.hexdigest() == SOURCE_SHA256, 'Input archive differs from reviewed 26127'
-    result = args.work / 'runs' / 'segment_detector'
+    name = f'segment_detector_inliers{minimum_inliers}' if args.sweep else 'segment_detector'
+    result = args.work / 'runs' / name
     result.mkdir(parents=True)
-    write_json(result / 'config.json', dict(policy=POLICY, source=SOURCE,
+    write_json(result / 'config.json', dict(policy=dict(POLICY, minimum_inliers=minimum_inliers), source=SOURCE,
         source_sha256=SOURCE_SHA256, opencv=cv2.__version__, seed=0, threads=1,
         causal=True, gt_used=False, tracking=False, thresholds_calibrated=False))
-    detector = SegmentDetector()
+    detector = SegmentDetector(minimum_inliers)
     boundaries = [0]
     rows = []
-    with tarfile.open(source) as packed, (result / 'scores.jsonl').open('w') as log:
+    with tarfile.open(args.out / SOURCE) as packed, (result / 'scores.jsonl').open('w') as log:
         manifest = json.load(packed.extractfile('office/manifest.json'))['inputs']
         assert len(manifest) == 2585
         for frame, entry in enumerate(manifest):
@@ -137,20 +135,42 @@ def main(args):
                 (result / f'boundary_{frame:04d}_anchor.png').write_bytes(anchor_data)
                 (result / f'boundary_{frame:04d}_current.png').write_bytes(data)
                 np.savez(result / f'boundary_{frame:04d}.npz', **evidence)
-                print('SEGMENT BOUNDARY', frame, 'anchor', anchor, 'inliers', row['inliers'],
+                print('SEGMENT BOUNDARY', frame, 'threshold', minimum_inliers,
+                      'anchor', anchor, 'inliers', row['inliers'],
                       'cells', row['cells'], flush=True)
     assert len(rows) == 2585
     assert all(r['anchor_frame'] <= r['frame'] for r in rows)
     seconds = np.array([r['seconds'] for r in rows])
-    write_json(result / 'summary.json', dict(frames=len(rows), boundaries=boundaries,
+    summary = dict(minimum_inliers=minimum_inliers, frames=len(rows), boundaries=boundaries,
         end_exclusive=len(rows), unknown_texture_frames=sum(
             r['status'] == 'unknown_texture' for r in rows),
         detector_seconds=float(seconds.sum()), median_ms=float(np.median(seconds) * 1000),
         p99_ms=float(np.quantile(seconds, .99) * 1000),
-        execution_passed=True, boundary_quality_verified=False))
-    archive_directory(result, args.out / f'{args.tag}_segment_detector.tar')
+        segment_lengths=np.diff(boundaries + [len(rows)]).tolist(),
+        earliest_possible_cuts=sum(b - a == 54 for a, b in zip(boundaries[:-1], boundaries[1:])),
+        execution_passed=True, boundary_quality_verified=False)
+    write_json(result / 'summary.json', summary)
+    archive_directory(result, args.out / f'{args.tag}_{name}.tar')
+    print('SEGMENT DETECTOR COMPLETE:', len(rows), 'frames; threshold', minimum_inliers,
+          'boundaries', boundaries, flush=True)
+    return summary
+
+
+def main(args):
+    cv2.setNumThreads(1)
+    digest = hashlib.sha256()
+    with (args.out / SOURCE).open('rb') as stream:
+        for chunk in iter(lambda: stream.read(8388608), b''):
+            digest.update(chunk)
+    assert digest.hexdigest() == SOURCE_SHA256, 'Input archive differs from reviewed 26127'
+    thresholds = INLIER_THRESHOLDS if args.sweep else (20,)
+    summaries = [run_policy(args, threshold) for threshold in thresholds]
+    if args.sweep:
+        write_json(args.work / 'segment_detector_sweep.json', dict(
+            varied_parameter='minimum_inliers', thresholds=thresholds, summaries=summaries,
+            tracking_test_pending=True, best_segmentation=None))
+        print('SEGMENT DETECTOR SWEEP COMPLETE:', len(summaries), 'policies', flush=True)
     (args.work / 'JOB_OK').write_text('Detector executed; boundary quality review pending\n')
-    print('SEGMENT DETECTOR COMPLETE:', len(rows), 'frames; boundaries', boundaries, flush=True)
 
 
 if __name__ == '__main__':
@@ -158,4 +178,6 @@ if __name__ == '__main__':
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--tag', required=True)
+    parser.add_argument('--sweep', action='store_true',
+                        help='Compare 10/15/20/25/30 inliers, other settings fixed')
     main(parser.parse_args())

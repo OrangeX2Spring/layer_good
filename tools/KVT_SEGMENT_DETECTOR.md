@@ -25,7 +25,7 @@ reliable boundary; its unknown interval must be reviewed, not silently treated
 as successful detection.
 
 All constants are initial engineering choices, not calibrated thresholds.
-There is one policy, no sweep. Image matches estimate visible overlap, not Pi3
+Image matches estimate visible overlap, not Pi3
 reliability. Repeated textures, blur and geometric degeneracy can mislead the
 detector; loss of overlap may also be too late for a reliable handoff. Reviewing
 these limitations is part of the first gate. The support-loss interpretation
@@ -90,3 +90,44 @@ execution completed; detection quality must be reviewed. Output:
 `kvt_tum_out/tum_<JOB>_segment_detector.tar`, plus context/all_runs tars and
 `kvt_tum_slurm-<JOB>.log`. Stop at the first failure and return its context.
 No successor tracking job is queued automatically.
+
+## User-selected four additional thresholds (2026-10-03)
+
+Compare minimum verified inliers **10, 15, 20, 25, 30**: four new thresholds plus
+the existing 20-match reference. Only the inlier threshold changes. The four-cell
+coverage rule, minimum features, ORB/RANSAC settings, five-frame persistence and
+minimum anchor age of 50 are fixed. This is an exploratory same-sequence comparison,
+not held-out threshold validation. Higher thresholds require more matches to keep
+a segment, but resulting anchors differ, so boundary counts need not be monotonic.
+
+Every arm reruns the causal detector with an independent anchor/counter and RNG
+seed 0. Do not apply four thresholds to the original run's scores: those scores
+used different anchors after its first cut. The 20-match arm is rerun so it has
+the same code/environment/provenance as the new arms; no baseline tracking rerun.
+
+From layer_good on head, use the established wrapped pull/run:
+
+```bash
+W='git -c fetch.recurseSubmodules=0 pull --ff-only'
+W="$W && bash tools/kvt_tum.sbatch segment-detector sweep"
+O=../kvt_tum_slurm-%j.log
+sbatch -p 24g -w muenchen --gres=gpu:1 --propagate=NONE -o "$O" --wrap="$W"
+```
+
+Expected: four contracts pass, five `SEGMENT DETECTOR COMPLETE` lines, then
+`SEGMENT DETECTOR SWEEP COMPLETE: 5 policies` and `JOB OK`. Save one archive per
+arm: `tum_<JOB>_segment_detector_inliers<THRESHOLD>.tar`. Each summary also reports
+segment lengths and cuts at the earliest possible age (54 frames); the context
+contains `segment_detector_sweep.json` with all five summaries. Timing is measured
+sequentially per arm and includes feature extraction, not IO or Pi3 inference.
+
+Review execution, candidate boundary evidence, unknown intervals and cost before
+tracking integration. Then test all five segmentations with the same reanchor
+mechanism, same pixels/seed/checkpoint and one full-sequence alignment, reporting
+ATE, translation RPE, translation p99, seams and total detector+tracking cost.
+Preserve the continuous within-5%-native target for all three headline metrics.
+If several arms pass, prefer the fastest measured end-to-end run; if none pass,
+report tradeoffs instead of declaring the fewest-cuts arm the winner. A shorter
+final segment may not reach the b+49 connection; that must be handled explicitly
+before tracking integration, not silently dropped. No tracking successor is queued
+by this diagnostic. Tracking integration and its CAMP verification remain pending.
