@@ -2,7 +2,7 @@
 import unittest
 import weakref
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 import numpy as np
 import torch
@@ -22,7 +22,7 @@ def pose(angle, position):
 class ReanchorTests(unittest.TestCase):
     def test_short_final_segment_connects_at_eof(self):
         class LocalMap:
-            def __init__(self, model, mode, log, save):
+            def __init__(self, model, mode, log, save, query_executor=None):
                 self.model = model
                 self.transform = (torch.tensor(1., dtype=torch.float64),
                                   torch.eye(3, dtype=torch.float64), torch.zeros(3, dtype=torch.float64))
@@ -32,7 +32,7 @@ class ReanchorTests(unittest.TestCase):
                 self.model.cache = {1: {'k': torch.ones(4)}}
                 return np.eye(4, dtype=np.float32)
 
-            def step(self, image, frame, update=True):
+            def step(self, image, frame, update=True, dense_query=False):
                 return np.eye(4, dtype=np.float32)
 
             def query_geometry(self, image, frame):
@@ -99,10 +99,12 @@ class ReanchorTests(unittest.TestCase):
 
         tracker.reconstruct = reconstruct
         image = np.zeros((28, 28, 3), dtype=np.uint8)
+        tracker.query_executor = Mock()
         with patch('torch.cuda.synchronize'), patch('kv_tracker.map_handoff.pi3_inference',
                 return_value=torch.eye(4)[None, None]):
             tracker.bootstrap(image)
-            tracker.step(image, 49, update=False)
+            tracker.step(image, 49, update=False, dense_query=True)
+        tracker.query_executor.forward.assert_not_called()
         self.assertEqual(calls, ['bootstrap'])
         self.assertEqual(tracker.ids, [0])
 
@@ -135,7 +137,7 @@ class ReanchorTests(unittest.TestCase):
         old_b, new_b = pose(.4, [1., 2., 3.]), pose(-.3, [.2, -.1, .5])
 
         class LocalMap:
-            def __init__(self, model, mode, log, save):
+            def __init__(self, model, mode, log, save, query_executor=None):
                 self.model = model
                 self.transform = (torch.tensor(1., dtype=torch.float64),
                                   torch.eye(3, dtype=torch.float64), torch.zeros(3, dtype=torch.float64))
@@ -145,7 +147,7 @@ class ReanchorTests(unittest.TestCase):
                 self.model.cache = {1: {'k': torch.ones(4)}}
                 return new_b if int(image[0, 0, 0]) == 125 else np.eye(4, dtype=np.float32)
 
-            def step(self, image, frame, update=True):
+            def step(self, image, frame, update=True, dense_query=False):
                 if frame == 49:
                     self.images, self.ids = [self.images[0], image], [0, 49]
                     self.model.cache = {1: {'k': torch.ones(8)}}

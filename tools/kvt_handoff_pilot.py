@@ -26,6 +26,12 @@ def arm(config_path):
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     model = move_pi3_mlps_to_bfloat32(load_pi3_from_pretrained().eval())
+    executor = None
+    if config.get('query_method'):
+        import os
+        from kv_tracker.query_acceleration import QueryAcceleration
+        executor = QueryAcceleration(config['query_method'],
+            os.environ.get('KVT_GRAPH_ROPE_BUILD'), config.get('query_checked', False))
     rows = []
 
     def log(row):
@@ -38,7 +44,7 @@ def arm(config_path):
         np.savez(result / 'bridge_evidence.npz', **evidence)
 
     with (result / 'inference.jsonl').open('w') as stream, torch.inference_mode():
-        tracker = MapHandoff(model, config['mode'], log, save_bridge)
+        tracker = MapHandoff(model, config['mode'], log, save_bridge, query_executor=executor)
         torch.cuda.reset_peak_memory_stats()
         torch.cuda.synchronize()
         started = time.perf_counter()
@@ -90,6 +96,8 @@ def arm(config_path):
                 write_json(result / 'transition_errors.json', dict(
                     alignment='same full-window Sim(3); no transition refit', windows=transitions))
         write_json(result / 'metrics.json', metrics)
+        if executor is not None:
+            write_json(result / 'query_execution.json', executor.summary())
         write_json(result / 'environment.json', dict(torch=torch.__version__, cuda=torch.version.cuda,
             gpu=torch.cuda.get_device_name(), seed=0, resize_dim=308))
 

@@ -145,6 +145,13 @@ fi
 if [ "$MODE" = segment-detector ]; then
     cp "$REPO/tools/kvt_segment_detector.py" "$REPO/tools/test_kvt_segment_detector.py" \
        "$REPO/tools/KVT_SEGMENT_DETECTOR.md" "$WORK/context/"
+    if [ "${2:-single}" = overnight ]; then
+        cp "$REPO/tools/kvt_query_acceleration.py" "$REPO/tools/test_kvt_query_acceleration.py" \
+           "$REPO/tools/kvt_handoff_pilot.py" "$REPO/tools/kvt_reanchor_maps.py" \
+           "$REPO/tools/kvt_bridge_cameras.py" "$REPO/tools/test_kvt_scene_modules.py" \
+           "$REPO/tools/test_kvt_handoff.py" "$REPO/tools/test_kvt_reanchor.py" \
+           "$REPO/tools/KVT_QUERY_ACCELERATION.md" "$WORK/context/"
+    fi
     if [ "${2:-single}" = compare ]; then
         cp "$REPO/tools/kvt_segment_reanchor.py" "$REPO/tools/kvt_reanchor_maps.py" \
            "$REPO/tools/kvt_handoff_pilot.py" "$REPO/tools/test_kvt_handoff.py" \
@@ -228,6 +235,11 @@ fi
 podman image inspect localhost/kvt > "$WORK/context/container.json"
 THIRDPARTY="$REPO/kv_tracker/thirdparty"
 EXTRA_ENV=()
+if [ "$MODE" = segment-detector ] && [ "${2:-single}" = overnight ]; then
+    # Established muenchen RTX A5000 target; compile only in the allocation.
+    EXTRA_ENV=(-e "KVT_GRAPH_ROPE_BUILD=$WORK/graph_rope_build"
+               -e TORCH_CUDA_ARCH_LIST=8.6 -e MAX_JOBS=1)
+fi
 if [ "$MODE" = adaptive-tokens ]; then
     EXTRA_ENV=(-e CUBLAS_WORKSPACE_CONFIG=:4096:8)
     if [ "${2:-gate}" = graph ] || [ "${2:-gate}" = graph-track ]; then
@@ -454,6 +466,7 @@ elif [ "$MODE" = segment-detector ]; then
     case "${2:-single}" in
         single) DETECTOR_ARGS=() ;;
         flow) DETECTOR_ARGS=(--flow) ;;
+        overnight) DETECTOR_ARGS=(--flow) ;;
         sweep|compare) DETECTOR_ARGS=(--sweep) ;;
         *) echo "Unknown segment-detector stage: $2" >&2; exit 2 ;;
     esac
@@ -468,6 +481,23 @@ elif [ "$MODE" = segment-detector ]; then
     "${CONTAINER[@]}" python "$REPO/tools/kvt_segment_detector.py" \
         --work "$WORK" --out "$OUT" --tag "$TAG" "${DETECTOR_ARGS[@]}" \
         2>&1 | tee "$WORK/context/segment_detector.log"
+    if [ "${2:-single}" = overnight ]; then
+        rm "$WORK/JOB_OK"
+        "${CONTAINER[@]}" python "$REPO/tools/test_kvt_scene_modules.py" \
+            GraphContracts.test_rope_stream_capture \
+            2>&1 | tee "$WORK/context/rope_contracts.log"
+        "${CONTAINER[@]}" python "$REPO/tools/test_kvt_handoff.py" \
+            2>&1 | tee "$WORK/context/handoff_contracts.log"
+        "${CONTAINER[@]}" python "$REPO/tools/test_kvt_reanchor.py" \
+            2>&1 | tee "$WORK/context/reanchor_contracts.log"
+        "${CONTAINER[@]}" python "$REPO/tools/test_kvt_query_acceleration.py" \
+            2>&1 | tee "$WORK/context/query_contracts.log"
+        "${CONTAINER[@]}" python "$REPO/tools/kvt_query_acceleration.py" \
+            --work "$WORK" --out "$OUT" --tag "$TAG" \
+            2>&1 | tee "$WORK/context/query_comparison.log"
+        echo 'Independent flow pilot and query experiments complete; inspect verdicts' > "$WORK/JOB_OK"
+        echo 'OVERNIGHT INDEPENDENT EXPERIMENTS COMPLETE'
+    fi
     if [ "${2:-single}" = compare ]; then
         "${CONTAINER[@]}" python "$REPO/tools/kvt_segment_reanchor.py" \
             --work "$WORK" --out "$OUT" --tag "$TAG" \

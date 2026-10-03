@@ -2,6 +2,11 @@
 
 ## Optimization after 26159: sequential anchor tracks (flow pilot)
 
+For the user-selected overnight batch with independent graph and query-half
+experiments, use [KVT_QUERY_ACCELERATION.md](KVT_QUERY_ACCELERATION.md):
+`segment-detector overnight`. This still reviews flow boundaries before tracking;
+the independent query runs keep native cache/keyframes and use no segmentation.
+
 26159 does not establish that segmentation cannot improve. It tested raw ORB
 match counts to a distant anchor; changing that count alone left the signal
 unchanged. Inspected boundary169 still shows much of the anchor table/objects;
