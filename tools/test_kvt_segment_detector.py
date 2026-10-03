@@ -94,6 +94,18 @@ class DetectorContracts(unittest.TestCase):
                 self.assertEqual(row['boundary'], detector.minimum_inliers > 20)
         self.assertEqual([d.anchor[0] for d in detectors], [0, 0, 0, 54, 54])
 
+    def test_maximum_age_cuts_current_frame_even_without_texture(self):
+        image = np.zeros_like(self.image)
+        for detector in (FlowSegmentDetector(maximum_segment_frames=75),
+                         SegmentDetector(35, maximum_segment_frames=75)):
+            for frame in range(76):
+                row, _ = detector.step(image, frame)
+                self.assertEqual(row['boundary'], frame == 75)
+            self.assertEqual(row['status'], 'maximum_age')
+            row, _ = detector.step(image, 76)
+            self.assertEqual(row['anchor_frame'], 75)
+            self.assertFalse(row['boundary'])
+
     def test_flow_tracks_gradual_motion_and_checks_prefix_causality(self):
         images = [np.roll(self.image, shift, axis=1) for shift in range(12)]
         def run(frames):

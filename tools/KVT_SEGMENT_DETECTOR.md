@@ -290,3 +290,65 @@ native +2 policies,2585 frames each, then JOB OK. Verdict can still fail. Output
 segment_native, segment_reanchor_manual, segment_reanchor_flow, segment_comparison
 plus flow/ORB25 detector/context/all_runs archives. Inspect results before altering
 flow thresholds or bridge acceptance. Independent query/LoopCD methods absent.
+
+
+## Scope correction: human annotations stop at1000
+
+User correction2026-10-03: only boundaries through frame1000 were identified by
+human inspection. The legacy full list0/275/575/700/975/1400/2585 is not a valid
+full-sequence human reference. Withdraw that interpretation of26173; preserve
+its measured fixed-schedule execution as an artifact. A fair future human test
+uses first1000 frames with cuts275/575/700/975 and end1000, matching native and
+automatic evaluation on those same frames. No human arm enters the search below.
+
+## Bounded automatic calibration:50% margin or30 trials
+
+User-authorized2026-10-03. Stage optimize runs a fresh full2585-frame native
+reference, then at most30 segmentation/reanchor candidates. It stops immediately
+after the first arm with ATE, translation RPE and translation p99 each<=1.5 times
+fresh native, or after30 candidate trials. This supersedes the5% requirement for
+this calibration job only. Individual reanchor summaries still show historical
+5% diagnostics; segment_search/comparison.json is authoritative for the requested
+50% target. JOB OK also occurs after trial-limit exhaustion; inspect stop_reason.
+
+Candidate schedule, fixed before running: profiles ORB minimum inliers25/30/35
+and flow survivor fraction0.35/0.50/0.65, combined with maximum segment ages
+none/100/150/75/200, in age-major order. Other detector settings and reanchor
+bridge/refresh behavior remain fixed. The first candidate reproduces ORB25
+without age cap, the best prior ORB arm. Ages>=75 preserve the existing50-frame
+bootstrap/49-frame connection window. An age cap cuts at the current frame,
+even when texture is unknown; overlap decisions retain their persistence rule.
+Shorter age is motivated by26173 non-seam error and long-segment failures, not
+by a claim that particular caps are optimal. No graph/LoopCD combination.
+
+GT is used only by the offline evaluator to select/stop across completed trials.
+The tracker sees only pixels, current frame index, fixed policy and past state.
+This is same-sequence calibration, not held-out validation or deployment-ready
+threshold evidence. No guaranteed pass: search reports best worst-metric ratio
+when all30 fail. One ordered timing observation per arm, includes live detector
+and tracking. Accuracy misses continue; execution/provenance/nonfinite errors
+fail loudly rather than consuming a trial as a quality miss. No automatic reruns.
+
+Existing detector/handoff/reanchor contracts run first, plus search-controller
+contracts(first passing trial/all-three gate, bound exhaustion, exception
+propagation) and new current-frame age-cap reset contract. Inputs/checkpoint
+hashes, historical native reproduction and GT/reference associations are checked.
+Each candidate is a fresh process. Persist each trial archive and checkpoint
+summary after every completed candidate. Up to31 tracking runs including native.
+
+From CAMP head:
+
+```bash
+cd /mnt/projects/gr/3DRecon/layer_good
+W='git -c fetch.recurseSubmodules=0 pull --ff-only'
+W="$W && bash tools/kvt_tum.sbatch segment-detector optimize"
+O=/mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log
+sbatch -p 24g -w muenchen --gres=gpu:1 --propagate=NONE -o "$O" --wrap="$W"
+```
+
+Expected SEGMENT SEARCH TRIAL/RESULT for each candidate, SEGMENT SEARCH COMPLETE
+with target met true/false, then JOB OK. Outputs tum_<JOB>_search_native.tar,
+_search_trial_<NN>.tar and _segment_search.tar plus context/all_runs. Source code
+and tested policies recorded; best and passing trials remain independently
+reviewable. Runtime verification pending. Read completed results before further
+optimization. No automatic held-out or combination stage behind this search.

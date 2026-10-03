@@ -143,6 +143,9 @@ if [ "$MODE" = bridge-cameras ]; then
        "$REPO/tools/kvt_office_segments.py" "$WORK/context/"
 fi
 if [ "$MODE" = segment-detector ]; then
+    if [ "${2:-single}" = optimize ]; then
+        cp "$REPO/tools/kvt_segment_search.py" "$REPO/tools/test_kvt_segment_search.py" "$WORK/context/"
+    fi
     cp "$REPO/tools/kvt_segment_detector.py" "$REPO/tools/test_kvt_segment_detector.py" \
        "$REPO/tools/KVT_SEGMENT_DETECTOR.md" "$WORK/context/"
     if [[ "${2:-single}" = overnight || "${2:-single}" = query-contract || "${2:-single}" = query-run ]]; then
@@ -152,7 +155,7 @@ if [ "$MODE" = segment-detector ]; then
            "$REPO/tools/test_kvt_handoff.py" "$REPO/tools/test_kvt_reanchor.py" \
            "$REPO/tools/KVT_QUERY_ACCELERATION.md" "$WORK/context/"
     fi
-    if [[ "${2:-single}" = compare || "${2:-single}" = flow-compare ]]; then
+    if [[ "${2:-single}" = compare || "${2:-single}" = flow-compare || "${2:-single}" = optimize ]]; then
         cp "$REPO/tools/kvt_segment_reanchor.py" "$REPO/tools/kvt_reanchor_maps.py" \
            "$REPO/tools/kvt_handoff_pilot.py" "$REPO/tools/test_kvt_handoff.py" \
            "$REPO/tools/test_kvt_reanchor.py" "$REPO/tools/kvt_bridge_cameras.py" \
@@ -467,19 +470,19 @@ elif [ "$MODE" = segment-detector ]; then
         single) DETECTOR_ARGS=() ;;
         flow|flow-compare) DETECTOR_ARGS=(--flow) ;;
         overnight) DETECTOR_ARGS=(--flow) ;;
-        query-contract|query-run) DETECTOR_ARGS=() ;;
+        query-contract|query-run|optimize) DETECTOR_ARGS=() ;;
         sweep|compare) DETECTOR_ARGS=(--sweep) ;;
         *) echo "Unknown segment-detector stage: $2" >&2; exit 2 ;;
     esac
     "${CONTAINER[@]}" python "$REPO/tools/test_kvt_segment_detector.py" \
         2>&1 | tee "$WORK/context/segment_detector_contracts.log"
-    if [[ "${2:-single}" = compare || "${2:-single}" = flow-compare ]]; then
+    if [[ "${2:-single}" = compare || "${2:-single}" = flow-compare || "${2:-single}" = optimize ]]; then
         "${CONTAINER[@]}" python "$REPO/tools/test_kvt_handoff.py" \
             2>&1 | tee "$WORK/context/handoff_contracts.log"
         "${CONTAINER[@]}" python "$REPO/tools/test_kvt_reanchor.py" \
             2>&1 | tee "$WORK/context/reanchor_contracts.log"
     fi
-    if [[ "${2:-single}" != query-contract && "${2:-single}" != query-run ]]; then
+    if [[ "${2:-single}" != query-contract && "${2:-single}" != query-run && "${2:-single}" != optimize ]]; then
     "${CONTAINER[@]}" python "$REPO/tools/kvt_segment_detector.py" \
         --work "$WORK" --out "$OUT" --tag "$TAG" "${DETECTOR_ARGS[@]}" \
         2>&1 | tee "$WORK/context/segment_detector.log"
@@ -510,7 +513,13 @@ elif [ "$MODE" = segment-detector ]; then
             echo 'QUERY RETRY EXPERIMENTS COMPLETE'
         fi
     fi
-    if [[ "${2:-single}" = compare || "${2:-single}" = flow-compare ]]; then
+    if [ "${2:-single}" = optimize ]; then
+        "${CONTAINER[@]}" python "$REPO/tools/test_kvt_segment_search.py" \
+            2>&1 | tee "$WORK/context/search_contracts.log"
+        "${CONTAINER[@]}" python "$REPO/tools/kvt_segment_search.py" \
+            --work "$WORK" --out "$OUT" --tag "$TAG" \
+            2>&1 | tee "$WORK/context/segment_search.log"
+    elif [[ "${2:-single}" = compare || "${2:-single}" = flow-compare ]]; then
         COMPARE_ARGS=()
         if [ "${2:-single}" = flow-compare ]; then COMPARE_ARGS=(--flow-compare); fi
         "${CONTAINER[@]}" python "$REPO/tools/kvt_segment_reanchor.py" \

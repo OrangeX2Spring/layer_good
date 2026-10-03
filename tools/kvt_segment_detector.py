@@ -28,7 +28,11 @@ FLOW_POLICY = dict(corners_per_cell=20, quality=.01, minimum_distance=5,
 
 class FlowSegmentDetector:
     """Retain original anchor feature identities through consecutive frames."""
-    def __init__(self):
+    def __init__(self, surviving_fraction=.25, maximum_segment_frames=None):
+        assert 0 < surviving_fraction <= 1
+        assert maximum_segment_frames is None or maximum_segment_frames >= 50
+        self.surviving_fraction = surviving_fraction
+        self.maximum_segment_frames = maximum_segment_frames
         self.previous = None
         self.last_frame = -1
         self.low_run = 0
@@ -92,12 +96,15 @@ class FlowSegmentDetector:
             status = 'unknown_texture'
             self.low_run = 0
         elif status != 'bootstrap':
-            low = (fraction < FLOW_POLICY['surviving_fraction']
+            low = (fraction < self.surviving_fraction
                    or coverage < FLOW_POLICY['surviving_cell_fraction'])
             status = 'low_overlap' if low else 'supported'
             eligible = frame - self.anchor_frame >= FLOW_POLICY['minimum_segment_frames']
             self.low_run = self.low_run + 1 if low and eligible else 0
         boundary = self.low_run >= FLOW_POLICY['persistence']
+        if self.maximum_segment_frames is not None and frame - self.anchor_frame >= self.maximum_segment_frames:
+            boundary = True
+            status = 'maximum_age'
         row = dict(frame=frame, anchor_frame=self.anchor_frame,
                    features=len(self.points), anchor_features=self.initial_features,
                    ratio_matches=len(self.points), inliers=len(self.points), cells=cells,
@@ -113,8 +120,10 @@ class FlowSegmentDetector:
 
 
 class SegmentDetector:
-    def __init__(self, minimum_inliers=20):
-        assert minimum_inliers in INLIER_THRESHOLDS
+    def __init__(self, minimum_inliers=20, maximum_segment_frames=None):
+        assert isinstance(minimum_inliers, int) and minimum_inliers > 0
+        assert maximum_segment_frames is None or maximum_segment_frames >= 50
+        self.maximum_segment_frames = maximum_segment_frames
         self.minimum_inliers = minimum_inliers
         self.orb = cv2.ORB_create(nfeatures=POLICY['features'])
         self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
@@ -187,6 +196,10 @@ class SegmentDetector:
                     # Commit at the current frame, never backdate using future evidence.
                     self.anchor = (frame, points, descriptors)
                     self.low_run = 0
+        if self.maximum_segment_frames is not None and frame - row['anchor_frame'] >= self.maximum_segment_frames and not row['boundary']:
+            row.update(boundary=True, status='maximum_age')
+            self.anchor = (frame, points, descriptors)
+            self.low_run = 0
         row['seconds'] = time.perf_counter() - started
         return row, evidence
 

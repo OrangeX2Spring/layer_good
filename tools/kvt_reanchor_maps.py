@@ -52,15 +52,22 @@ def main(args):
 
     boundaries = list(BOUNDARIES)
     detector = None
-    if args.segmentation is not None:
+    if args.segmentation is not None or args.detector_config is not None:
         from kvt_segment_detector import SegmentDetector, FlowSegmentDetector, POLICY, FLOW_POLICY
-        segmentation = json.loads(args.segmentation.read_text())
-        expected_rows = [json.loads(line) for line in
-                         args.segmentation.with_name('scores.jsonl').read_text().splitlines()]
-        assert segmentation['frames'] == len(expected_rows) == 2585
+        segmentation = json.loads((args.segmentation or args.detector_config).read_text())
+        expected_rows = None
+        if args.segmentation is not None:
+            expected_rows = [json.loads(line) for line in
+                             args.segmentation.with_name('scores.jsonl').read_text().splitlines()]
+            assert segmentation['frames'] == len(expected_rows) == 2585
         flow = segmentation['detector'] == 'flow'
-        detector = FlowSegmentDetector() if flow else SegmentDetector(segmentation['minimum_inliers'])
-        detector_policy = FLOW_POLICY if flow else dict(POLICY, minimum_inliers=segmentation['minimum_inliers'])
+        assert segmentation['detector'] in ('flow', 'orb')
+        maximum = segmentation.get('maximum_segment_frames')
+        detector = FlowSegmentDetector(segmentation.get('surviving_fraction', .25), maximum) \
+            if flow else SegmentDetector(segmentation['minimum_inliers'], maximum)
+        detector_policy = dict(FLOW_POLICY, surviving_fraction=detector.surviving_fraction) if flow \
+            else dict(POLICY, minimum_inliers=segmentation['minimum_inliers'])
+        detector_policy['maximum_segment_frames'] = maximum
         cv2.setNumThreads(1)
         cv2.setRNGSeed(0)
         boundaries = [0, 2585]  # Append only when the live detector triggers.
@@ -107,8 +114,9 @@ def main(args):
             if detector is not None:
                 decision, _ = detector.step(image, frame)
                 # Saved decisions are assertions only, never inputs to the live policy.
-                assert {k: v for k, v in decision.items() if k != 'seconds'} == {
-                    k: v for k, v in expected_rows[frame].items() if k not in ('seconds', 'timestamp')}, frame
+                if expected_rows is not None:
+                    assert {k: v for k, v in decision.items() if k != 'seconds'} == {
+                        k: v for k, v in expected_rows[frame].items() if k not in ('seconds', 'timestamp')}, frame
                 detector_rows.append(decision)
                 if decision['boundary']:
                     boundaries.insert(-1, frame)
@@ -122,7 +130,8 @@ def main(args):
         timing['synchronous_frames_per_second'] = len(local_poses) / timing['tracking_seconds']
         timing['includes'] = 'pixels, hashing, live detector, tracking, geometry, bridge and logging; excludes load/evaluation'
     if detector is not None:
-        assert boundaries == segmentation['boundaries'] + [2585]
+        if expected_rows is not None:
+            assert boundaries == segmentation['boundaries'] + [2585]
         with (result / 'segmentation_live.jsonl').open('w') as stream:
             for row in detector_rows:
                 stream.write(json.dumps(row, allow_nan=False) + '\n')
@@ -184,6 +193,8 @@ if __name__ == '__main__':
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--tag', required=True)
     parser.add_argument('--inputs', type=Path)
-    parser.add_argument('--segmentation', type=Path)
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument('--segmentation', type=Path)
+    selection.add_argument('--detector-config', type=Path)
     parser.add_argument('--name', default='reanchor_maps')
     main(parser.parse_args())
