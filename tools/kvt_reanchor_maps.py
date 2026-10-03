@@ -53,12 +53,14 @@ def main(args):
     boundaries = list(BOUNDARIES)
     detector = None
     if args.segmentation is not None:
-        from kvt_segment_detector import SegmentDetector, POLICY
+        from kvt_segment_detector import SegmentDetector, FlowSegmentDetector, POLICY, FLOW_POLICY
         segmentation = json.loads(args.segmentation.read_text())
         expected_rows = [json.loads(line) for line in
                          args.segmentation.with_name('scores.jsonl').read_text().splitlines()]
         assert segmentation['frames'] == len(expected_rows) == 2585
-        detector = SegmentDetector(segmentation['minimum_inliers'])
+        flow = segmentation['detector'] == 'flow'
+        detector = FlowSegmentDetector() if flow else SegmentDetector(segmentation['minimum_inliers'])
+        detector_policy = FLOW_POLICY if flow else dict(POLICY, minimum_inliers=segmentation['minimum_inliers'])
         cv2.setNumThreads(1)
         cv2.setRNGSeed(0)
         boundaries = [0, 2585]  # Append only when the live detector triggers.
@@ -70,8 +72,7 @@ def main(args):
         connection='pose-anchored at b, point-fit scale, always committed, 49-frame delay',
         history='old KV and images deleted at b', native=NATIVE, margin=MARGIN,
         short_tail='at EOF rebuild [anchor,last] and commit pending connection',
-        segmentation_policy=dict(POLICY, minimum_inliers=segmentation['minimum_inliers'])
-            if detector is not None else None,
+        segmentation_policy=detector_policy if detector is not None else None,
         gt_used_by_tracker=False, seed=0))
     torch.manual_seed(0)
     np.random.seed(0)

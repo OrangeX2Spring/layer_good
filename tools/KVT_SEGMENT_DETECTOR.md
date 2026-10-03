@@ -255,3 +255,38 @@ Expected final marker: `SEGMENT TRACKING COMPARISON COMPLETE: native + 5 policie
 comparisons, not an accuracy pass. Fastest observed arm meeting all three5% gates
 is recorded as best_passing_threshold; if none pass it is null and all tradeoffs
 remain visible. Review artifacts after the batch before claiming success.
+
+
+## Reviewed flow + matched human reanchoring comparison
+
+After26160 artifact review, stage flow-compare tests three full2585-frame runs:
+fresh native, existing human boundaries0/275/575/700/975/1400/end, and current
+causal flow boundaries. Flow and human arms use exactly the same ReanchorMaps
+refresh/bridge/retirement mechanism. Human boundaries are an offline reference,
+not an online method. No new threshold grid or bridge-policy change. This isolates
+boundary selection from reanchoring behavior; long segments remain a known risk.
+
+The detector pass uses the existing flow diagnostic, including ORB25 for boundary
+reference only. Tracking reruns flow live and asserts all non-timing decisions
+against first-pass scores. No saved/future decision drives the tracker. Native
+reproduction, source/checkpoint hashes, GT/reference associations and environment
+gates match the earlier compare stage. Timing includes live detection for flow;
+human arm has no detector cost. Report all metrics, seams, bridge validation,
+within-segment errors, memory and FPS. A faster/less fragmented detector alone
+does not establish better tracking.
+
+From the CAMP checkout on head after publication:
+
+```bash
+cd /mnt/projects/gr/3DRecon/layer_good
+W='git -c fetch.recurseSubmodules=0 pull --ff-only'
+W="$W && bash tools/kvt_tum.sbatch segment-detector flow-compare"
+O=/mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log
+sbatch -p 24g -w muenchen --gres=gpu:1 --propagate=NONE -o "$O" --wrap="$W"
+```
+
+Expected SEGMENT COMPARE manual/flow and SEGMENT TRACKING COMPARISON COMPLETE:
+native +2 policies,2585 frames each, then JOB OK. Verdict can still fail. Outputs
+segment_native, segment_reanchor_manual, segment_reanchor_flow, segment_comparison
+plus flow/ORB25 detector/context/all_runs archives. Inspect results before altering
+flow thresholds or bridge acceptance. Independent query/LoopCD methods absent.

@@ -46,13 +46,18 @@ def main(args):
     records = []
     comparison = args.work / 'runs' / 'segment_comparison'
     comparison.mkdir()
-    for threshold in INLIER_THRESHOLDS:
-        segmentation = args.work / 'runs' / f'segment_detector_inliers{threshold}' / 'summary.json'
-        name = f'segment_reanchor_inliers{threshold}'
+    policies = [('manual', None), ('flow', args.work / 'runs' / 'segment_detector_flow' / 'summary.json')] \
+        if args.flow_compare else [(threshold, args.work / 'runs' / f'segment_detector_inliers{threshold}' / 'summary.json')
+                                  for threshold in INLIER_THRESHOLDS]
+    for policy, segmentation in policies:
+        name = f'segment_reanchor_{policy}' if args.flow_compare else f'segment_reanchor_inliers{policy}'
         print('SEGMENT TRACKING RUN', name, ': 2585 frames', flush=True)
-        subprocess.run([sys.executable, str(tools / 'kvt_reanchor_maps.py'),
+        command = [sys.executable, str(tools / 'kvt_reanchor_maps.py'),
             '--work', str(args.work), '--out', str(args.out), '--tag', args.tag,
-            '--inputs', str(inputs), '--segmentation', str(segmentation), '--name', name], check=True)
+            '--inputs', str(inputs), '--name', name]
+        if segmentation is not None:
+            command += ['--segmentation', str(segmentation)]
+        subprocess.run(command, check=True)
         result = args.work / 'runs' / name
         summary = json.loads((result / 'summary.json').read_text())
         metrics, timing = summary['metrics'], summary['timing']
@@ -63,14 +68,15 @@ def main(args):
                 np.testing.assert_array_equal(current[key], reference[key])
         ratios = {key: metrics[key] / native_metrics[key] for key in keys}
         checks = {key: ratio <= MARGIN for key, ratio in ratios.items()}
-        record = dict(minimum_inliers=threshold, metrics=metrics, timing=timing,
+        record = dict(policy=policy, minimum_inliers=None if args.flow_compare else policy, metrics=metrics, timing=timing,
             native_ratios=ratios, native_checks=checks, objective_achieved=all(checks.values()),
             speedup=native_metrics['tracking_seconds'] / timing['tracking_seconds'],
-            cuts=len(summary['events']), live_segmentation_verified=True)
+            cuts=len(summary['events']), live_segmentation_verified=segmentation is not None,
+            manual_boundaries_are_offline_reference=segmentation is None)
         records.append(record)
         write_json(comparison / 'comparison.json', dict(native=native_metrics,
             historical_native=NATIVE, margin=MARGIN, records=records, complete=False))
-        print('SEGMENT COMPARE', threshold, 'ATE/RPE/p99 cm',
+        print('SEGMENT COMPARE', policy, 'ATE/RPE/p99 cm',
               [round(metrics[key] * 100, 3) for key in keys],
               'fps', round(timing['synchronous_frames_per_second'], 2),
               'within 5%', record['objective_achieved'], flush=True)
@@ -79,16 +85,18 @@ def main(args):
     write_json(comparison / 'comparison.json', dict(native=native_metrics, historical_native=NATIVE,
         margin=MARGIN, records=records, complete=True,
         best_passing_threshold=best['minimum_inliers'] if best else None,
+        best_passing_policy=best['policy'] if best else None,
         selection='fastest observed live detector+tracking loop among arms meeting all three 5% gates',
         caveat='one sequence, one timing observation per arm; no held-out validation or statistical speed claim'))
     archive_directory(comparison, args.out / f'{args.tag}_segment_comparison.tar')
-    sweep = json.loads((args.work / 'segment_detector_sweep.json').read_text())
+    sweep_path = args.work / ('segment_detector_flow_comparison.json' if args.flow_compare else 'segment_detector_sweep.json')
+    sweep = json.loads(sweep_path.read_text())
     sweep['tracking_test_pending'] = False
-    sweep['best_segmentation'] = best['minimum_inliers'] if best else None
-    write_json(args.work / 'segment_detector_sweep.json', sweep)
-    (args.work / 'JOB_OK').write_text('Six full tracking runs completed; read comparison verdicts\n')
-    print('SEGMENT TRACKING COMPARISON COMPLETE: native + 5 policies, 2585 frames each; '
-          'best passing threshold', best['minimum_inliers'] if best else None, flush=True)
+    sweep['best_segmentation'] = best['policy'] if best else None
+    write_json(sweep_path, sweep)
+    (args.work / 'JOB_OK').write_text('Full tracking comparisons completed; read verdicts\n')
+    print('SEGMENT TRACKING COMPARISON COMPLETE: native +', len(policies),
+          'policies, 2585 frames each; best passing policy', best['policy'] if best else None, flush=True)
 
 
 if __name__ == '__main__':
@@ -96,4 +104,5 @@ if __name__ == '__main__':
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--tag', required=True)
+    parser.add_argument('--flow-compare', action='store_true')
     main(parser.parse_args())

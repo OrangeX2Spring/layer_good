@@ -152,7 +152,7 @@ if [ "$MODE" = segment-detector ]; then
            "$REPO/tools/test_kvt_handoff.py" "$REPO/tools/test_kvt_reanchor.py" \
            "$REPO/tools/KVT_QUERY_ACCELERATION.md" "$WORK/context/"
     fi
-    if [ "${2:-single}" = compare ]; then
+    if [[ "${2:-single}" = compare || "${2:-single}" = flow-compare ]]; then
         cp "$REPO/tools/kvt_segment_reanchor.py" "$REPO/tools/kvt_reanchor_maps.py" \
            "$REPO/tools/kvt_handoff_pilot.py" "$REPO/tools/test_kvt_handoff.py" \
            "$REPO/tools/test_kvt_reanchor.py" "$REPO/tools/kvt_bridge_cameras.py" \
@@ -465,7 +465,7 @@ elif [ "$MODE" = bridge-cameras ]; then
 elif [ "$MODE" = segment-detector ]; then
     case "${2:-single}" in
         single) DETECTOR_ARGS=() ;;
-        flow) DETECTOR_ARGS=(--flow) ;;
+        flow|flow-compare) DETECTOR_ARGS=(--flow) ;;
         overnight) DETECTOR_ARGS=(--flow) ;;
         query-contract|query-run) DETECTOR_ARGS=() ;;
         sweep|compare) DETECTOR_ARGS=(--sweep) ;;
@@ -473,7 +473,7 @@ elif [ "$MODE" = segment-detector ]; then
     esac
     "${CONTAINER[@]}" python "$REPO/tools/test_kvt_segment_detector.py" \
         2>&1 | tee "$WORK/context/segment_detector_contracts.log"
-    if [ "${2:-single}" = compare ]; then
+    if [[ "${2:-single}" = compare || "${2:-single}" = flow-compare ]]; then
         "${CONTAINER[@]}" python "$REPO/tools/test_kvt_handoff.py" \
             2>&1 | tee "$WORK/context/handoff_contracts.log"
         "${CONTAINER[@]}" python "$REPO/tools/test_kvt_reanchor.py" \
@@ -510,9 +510,11 @@ elif [ "$MODE" = segment-detector ]; then
             echo 'QUERY RETRY EXPERIMENTS COMPLETE'
         fi
     fi
-    if [ "${2:-single}" = compare ]; then
+    if [[ "${2:-single}" = compare || "${2:-single}" = flow-compare ]]; then
+        COMPARE_ARGS=()
+        if [ "${2:-single}" = flow-compare ]; then COMPARE_ARGS=(--flow-compare); fi
         "${CONTAINER[@]}" python "$REPO/tools/kvt_segment_reanchor.py" \
-            --work "$WORK" --out "$OUT" --tag "$TAG" \
+            --work "$WORK" --out "$OUT" --tag "$TAG" "${COMPARE_ARGS[@]}" \
             2>&1 | tee "$WORK/context/segment_comparison.log"
     fi
 elif [ "$MODE" = reanchor-maps ]; then
