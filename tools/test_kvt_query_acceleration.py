@@ -16,8 +16,10 @@ class QueryContracts(unittest.TestCase):
         images = np.random.default_rng(17).integers(0, 256, (3, 266, 350, 3), dtype=np.uint8)
         with torch.inference_mode():
             dense = QueryAcceleration('graph', os.environ['KVT_GRAPH_ROPE_BUILD'], checked=True)
+            self.assertTrue(dense.executor.native_dense)
             half = QueryAcceleration('half')
             half_graph = QueryAcceleration('half_graph', os.environ['KVT_GRAPH_ROPE_BUILD'], checked=True)
+            self.assertFalse(half_graph.executor.native_dense)
             for bank in (1, 2):
                 for executor in (dense, half, half_graph):
                     executor.reset()

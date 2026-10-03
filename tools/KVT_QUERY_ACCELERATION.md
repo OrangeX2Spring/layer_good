@@ -83,3 +83,33 @@ Expected: detector contracts and ORB25/flow complete; stream/kernel, handoff,
 reanchor and query contracts pass; four QUERY COMPARE lines; QUERY COMPARISON
 COMPLETE; OVERNIGHT INDEPENDENT EXPERIMENTS COMPLETE; JOB OK. Stop at first failure
 and return context. Review archives before any combination or successor run.
+
+## 26160 fidelity repair and targeted retry
+
+26160 stopped at the synthetic query contract before query timing. Dense graph
+queries now use original Pi3 encoder/decode/camera-decoder computation, rather
+than forward_kept with an all-true mask. The camera head remains outside capture.
+Both native-versus-graph and eager-versus-replay tolerances remain1e-4; RoPE
+backend substitution remains exact. Half-query and legacy kept-graph paths are
+unchanged. This removes the alternative tensor assembly from the dense control;
+GPU equivalence remains pending. Do not infer the original discrepancy cause
+solely from this implementation change.
+
+Use segment-detector query-contract for the repair gate. It skips the detector
+pass and full query evaluation, runs stream/handoff/reanchor/query contracts,
+archives via the existing EXIT trap, and prints QUERY CONTRACT RETRY COMPLETE
+and JOB OK on success. Existing general setup/import checks still run.
+
+From the CAMP checkout on head, after publication:
+
+```bash
+W='git -c fetch.recurseSubmodules=0 pull --ff-only'
+W="$W && bash tools/kvt_tum.sbatch segment-detector query-contract"
+O=../kvt_tum_slurm-%j.log
+sbatch -p 24g -w muenchen --gres=gpu:1 --propagate=NONE -o "$O" --wrap="$W"
+```
+
+Review the contract log before full evaluation. After it passes, query-run is the
+same query-only stage with four full-sequence arms; it skips repeating the flow
+pilot. The original overnight stage remains available. LoopCD26161 isolated
+source and branches are unaffected.

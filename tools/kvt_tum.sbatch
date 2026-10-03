@@ -145,7 +145,7 @@ fi
 if [ "$MODE" = segment-detector ]; then
     cp "$REPO/tools/kvt_segment_detector.py" "$REPO/tools/test_kvt_segment_detector.py" \
        "$REPO/tools/KVT_SEGMENT_DETECTOR.md" "$WORK/context/"
-    if [ "${2:-single}" = overnight ]; then
+    if [[ "${2:-single}" = overnight || "${2:-single}" = query-contract || "${2:-single}" = query-run ]]; then
         cp "$REPO/tools/kvt_query_acceleration.py" "$REPO/tools/test_kvt_query_acceleration.py" \
            "$REPO/tools/kvt_handoff_pilot.py" "$REPO/tools/kvt_reanchor_maps.py" \
            "$REPO/tools/kvt_bridge_cameras.py" "$REPO/tools/test_kvt_scene_modules.py" \
@@ -235,7 +235,7 @@ fi
 podman image inspect localhost/kvt > "$WORK/context/container.json"
 THIRDPARTY="$REPO/kv_tracker/thirdparty"
 EXTRA_ENV=()
-if [ "$MODE" = segment-detector ] && [ "${2:-single}" = overnight ]; then
+if [ "$MODE" = segment-detector ] && [[ "${2:-single}" = overnight || "${2:-single}" = query-contract || "${2:-single}" = query-run ]]; then
     # Established muenchen RTX A5000 target; compile only in the allocation.
     EXTRA_ENV=(-e "KVT_GRAPH_ROPE_BUILD=$WORK/graph_rope_build"
                -e TORCH_CUDA_ARCH_LIST=8.6 -e MAX_JOBS=1)
@@ -467,6 +467,7 @@ elif [ "$MODE" = segment-detector ]; then
         single) DETECTOR_ARGS=() ;;
         flow) DETECTOR_ARGS=(--flow) ;;
         overnight) DETECTOR_ARGS=(--flow) ;;
+        query-contract|query-run) DETECTOR_ARGS=() ;;
         sweep|compare) DETECTOR_ARGS=(--sweep) ;;
         *) echo "Unknown segment-detector stage: $2" >&2; exit 2 ;;
     esac
@@ -478,11 +479,13 @@ elif [ "$MODE" = segment-detector ]; then
         "${CONTAINER[@]}" python "$REPO/tools/test_kvt_reanchor.py" \
             2>&1 | tee "$WORK/context/reanchor_contracts.log"
     fi
+    if [[ "${2:-single}" != query-contract && "${2:-single}" != query-run ]]; then
     "${CONTAINER[@]}" python "$REPO/tools/kvt_segment_detector.py" \
         --work "$WORK" --out "$OUT" --tag "$TAG" "${DETECTOR_ARGS[@]}" \
         2>&1 | tee "$WORK/context/segment_detector.log"
-    if [ "${2:-single}" = overnight ]; then
-        rm "$WORK/JOB_OK"
+    fi
+    if [[ "${2:-single}" = overnight || "${2:-single}" = query-contract || "${2:-single}" = query-run ]]; then
+        if [ "${2:-single}" = overnight ]; then rm "$WORK/JOB_OK"; fi
         "${CONTAINER[@]}" python "$REPO/tools/test_kvt_scene_modules.py" \
             GraphContracts.test_rope_stream_capture \
             2>&1 | tee "$WORK/context/rope_contracts.log"
@@ -492,11 +495,20 @@ elif [ "$MODE" = segment-detector ]; then
             2>&1 | tee "$WORK/context/reanchor_contracts.log"
         "${CONTAINER[@]}" python "$REPO/tools/test_kvt_query_acceleration.py" \
             2>&1 | tee "$WORK/context/query_contracts.log"
+        if [ "${2:-single}" = query-contract ]; then
+            echo 'Query contracts complete; full evaluation pending' > "$WORK/JOB_OK"
+            echo 'QUERY CONTRACT RETRY COMPLETE'
+            exit 0
+        fi
         "${CONTAINER[@]}" python "$REPO/tools/kvt_query_acceleration.py" \
             --work "$WORK" --out "$OUT" --tag "$TAG" \
             2>&1 | tee "$WORK/context/query_comparison.log"
-        echo 'Independent flow pilot and query experiments complete; inspect verdicts' > "$WORK/JOB_OK"
-        echo 'OVERNIGHT INDEPENDENT EXPERIMENTS COMPLETE'
+        echo 'Independent query experiments complete; inspect verdicts' > "$WORK/JOB_OK"
+        if [ "${2:-single}" = overnight ]; then
+            echo 'OVERNIGHT INDEPENDENT EXPERIMENTS COMPLETE'
+        else
+            echo 'QUERY RETRY EXPERIMENTS COMPLETE'
+        fi
     fi
     if [ "${2:-single}" = compare ]; then
         "${CONTAINER[@]}" python "$REPO/tools/kvt_segment_reanchor.py" \
