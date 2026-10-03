@@ -21,7 +21,7 @@ change; each retained global block reads its own original cache layer.
 | Arm | Query decoder blocks | Earlier reference | Guidance |
 |---|---:|---:|---:|
 | native |36, original Pi3 forward|none|none|
-| full |36, kept-path control|none|0|
+| full |36, native-path control|none|0|
 | full_guided |36|12|0.5|
 | reduced |24|none|0|
 | reduced_guided |24|12|0.5|
@@ -93,3 +93,27 @@ LOOPCD PILOT COMPLETE and JOB OK. Stop at first failure and return its context.
 Outputs in kvt_tum_out: `tum_<JOB>_loopcd_<ARM>.tar`, five `_prefix.tar` archives,
 `tum_<JOB>_loopcd_comparison.tar`, context and all_runs archives. Checkpoints and
 original input archives are borrowed hash-checked from26127, never changed.
+
+## Native-path repair after26161
+
+26161 failed its full-depth native-equivalence contract before pilot inference.
+The depth executor now calls original Pi3.forward for every arm. During a reduced
+query it temporarily exposes only the selected leading decoder blocks; native
+Pi3.decode chooses their final pair. Forward hooks retain the earlier pair and a
+camera-decoder pre-hook applies the declared contrast before the original readout.
+All hooks and the complete decoder are restored in finally before returning.
+Encoder, tensor assembly, positions, camera head and dense cache stay native.
+This avoids the alternate forward_kept computation; it does not establish why
+that path produced the observed numerical difference. The1e-4 gate is unchanged.
+Contracts also assert full decoder identity/length restoration after each query.
+
+For the first repair retry, use the isolated submission above with only its run
+line changed to:
+
+```bash
+W="$W && bash \$D/tools/kvt_tum.sbatch loopcd contract"
+```
+
+Expected LOOPCD DEPTH CONTRAST CONTRACT OK, LOOPCD CONTRACT RETRY COMPLETE and
+JOB OK. This exits before all pilot arms. Review that evidence before submitting
+loopcd pilot. Independent query-contract26162 source is unaffected.

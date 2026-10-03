@@ -13,6 +13,7 @@ class DepthContrastContracts(unittest.TestCase):
         torch.manual_seed(17)
         model = move_pi3_mlps_to_bfloat32(load_pi3_from_pretrained().eval())
         assert len(model.decoder) == 36
+        decoder = model.decoder
         images = np.random.default_rng(17).integers(0, 256, (2, 266, 350, 3), dtype=np.uint8)
         with torch.inference_mode():
             pi3_inference(model, [images], 'cuda', store_cache=True)
@@ -34,6 +35,8 @@ class DepthContrastContracts(unittest.TestCase):
                                         (DepthContrastQueries(24, 12, .5), 24)):
                     counts.clear()
                     pose = executor.forward(model, images[0], 'cuda')
+                    self.assertIs(model.decoder, decoder)
+                    self.assertEqual(len(model.decoder), 36)
                     self.assertEqual(len(counts), depth)
                     self.assertTrue(torch.isfinite(pose).all())
                 weak, strong, guided = seen
@@ -43,6 +46,8 @@ class DepthContrastContracts(unittest.TestCase):
             finally:
                 for handle in handles:
                     handle.remove()
+            restored = DepthContrastQueries(36).forward(model, images[0], 'cuda')
+            torch.testing.assert_close(restored, expected, rtol=1e-4, atol=1e-4)
             for i, row in cache.items():
                 for key, tensor in row.items():
                     self.assertTrue(torch.equal(model.cache[i][key], tensor))

@@ -472,8 +472,15 @@ elif [ "$MODE" = bridge-cameras ]; then
         --work "$WORK" --out "$OUT" --tag "$TAG" \
         2>&1 | tee "$WORK/context/bridge_cameras.log"
 elif [ "$MODE" = loopcd ]; then
+    case "${2:-pilot}" in pilot|contract) ;; *) echo "Unknown loopcd stage: $2" >&2; exit 2 ;; esac
     "${CONTAINER[@]}" python "$REPO/tools/test_kvt_loopcd.py" \
         2>&1 | tee "$WORK/context/loopcd_contracts.log"
+    if [ "${2:-pilot}" = contract ]; then
+        echo 'LoopCD contracts complete; pilot pending' > "$WORK/JOB_OK"
+        echo 'LOOPCD CONTRACT RETRY COMPLETE'
+        echo 'JOB OK'
+        exit 0
+    fi
     "${CONTAINER[@]}" python "$REPO/tools/kvt_loopcd.py" \
         --work "$WORK" --out "$OUT" --tag "$TAG" \
         2>&1 | tee "$WORK/context/loopcd_pilot.log"
