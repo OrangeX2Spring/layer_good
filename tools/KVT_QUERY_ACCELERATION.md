@@ -113,3 +113,11 @@ Review the contract log before full evaluation. After it passes, query-run is th
 same query-only stage with four full-sequence arms; it skips repeating the flow
 pilot. The original overnight stage remains available. LoopCD26161 isolated
 source and branches are unaffected.
+
+
+26162 passed native eager/backend checks but capture failed in Pi3.decode at its
+CPU-created special-position zeros copied to CUDA. The captured dense path now
+prepares fixed positions outside capture and mirrors native single-query decode
+with unchanged register repeat/concatenation, block calls, final pair and camera
+decoder. Native Pi3 remains the independent eager reference. Existing warmup and
+replay checks keep1e-4 tolerances. Repeat query-contract; GPU verification pending.
