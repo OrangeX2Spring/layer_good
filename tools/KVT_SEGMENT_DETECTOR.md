@@ -2,7 +2,8 @@
 
 User-selected scope, 2026-10-03: the full office sequence (2585 frames), causal
 decisions from current and past images only. First identify segmentation points;
-tracking with detected resets is a later, review-gated experiment.
+The user subsequently authorized all five segmentation+reanchor tests in the
+same batch (see `compare` below); the initial detector-only stages remain available.
 
 ## Mechanism
 
@@ -89,7 +90,7 @@ Expected: three contracts pass, zero or more `SEGMENT BOUNDARY` lines, then
 execution completed; detection quality must be reviewed. Output:
 `kvt_tum_out/tum_<JOB>_segment_detector.tar`, plus context/all_runs tars and
 `kvt_tum_slurm-<JOB>.log`. Stop at the first failure and return its context.
-No successor tracking job is queued automatically.
+The initial detector-only stage does not queue a successor tracking job.
 
 ## User-selected four additional thresholds (2026-10-03)
 
@@ -129,5 +130,72 @@ Preserve the continuous within-5%-native target for all three headline metrics.
 If several arms pass, prefer the fastest measured end-to-end run; if none pass,
 report tradeoffs instead of declaring the fewest-cuts arm the winner. A shorter
 final segment may not reach the b+49 connection; that must be handled explicitly
-before tracking integration, not silently dropped. No tracking successor is queued
-by this diagnostic. Tracking integration and its CAMP verification remain pending.
+before tracking integration, not silently dropped. The detector-only `sweep` stage
+does not dispatch tracking; use the user-authorized `compare` stage below.
+
+## Same batch: five segmentations + reanchor versus fresh native
+
+User-authorized 2026-10-03. `segment-detector compare` replaces the prior
+detector-only `sweep` submission for this experiment. No intermediate manual
+boundary review is required between the five segmentation passes and tracking.
+Contracts still run first; any execution/provenance/fidelity failure stops the job.
+
+One allocation runs the five detector passes, then a fresh full-office native
+MapHandoff run (existing `kvt_handoff_pilot.py --run` native path), then five fresh
+processes with the same reanchor+refresh mechanism. All six tracking runs cover
+2585 frames, resize308, seed0, same checkpoint, device and environment. Native
+retains its original anchor and appends every50 frames to cap20. Its ATE/RPE/p99
+must reproduce reviewed25680 to absolute1e-4m before the five reanchor runs start.
+This native rerun makes timing a same-allocation observation rather than a
+comparison between archived and current wall times.
+
+Each reanchor arm runs its detector **live**, independently, and asserts every
+non-timing decision against that threshold's first pass. Only live current/past
+decisions enter the tracker; stored expected decisions are assertions. Old-map
+images/KV are retired at each cut; a scheduled old-bank rebuild is skipped there
+so transition camera and dense geometry use the same cache. Each new map retains
+anchor+latest, refreshes every50 frames, restores first-rebuild scale and commits
+the pose-anchored connection at local49.
+
+At EOF only, an unfinished final segment rebuilds [anchor,last available frame]
+and commits with its actual shorter delay. A one-frame tail uses [anchor,anchor].
+No future image or backdated cut is used, and all saved local poses are kept.
+CAMP contracts cover tail lengths1/30/49 and suppression of retiring-bank rebuilds.
+The EOF pair supplies anchor geometry for the scale fit; it does not replace the
+tail's previously emitted bootstrap-cache local poses.
+
+Scoring uses one full-trajectory Sim(3), the same2583 GT-associated frames and2582
+RPE pairs, with exact association/reference-array equality against fresh native.
+The comparison records ATE, translation RPE/p99, seam errors, observed speedup,
+cache/peak GPU memory, cut count and each ≤1.05×fresh-native verdict. Individual
+reanchor summaries also retain the historical-native comparison; the combined
+`comparison.json` is authoritative for the **fresh-native** verdict.
+
+Tracking loop timing includes pixel loading/hash checks, live detector, geometry,
+bridge fitting and logging; excludes model load, staging and evaluation. The
+native helper uses the same instrumented loop timing scope but has its existing
+logging/bookkeeping. No claim of statistical speedup from one run; report measured
+FPS and scope. Bootstrap/query/rebuild/update timings overlap: never sum rebuild
+and update_total as independent costs.
+
+From layer_good on head, use the established allocation-wrapped pull/run:
+
+```bash
+W='git -c fetch.recurseSubmodules=0 pull --ff-only'
+W="$W && bash tools/kvt_tum.sbatch segment-detector compare"
+O=../kvt_tum_slurm-%j.log
+sbatch -p 24g -w muenchen --gres=gpu:1 --propagate=NONE -o "$O" --wrap="$W"
+```
+
+Requires both reviewed26127 input and context archives in kvt_tum_out; their hashes
+and checkpoint identity are checked before native tracking. No new downloads or
+container changes. The wrapper archives all new drivers/contracts with revisions.
+Additional outputs: `tum_<JOB>_segment_native.tar`, five
+`tum_<JOB>_segment_reanchor_inliers<THRESHOLD>.tar`, and
+`tum_<JOB>_segment_comparison.tar`, plus detector/context/all_runs archives.
+The comparison is checkpointed after each arm so partial failure retains evidence.
+Expected final marker: `SEGMENT TRACKING COMPARISON COMPLETE: native + 5 policies,
+2585 frames each`, then JOB OK. JOB OK requires all six tracking executions and
+comparisons, not an accuracy pass. Fastest observed arm meeting all three5% gates
+is recorded as best_passing_threshold; if none pass it is null and all tradeoffs
+remain visible. Review artifacts after the batch before claiming success.

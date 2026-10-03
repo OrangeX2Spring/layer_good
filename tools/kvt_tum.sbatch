@@ -145,6 +145,12 @@ fi
 if [ "$MODE" = segment-detector ]; then
     cp "$REPO/tools/kvt_segment_detector.py" "$REPO/tools/test_kvt_segment_detector.py" \
        "$REPO/tools/KVT_SEGMENT_DETECTOR.md" "$WORK/context/"
+    if [ "${2:-single}" = compare ]; then
+        cp "$REPO/tools/kvt_segment_reanchor.py" "$REPO/tools/kvt_reanchor_maps.py" \
+           "$REPO/tools/kvt_handoff_pilot.py" "$REPO/tools/test_kvt_handoff.py" \
+           "$REPO/tools/test_kvt_reanchor.py" "$REPO/tools/kvt_bridge_cameras.py" \
+           "$REPO/tools/kvt_office_segments.py" "$WORK/context/"
+    fi
 fi
 if [ "$MODE" = reanchor-maps ]; then
     cp "$REPO/tools/kvt_reanchor_maps.py" "$REPO/tools/KVT_REANCHOR_MAPS.md" \
@@ -447,14 +453,25 @@ elif [ "$MODE" = bridge-cameras ]; then
 elif [ "$MODE" = segment-detector ]; then
     case "${2:-single}" in
         single) DETECTOR_ARGS=() ;;
-        sweep) DETECTOR_ARGS=(--sweep) ;;
+        sweep|compare) DETECTOR_ARGS=(--sweep) ;;
         *) echo "Unknown segment-detector stage: $2" >&2; exit 2 ;;
     esac
     "${CONTAINER[@]}" python "$REPO/tools/test_kvt_segment_detector.py" \
         2>&1 | tee "$WORK/context/segment_detector_contracts.log"
+    if [ "${2:-single}" = compare ]; then
+        "${CONTAINER[@]}" python "$REPO/tools/test_kvt_handoff.py" \
+            2>&1 | tee "$WORK/context/handoff_contracts.log"
+        "${CONTAINER[@]}" python "$REPO/tools/test_kvt_reanchor.py" \
+            2>&1 | tee "$WORK/context/reanchor_contracts.log"
+    fi
     "${CONTAINER[@]}" python "$REPO/tools/kvt_segment_detector.py" \
         --work "$WORK" --out "$OUT" --tag "$TAG" "${DETECTOR_ARGS[@]}" \
         2>&1 | tee "$WORK/context/segment_detector.log"
+    if [ "${2:-single}" = compare ]; then
+        "${CONTAINER[@]}" python "$REPO/tools/kvt_segment_reanchor.py" \
+            --work "$WORK" --out "$OUT" --tag "$TAG" \
+            2>&1 | tee "$WORK/context/segment_comparison.log"
+    fi
 elif [ "$MODE" = reanchor-maps ]; then
     "${CONTAINER[@]}" python "$REPO/tools/test_kvt_handoff.py" \
         2>&1 | tee "$WORK/context/handoff_contracts.log"

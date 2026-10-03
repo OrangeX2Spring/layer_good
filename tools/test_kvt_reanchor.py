@@ -20,6 +20,50 @@ def pose(angle, position):
 
 
 class ReanchorTests(unittest.TestCase):
+    def test_short_final_segment_connects_at_eof(self):
+        class LocalMap:
+            def __init__(self, model, mode, log, save):
+                self.model = model
+                self.transform = (torch.tensor(1., dtype=torch.float64),
+                                  torch.eye(3, dtype=torch.float64), torch.zeros(3, dtype=torch.float64))
+
+            def bootstrap(self, image):
+                self.images, self.ids = [image], [0]
+                self.model.cache = {1: {'k': torch.ones(4)}}
+                return np.eye(4, dtype=np.float32)
+
+            def step(self, image, frame, update=True):
+                return np.eye(4, dtype=np.float32)
+
+            def query_geometry(self, image, frame):
+                return torch.ones(8, 8, 3), torch.eye(4, dtype=torch.float64), torch.ones(8, 8)
+
+            def reconstruct(self, images, ids, frame, kind):
+                self.model.cache = {1: {'k': torch.ones(8)}}
+                return (torch.ones(2, 8, 8, 3), torch.eye(4).repeat(2, 1, 1),
+                        torch.ones(2, 8, 8), torch.eye(4))
+
+        # Include a one-frame tail: duplicated anchor/last is still a valid pair.
+        for tail in (1, 30, 49):
+            model = SimpleNamespace(cache={})
+            end = 60 + tail
+            with patch('kv_tracker.reanchor_maps.MapHandoff', LocalMap), patch(
+                    'kv_tracker.reanchor_maps.bridge',
+                    return_value=(None, dict(accepted=False, scale=2.), {})):
+                tracker = ReanchorMaps(model, (0, 60, end), lambda row: None, lambda e, d: None)
+                for frame in range(end):
+                    image = np.full((8, 8, 3), frame, dtype=np.uint8)
+                    tracker.step(image, frame)
+                self.assertIsNotNone(tracker.pending)
+                tracker.finish(image, frame)
+                self.assertIsNone(tracker.pending)
+                self.assertEqual(len(tracker.transforms), 2)
+                self.assertEqual(tracker.tracker.ids, [0, tail - 1])
+                self.assertEqual(tracker.events[0]['decision_frame'], end - 1)
+                self.assertEqual(tracker.events[0]['delay_frames'], tail - 1)
+                self.assertTrue(tracker.events[0]['end_of_video'])
+                self.assertEqual(float(tracker.transforms[1][0]), 2.)
+
     def test_anchor_plus_latest_schedule(self):
         model = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]), cache={})
         tracker = MapHandoff(model, 'reanchor', lambda row: None, None)
@@ -42,6 +86,25 @@ class ReanchorTests(unittest.TestCase):
         self.assertEqual(calls, [(0, 'bootstrap', [0, 0]), (49, 'rebuild', [0, 49]),
                                  (99, 'rebuild', [0, 99]), (149, 'rebuild', [0, 149]),
                                  (199, 'rebuild', [0, 199])])
+
+    def test_retiring_bank_skips_scheduled_rebuild(self):
+        model = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]), cache={})
+        tracker = MapHandoff(model, 'reanchor', lambda row: None, None)
+        calls = []
+
+        def reconstruct(images, ids, frame, kind):
+            calls.append(kind)
+            return (torch.ones(2, 28, 28, 3), torch.eye(4).repeat(2, 1, 1),
+                    torch.ones(2, 28, 28), torch.eye(4))
+
+        tracker.reconstruct = reconstruct
+        image = np.zeros((28, 28, 3), dtype=np.uint8)
+        with patch('torch.cuda.synchronize'), patch('kv_tracker.map_handoff.pi3_inference',
+                return_value=torch.eye(4)[None, None]):
+            tracker.bootstrap(image)
+            tracker.step(image, 49, update=False)
+        self.assertEqual(calls, ['bootstrap'])
+        self.assertEqual(tracker.ids, [0])
 
     def test_refresh_rebuild_restores_first_rebuild_scale(self):
         model = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]), cache={})
@@ -82,7 +145,7 @@ class ReanchorTests(unittest.TestCase):
                 self.model.cache = {1: {'k': torch.ones(4)}}
                 return new_b if int(image[0, 0, 0]) == 125 else np.eye(4, dtype=np.float32)
 
-            def step(self, image, frame):
+            def step(self, image, frame, update=True):
                 if frame == 49:
                     self.images, self.ids = [self.images[0], image], [0, 49]
                     self.model.cache = {1: {'k': torch.ones(8)}}

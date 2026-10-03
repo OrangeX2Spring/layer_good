@@ -60,6 +60,18 @@ norm ratio of the anchor's confident pointmap: both maps are expressed in camera
 b's frame, so only scale differs. Queries and dense queries apply that scale.
 `update_total` logs it (1.0 in other modes, whose poses are unchanged).
 
+## Automatic boundaries and short EOF tails (2026-10-03)
+
+The full-office five-threshold comparison is in
+[KVT_SEGMENT_DETECTOR.md](KVT_SEGMENT_DETECTOR.md). Reanchor now supports boundaries
+added by a live causal detector. At retirement it skips the old map's scheduled
+rebuild, preserving a common cache for transition camera/geometry queries. Normal
+connections stay at local49. If EOF arrives earlier, `finish` rebuilds the final
+anchor/last pair and commits at EOF with the actual delay, keeping all local poses.
+The manual-boundary wrapper retains its original schedule; native/fixed modes keep
+their existing update behavior. These changes are locally syntax-checked; their
+new retirement/short-tail contracts and runtime are pending CAMP.
+
 ## Checks and CAMP procedure
 
 Local: Python AST 3.10, Bash syntax, whitespace. CAMP contracts:
