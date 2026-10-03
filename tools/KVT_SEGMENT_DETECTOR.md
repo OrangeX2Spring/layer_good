@@ -69,14 +69,20 @@ supplies the environment and archives source/revisions. Publish first and refres
 inside an allocation, never on head. Slurm snapshots the wrapper at submission:
 its mode validation runs **before** its in-job pull. A stale wrapper therefore
 cannot bootstrap a newly added mode (job 26156 exited with `Unknown mode`).
-Before submitting, pull the parent with submodule fetch recursion disabled in
-an interactive allocation, and verify `segment-detector` appears in the wrapper.
-Release that allocation before the batch run (students_normal permits one job).
-From `/mnt/projects/gr/3DRecon/layer_good` after that refresh:
+Use the established allocation-wrapped pull from [KVT_TUM.md](KVT_TUM.md)
+(job 25660), which pulls and runs the refreshed wrapper in the same allocation.
+This also avoids the documented interactive srun pthread_create failure. From
+`/mnt/projects/gr/3DRecon/layer_good` on head:
 
 ```bash
-sbatch tools/kvt_tum.sbatch segment-detector
+W='git -c fetch.recurseSubmodules=0 pull --ff-only'
+W="$W && bash tools/kvt_tum.sbatch segment-detector"
+O=../kvt_tum_slurm-%j.log
+sbatch -p 24g -w muenchen --gres=gpu:1 --propagate=NONE -o "$O" --wrap="$W"
 ```
+
+The wrapper's SBATCH directives are comments when executed by bash; the command
+line above supplies the resource and log settings, as in the established procedure.
 
 Expected: three contracts pass, zero or more `SEGMENT BOUNDARY` lines, then
 `SEGMENT DETECTOR COMPLETE: 2585 frames` and `JOB OK`. Zero cuts still means
