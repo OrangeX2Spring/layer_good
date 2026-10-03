@@ -19,6 +19,10 @@ def arm(config_path):
     from kv_tracker.map_handoff import MapHandoff
     from kv_tracker.pi3_utilts import load_pi3_from_pretrained, move_pi3_mlps_to_bfloat32
     config = json.loads(config_path.read_text())
+    stop_frame = config.get('keyframe_stop_frame', config['frames'])
+    assert 1 <= stop_frame <= config['frames']
+    assert 'keyframe_stop_frame' not in config or config['mode'] == 'native'
+    keyframe_cap = config.get('native_keyframe_cap', 20)
     result, inputs = config_path.parent, Path(config['scene_dir'])
     manifest = json.loads((inputs / 'manifest.json').read_text())
     torch.manual_seed(0)
@@ -44,17 +48,23 @@ def arm(config_path):
         np.savez(result / 'bridge_evidence.npz', **evidence)
 
     with (result / 'inference.jsonl').open('w') as stream, torch.inference_mode():
-        tracker = MapHandoff(model, config['mode'], log, save_bridge, query_executor=executor)
+        tracker = MapHandoff(model, config['mode'], log, save_bridge, query_executor=executor,
+                             native_keyframe_cap=keyframe_cap)
         torch.cuda.reset_peak_memory_stats()
         torch.cuda.synchronize()
         started = time.perf_counter()
         poses = []
-        for i, row in enumerate(manifest['inputs'][:config['frames']]):
-            pixels = cv2.imread(str(inputs / 'model_rgb' / Path(row['file']).name))
-            assert pixels is not None
-            pixels = pixels[:, :, ::-1].copy()
-            assert hashlib.sha256(pixels.tobytes()).hexdigest() == row['model_rgb_sha256']
-            poses.append(tracker.bootstrap(pixels) if i == 0 else tracker.step(pixels, i))
+        try:
+            for i, row in enumerate(manifest['inputs'][:config['frames']]):
+                pixels = cv2.imread(str(inputs / 'model_rgb' / Path(row['file']).name))
+                assert pixels is not None
+                pixels = pixels[:, :, ::-1].copy()
+                assert hashlib.sha256(pixels.tobytes()).hexdigest() == row['model_rgb_sha256']
+                poses.append(tracker.bootstrap(pixels) if i == 0 else
+                             tracker.step(pixels, i, update=i < stop_frame))
+        except torch.cuda.OutOfMemoryError:
+            np.save(result / 'partial_traj.npy', np.asarray(poses))
+            raise
         torch.cuda.synchronize()
         seconds = time.perf_counter() - started
         np.save(result / 'traj.npy', np.asarray(poses))
@@ -233,9 +243,21 @@ if __name__ == '__main__':
     parser.add_argument('--out', type=Path)
     parser.add_argument('--tag')
     parser.add_argument('--run', type=Path)
+    parser.add_argument('--report-oom', action='store_true')
     args = parser.parse_args()
     if args.run:
-        arm(args.run)
+        import torch
+        try:
+            arm(args.run)
+        except torch.cuda.OutOfMemoryError as error:
+            if not args.report_oom:
+                raise
+            import traceback
+            traceback.print_exc()
+            write_json(args.run.parent / 'oom.json', dict(status='cuda_oom', error=str(error),
+                peak_allocated_bytes=torch.cuda.max_memory_allocated(),
+                peak_reserved_bytes=torch.cuda.max_memory_reserved()))
+            sys.exit(75)
     else:
         assert args.work is not None and args.out is not None and args.tag
         main(args)

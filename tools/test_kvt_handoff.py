@@ -10,6 +10,31 @@ from kv_tracker.map_handoff import MapHandoff, bridge, compose, fit_similarity, 
 
 
 class HandoffTests(unittest.TestCase):
+    def test_native_prefix_freeze_and_extended_bank(self):
+        image = np.zeros((28, 28, 3), dtype=np.uint8)
+        for stop, cap, count, last in ((200, 20, 5, 199), (500, 20, 11, 499),
+                                     (750, 20, 16, 749), (2585, 20, 20, 949),
+                                     (1200, 25, 25, 1199), (1600, 33, 33, 1599),
+                                     (2000, 41, 41, 1999)):
+            with self.subTest(stop=stop, cap=cap):
+                model = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]), cache={})
+                tracker = MapHandoff(model, 'native', lambda row: None, lambda event, evidence: None,
+                                     native_keyframe_cap=cap)
+                tracker.origin = torch.eye(4)
+                tracker.ids, tracker.images = [0], [image]
+                with patch('kv_tracker.map_handoff.pi3_inference',
+                           return_value=torch.eye(4)[None, None]), \
+                     patch.object(tracker, 'reconstruct', return_value=(
+                         torch.zeros(41, 2, 2, 3), torch.eye(4)[None],
+                         torch.ones(41, 2, 2), torch.eye(4))) as rebuild, \
+                     patch('torch.cuda.synchronize'):
+                    for frame in range(1, 2010):
+                        tracker.step(image, frame, update=frame < stop)
+                self.assertEqual(len(tracker.ids), count)
+                self.assertEqual(tracker.ids[-1], last)
+                self.assertEqual(rebuild.call_count, count - 1)
+                self.assertTrue(all(call.args[2] < stop for call in rebuild.call_args_list))
+
     def setUp(self):
         torch.manual_seed(4)
         self.r = torch.tensor([[0., -1., 0.], [1., 0., 0.], [0., 0., 1.]], dtype=torch.float64)
