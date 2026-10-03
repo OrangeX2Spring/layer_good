@@ -121,3 +121,12 @@ prepares fixed positions outside capture and mirrors native single-query decode
 with unchanged register repeat/concatenation, block calls, final pair and camera
 decoder. Native Pi3 remains the independent eager reference. Existing warmup and
 replay checks keep1e-4 tolerances. Repeat query-contract; GPU verification pending.
+
+
+26167 completes capture but checked replay produces NaN poses after eager and
+warmup fidelity gates pass. Capture now disables autocast weight caching, recording
+weight conversions inside the graph instead of reusing casts from the surrounding
+eager context. Cached-cast lifetime is a hypothesis, not a confirmed root cause.
+Checked dense replay also asserts finite encoder, decoder and camera-decoder
+stages to locate any remaining failure. Repeat query-contract only; tolerances
+unchanged and full evaluation remains gated. LoopCD26168 is independent.
