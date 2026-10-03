@@ -81,3 +81,50 @@ evidence. Completion marker: `KEYFRAME PREFIX ABLATION COMPLETE: 7 arms`,
 followed by wrapper `JOB OK`; inspect comparison.json for any OOM.
 
 Local preparation is syntax-checked only. Full runtime validation is pending.
+
+## Transfer check: loop and no-loop long sequences
+
+After office job 26183 passed all seven arms, the user selected the same policies
+for `freiburg2_large_with_loop` (5,182 RGB frames) and
+`freiburg2_large_no_loop` (3,359 RGB frames). Stage `prefix-long` runs those
+two sequences sequentially in one allocation, seven fresh-process arms each.
+It does not rerun office or choose thresholds from either new sequence.
+
+Replace the submission command's second line with:
+
+```bash
+W="$W && bash tools/kvt_tum.sbatch segment-detector prefix-long"
+```
+
+The other lines and execution location stay the same. The existing TUM staging
+function reads `/mnt/datasets/tum-rgbd/rgbd_dataset_SCENE.zip`, retains the full
+RGB sequence, records its SHA256, checks every model input's pixel hash, and
+archives staged metadata/model RGB once per scene. Staging and inference occur
+only on CAMP. Existing page-cache release prevents staging/archive reads from
+accumulating against the allocation's host-memory grant. Inputs remain in the
+job's `inputs/`, excluded from the context/safety-net archives.
+
+Each scene has its own fresh native baseline. Accuracy comparison uses exactly
+the same matched GT indices and valid RPE pairs for all its arms. Expected
+historical GT coverage is 1,268/5,182 frames with loop and 654/3,359 without loop.
+The middle of each route has substantial missing GT: there is no interpolation
+or extrapolation. Empty score windows contain null metrics plus explicit counts
+and status. Missing transition windows are similarly marked. The comparison
+records contiguous GT-supported spans and adds the window 2000–end, so observed
+late performance can be distinguished from unscored middle-route behavior.
+Full RGB tracking does not imply full-route accuracy verification.
+
+A difference across these two videos establishes sequence dependence, not an
+isolated causal effect of loops: duration, appearance, camera path and GT coverage
+also differ. Interpret office and both new scenes individually before combining
+findings. OOM handling is unchanged; neither sequence borrows the other's bank.
+
+Output prefixes are `tum_JOB_freiburg2_large_with_loop` and
+`tum_JOB_freiburg2_large_no_loop`, each followed by
+`_keyframe_prefix_{ARM,comparison,inputs}.tar`. Shared source/contract provenance
+is `tum_JOB_context.tar`. Overall completion requires
+`KEYFRAME PREFIX LONG COMPLETE: 2 sequences, 7 arms each` and wrapper `JOB OK`;
+the per-sequence marker is cleared before advancing to the next scene.
+
+Office execution is verified from transferred archives. The two new sequences'
+runtime checks, GT spans, memory peaks and accuracy remain pending.

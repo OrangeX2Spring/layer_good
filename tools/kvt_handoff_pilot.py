@@ -96,7 +96,10 @@ def arm(config_path):
                     window = (starts >= boundary - 5) & (starts <= boundary + 5)
                     translations = quality['rpe_translation_per_pair_m'][window]
                     rotations = quality['rpe_rotation_per_pair_deg'][window]
-                    assert len(translations), 'No valid GT pairs in transition window'
+                    if not len(translations):
+                        transitions.append(dict(boundary=boundary, pair_start_indices=[],
+                                                status='missing_GT_pairs'))
+                        continue
                     transitions.append(dict(boundary=boundary,
                         pair_start_indices=starts[window].tolist(),
                         translation_per_pair_m=translations.tolist(),
