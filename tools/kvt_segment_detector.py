@@ -19,6 +19,97 @@ POLICY = dict(features=1000, ratio=.75, ransac_pixels=2., minimum_features=40,
               minimum_inliers=20, grid=4, minimum_cells=4,
               persistence=5, minimum_segment_frames=50)
 INLIER_THRESHOLDS = (10, 15, 20, 25, 30)
+FLOW_POLICY = dict(corners_per_cell=20, quality=.01, minimum_distance=5,
+                   grid=4, window=21, pyramid_levels=3,
+                   forward_backward_pixels=1., surviving_fraction=.25,
+                   surviving_cell_fraction=.5, minimum_features=40,
+                   persistence=5, minimum_segment_frames=50)
+
+
+class FlowSegmentDetector:
+    """Retain original anchor feature identities through consecutive frames."""
+    def __init__(self):
+        self.previous = None
+        self.last_frame = -1
+        self.low_run = 0
+
+    def seed(self, gray, frame):
+        h, w = gray.shape
+        points = []
+        grid = FLOW_POLICY['grid']
+        for y in range(grid):
+            for x in range(grid):
+                mask = np.zeros_like(gray)
+                mask[y * h // grid:(y + 1) * h // grid,
+                     x * w // grid:(x + 1) * w // grid] = 255
+                corners = cv2.goodFeaturesToTrack(gray, FLOW_POLICY['corners_per_cell'],
+                    FLOW_POLICY['quality'], FLOW_POLICY['minimum_distance'], mask=mask)
+                if corners is not None:
+                    points.append(corners.reshape(-1, 2))
+        self.points = np.concatenate(points) if points else np.empty((0, 2), np.float32)
+        self.anchor_points = self.points.copy()
+        self.anchor_frame = frame
+        self.initial_features = len(self.points)
+        self.initial_cells = len(np.unique(np.floor(
+            self.points * [grid / w, grid / h]).astype(int), axis=0))
+        self.previous = gray
+        self.low_run = 0
+
+    def step(self, rgb, frame):
+        assert frame == self.last_frame + 1
+        assert rgb.ndim == 3 and rgb.shape[2] == 3 and rgb.dtype == np.uint8
+        self.last_frame = frame
+        started = time.perf_counter()
+        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+        if self.previous is None:
+            self.seed(gray, frame)
+            status = 'bootstrap'
+        else:
+            if len(self.points):
+                current, forward, _ = cv2.calcOpticalFlowPyrLK(
+                    self.previous, gray, self.points, None,
+                    winSize=(FLOW_POLICY['window'],) * 2, maxLevel=FLOW_POLICY['pyramid_levels'])
+                back, backward, _ = cv2.calcOpticalFlowPyrLK(
+                    gray, self.previous, current, None,
+                    winSize=(FLOW_POLICY['window'],) * 2, maxLevel=FLOW_POLICY['pyramid_levels'])
+                h, w = gray.shape
+                keep = (forward.ravel().astype(bool) & backward.ravel().astype(bool)
+                        & (np.linalg.norm(back - self.points, axis=1)
+                           <= FLOW_POLICY['forward_backward_pixels'])
+                        & (current[:, 0] >= 0) & (current[:, 0] < w)
+                        & (current[:, 1] >= 0) & (current[:, 1] < h))
+                self.points = current[keep]
+                self.anchor_points = self.anchor_points[keep]
+            self.previous = gray
+            status = 'supported'
+        h, w = gray.shape
+        cells = len(np.unique(np.floor(
+            self.anchor_points * [FLOW_POLICY['grid'] / w,
+                                  FLOW_POLICY['grid'] / h]).astype(int), axis=0))
+        fraction = len(self.points) / self.initial_features if self.initial_features else 0.
+        coverage = cells / self.initial_cells if self.initial_cells else 0.
+        if self.initial_features < FLOW_POLICY['minimum_features']:
+            status = 'unknown_texture'
+            self.low_run = 0
+        elif status != 'bootstrap':
+            low = (fraction < FLOW_POLICY['surviving_fraction']
+                   or coverage < FLOW_POLICY['surviving_cell_fraction'])
+            status = 'low_overlap' if low else 'supported'
+            eligible = frame - self.anchor_frame >= FLOW_POLICY['minimum_segment_frames']
+            self.low_run = self.low_run + 1 if low and eligible else 0
+        boundary = self.low_run >= FLOW_POLICY['persistence']
+        row = dict(frame=frame, anchor_frame=self.anchor_frame,
+                   features=len(self.points), anchor_features=self.initial_features,
+                   ratio_matches=len(self.points), inliers=len(self.points), cells=cells,
+                   surviving_fraction=fraction, surviving_cell_fraction=coverage,
+                   status=status, boundary=boundary, low_run=self.low_run)
+        evidence = dict(anchor_points=self.anchor_points.copy(),
+                        current_points=self.points.copy(),
+                        inliers=np.ones(len(self.points), bool))
+        if boundary:
+            self.seed(gray, frame)
+        row['seconds'] = time.perf_counter() - started
+        return row, evidence
 
 
 class SegmentDetector:
@@ -100,16 +191,17 @@ class SegmentDetector:
         return row, evidence
 
 
-def run_policy(args, minimum_inliers):
+def run_policy(args, minimum_inliers, flow=False):
     # Independent RNG and anchor history per arm; thresholds change future anchors.
     cv2.setRNGSeed(0)
-    name = f'segment_detector_inliers{minimum_inliers}' if args.sweep else 'segment_detector'
+    name = 'segment_detector_flow' if flow else (
+        f'segment_detector_inliers{minimum_inliers}' if args.sweep or args.flow else 'segment_detector')
     result = args.work / 'runs' / name
     result.mkdir(parents=True)
-    write_json(result / 'config.json', dict(policy=dict(POLICY, minimum_inliers=minimum_inliers), source=SOURCE,
+    write_json(result / 'config.json', dict(policy=FLOW_POLICY if flow else dict(POLICY, minimum_inliers=minimum_inliers), source=SOURCE,
         source_sha256=SOURCE_SHA256, opencv=cv2.__version__, seed=0, threads=1,
         causal=True, gt_used=False, tracking=False, thresholds_calibrated=False))
-    detector = SegmentDetector(minimum_inliers)
+    detector = FlowSegmentDetector() if flow else SegmentDetector(minimum_inliers)
     boundaries = [0]
     rows = []
     with tarfile.open(args.out / SOURCE) as packed, (result / 'scores.jsonl').open('w') as log:
@@ -141,7 +233,8 @@ def run_policy(args, minimum_inliers):
     assert len(rows) == 2585
     assert all(r['anchor_frame'] <= r['frame'] for r in rows)
     seconds = np.array([r['seconds'] for r in rows])
-    summary = dict(minimum_inliers=minimum_inliers, frames=len(rows), boundaries=boundaries,
+    summary = dict(detector='flow' if flow else 'orb', minimum_inliers=None if flow else minimum_inliers,
+        frames=len(rows), boundaries=boundaries,
         end_exclusive=len(rows), unknown_texture_frames=sum(
             r['status'] == 'unknown_texture' for r in rows),
         detector_seconds=float(seconds.sum()), median_ms=float(np.median(seconds) * 1000),
@@ -163,8 +256,14 @@ def main(args):
         for chunk in iter(lambda: stream.read(8388608), b''):
             digest.update(chunk)
     assert digest.hexdigest() == SOURCE_SHA256, 'Input archive differs from reviewed 26127'
-    thresholds = INLIER_THRESHOLDS if args.sweep else (20,)
+    thresholds = INLIER_THRESHOLDS if args.sweep else ((25,) if args.flow else (20,))
     summaries = [run_policy(args, threshold) for threshold in thresholds]
+    if args.flow:
+        summaries.append(run_policy(args, None, flow=True))
+        write_json(args.work / 'segment_detector_flow_comparison.json', dict(
+            summaries=summaries, tracking_test_pending=True,
+            caveat='one uncalibrated flow policy versus ORB25; review before tracking'))
+        print('SEGMENT FLOW PILOT COMPLETE: ORB25 + flow, tracking pending', flush=True)
     if args.sweep:
         write_json(args.work / 'segment_detector_sweep.json', dict(
             varied_parameter='minimum_inliers', thresholds=thresholds, summaries=summaries,
@@ -178,6 +277,9 @@ if __name__ == '__main__':
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--tag', required=True)
-    parser.add_argument('--sweep', action='store_true',
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument('--sweep', action='store_true',
                         help='Compare 10/15/20/25/30 inliers, other settings fixed')
+    modes.add_argument('--flow', action='store_true',
+                       help='Review sequential anchor-track overlap versus ORB25 before tracking')
     main(parser.parse_args())

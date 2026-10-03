@@ -1,5 +1,56 @@
 # Online segmentation points: anchor-overlap diagnostic
 
+## Optimization after 26159: sequential anchor tracks (flow pilot)
+
+26159 does not establish that segmentation cannot improve. It tested raw ORB
+match counts to a distant anchor; changing that count alone left the signal
+unchanged. Inspected boundary169 still shows much of the anchor table/objects;
+boundary303 has substantial shared content but the current-grid coverage triggers.
+These examples motivate a different overlap measurement, not proof that their
+cuts cause the observed trajectory error. Numerical results remain in FINDINGS.
+
+`segment-detector flow` runs ORB25 and one new causal detector on identical pixels.
+The new detector seeds up to20 Shi–Tomasi corners in each4x4 anchor cell, then
+tracks their original identities through consecutive images with pyramidal
+Lucas–Kanade flow (21px window,3 pyramid levels). Forward/backward status,1px
+round-trip consistency and image bounds reject tracks. No new points replenish
+the anchor support. Low support is surviving fraction<25% OR surviving anchor-cell
+fraction<50%; normalize to actual seeded features/occupied cells. Preserve the
+50-frame minimum age and five-frame persistence; cut at the current frame and
+reseed. Fewer than40 initial corners is unknown texture, not a validated segment.
+These are uncalibrated starting constants, not fitted to human boundaries or GT.
+API: [OpenCV optical flow documentation](https://docs.opencv.org/4.13.0/dc/d6b/group__video__track.html).
+
+Hypothesis: temporal correspondence tolerates gradual appearance/viewpoint change
+better than distant descriptor matching, with cheaper per-frame processing. Flow
+can drift; blur/occlusion can irreversibly lose support and fragment the sequence.
+It estimates surviving visible content, not guaranteed Pi3 accuracy. Runtime and
+boundary quality are pending; do not call this an accuracy/speed improvement yet.
+
+Contracts add gradual-motion tracking, prefix causality, no support replenishment,
+minimum age/persistence and current-frame reset. Outputs include
+`tum_<JOB>_segment_detector_inliers25.tar`, `tum_<JOB>_segment_detector_flow.tar`,
+and context `segment_detector_flow_comparison.json`; full per-frame fractions,
+anchor-cell coverage and boundary source pixels/matches are preserved.
+
+From layer_good on head, after publication:
+
+```bash
+W='git -c fetch.recurseSubmodules=0 pull --ff-only'
+W="$W && bash tools/kvt_tum.sbatch segment-detector flow"
+O=../kvt_tum_slurm-%j.log
+sbatch -p 24g -w muenchen --gres=gpu:1 --propagate=NONE -o "$O" --wrap="$W"
+```
+
+Gate: contracts pass, both2585-frame passes complete, `SEGMENT FLOW PILOT COMPLETE`
+and JOB OK; then review fragmentation, boundary pairs, lost-support intervals and
+cost. No full tracking job is queued behind this unreviewed pilot. After review,
+integrate the selected live detector into the existing matched reanchor comparison
+and include the recorded human cuts0/275/575/700/975/1400 as a reference using the
+same tracker, inputs and evaluation scope. Separate first1000 and full2585 metrics;
+historical frozen-map/posthoc results are not matched live tracking baselines.
+Retain the ORB25 reference and native. No further threshold sweep selected.
+
 User-selected scope, 2026-10-03: the full office sequence (2585 frames), causal
 decisions from current and past images only. First identify segmentation points;
 The user subsequently authorized all five segmentation+reanchor tests in the

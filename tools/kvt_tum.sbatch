@@ -453,6 +453,7 @@ elif [ "$MODE" = bridge-cameras ]; then
 elif [ "$MODE" = segment-detector ]; then
     case "${2:-single}" in
         single) DETECTOR_ARGS=() ;;
+        flow) DETECTOR_ARGS=(--flow) ;;
         sweep|compare) DETECTOR_ARGS=(--sweep) ;;
         *) echo "Unknown segment-detector stage: $2" >&2; exit 2 ;;
     esac

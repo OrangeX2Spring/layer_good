@@ -5,7 +5,7 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from kvt_segment_detector import INLIER_THRESHOLDS, SegmentDetector
+from kvt_segment_detector import INLIER_THRESHOLDS, SegmentDetector, FlowSegmentDetector
 
 
 class DetectorContracts(unittest.TestCase):
@@ -93,6 +93,41 @@ class DetectorContracts(unittest.TestCase):
                 self.assertEqual(row['cells'], 5)
                 self.assertEqual(row['boundary'], detector.minimum_inliers > 20)
         self.assertEqual([d.anchor[0] for d in detectors], [0, 0, 0, 54, 54])
+
+    def test_flow_tracks_gradual_motion_and_checks_prefix_causality(self):
+        images = [np.roll(self.image, shift, axis=1) for shift in range(12)]
+        def run(frames):
+            detector = FlowSegmentDetector()
+            rows = []
+            for frame, image in enumerate(frames):
+                row, _ = detector.step(image, frame)
+                del row['seconds']
+                rows.append(row)
+            return rows
+        prefix = run(images[:8])
+        self.assertEqual(prefix, run(images)[:8])
+        self.assertGreater(prefix[-1]['surviving_fraction'], .5)
+        self.assertEqual(prefix[-1]['status'], 'supported')
+
+    def test_flow_does_not_replenish_anchor_support_and_resets_at_current_frame(self):
+        detector = FlowSegmentDetector()
+        detector.step(self.image, 0)
+        original = detector.initial_features
+        with patch('kvt_segment_detector.cv2.calcOpticalFlowPyrLK') as flow:
+            # Lose every original feature, despite the current image being textured.
+            points = detector.points.copy()
+            flow.return_value = (points, np.zeros((len(points), 1), np.uint8), None)
+            row, _ = detector.step(self.image, 1)
+            self.assertEqual(row['features'], 0)
+            self.assertEqual(row['anchor_features'], original)
+            for frame in range(2, 54):
+                row, _ = detector.step(self.image, frame)
+                self.assertFalse(row['boundary'])
+            row, _ = detector.step(self.image, 54)
+            self.assertTrue(row['boundary'])
+            self.assertEqual(row['anchor_frame'], 0)
+            self.assertEqual(detector.anchor_frame, 54)
+            self.assertGreater(detector.initial_features, 40)
 
 
 if __name__ == '__main__':
