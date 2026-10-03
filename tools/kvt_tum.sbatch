@@ -16,7 +16,7 @@ if [ "$MODE" = adaptive-tokens ] && [ "${2:-gate}" = task-policy ]; then
     # Four-hour allocation: leave ten minutes for the EXIT archives.
     TASK_DEADLINE=$(( $(date +%s) + 13800 ))
 fi
-case "$MODE" in sweep|segment-detector|oracle-maps|bridge-cameras|reanchor-maps|handoff-pilot|office-segments|bank-pilot|combined|correspondence|correspondence-gates|llm-packet|replay-fidelity|llm-compare|append|sensitivity|active-keyframes|patch-select|adaptive-tokens) ;;
+case "$MODE" in sweep|loopcd|segment-detector|oracle-maps|bridge-cameras|reanchor-maps|handoff-pilot|office-segments|bank-pilot|combined|correspondence|correspondence-gates|llm-packet|replay-fidelity|llm-compare|append|sensitivity|active-keyframes|patch-select|adaptive-tokens) ;;
     *) echo "Unknown mode: $MODE" >&2; exit 2 ;; esac
 test "$(uname -s)" = Linux
 test "$(hostname)" != head
@@ -30,6 +30,9 @@ else
 fi
 if [ "$MODE" = adaptive-tokens ] && [ "${2:-gate}" = graph-track ]; then
     [[ "$REPO" == /tmp/kvt_graph_checkout_* ]]
+fi
+if [ "$MODE" = loopcd ]; then
+    [[ "$REPO" == /tmp/kvt_loopcd_* ]]
 fi
 OUT="$ROOT/kvt_tum_out"
 TAG="tum_${SLURM_JOB_ID:?Submit through sbatch}"
@@ -82,7 +85,7 @@ nvidia-smi
 sinfo -N -o '%.10N %.6P %.9T %.15G' > "$WORK/context/sinfo.txt"
 scontrol show job "$SLURM_JOB_ID" > "$WORK/context/slurm_job.txt"
 git -C "$REPO" -c fetch.recurseSubmodules=false pull --ff-only
-if [ "$MODE" = adaptive-tokens ] && [ "${2:-gate}" = graph-track ]; then
+if { [ "$MODE" = adaptive-tokens ] && [ "${2:-gate}" = graph-track ]; } || [ "$MODE" = loopcd ]; then
     # This concurrent pilot must use its own checkout, never 26044's live source.
     git -C "$REPO" -c url.https://github.com/.insteadOf=git@github.com: \
         submodule update --init kv_tracker
@@ -113,6 +116,12 @@ cp "$REPO/tools/kvt_tum.sbatch" "$REPO/tools/kvt_tum_run.py" \
    "$REPO/tools/kvt_tum_viz.py" "$REPO/tools/kvt_artifacts.py" \
    "$REPO/tools/kvt_confidence_videos.py" \
    "$REPO/tools/test_kvt_tum.py" "$REPO/tools/KVT_TUM.md" "$WORK/context/"
+if [ "$MODE" = loopcd ]; then
+    cp "$REPO/tools/kvt_loopcd.py" "$REPO/tools/test_kvt_loopcd.py" \
+       "$REPO/tools/kvt_handoff_pilot.py" "$REPO/tools/kvt_reanchor_maps.py" \
+       "$REPO/tools/kvt_bridge_cameras.py" "$REPO/tools/kvt_office_segments.py" \
+       "$REPO/tools/KVT_LOOPCD.md" "$WORK/context/"
+fi
 git -C "$REPO/kv_tracker" archive HEAD > "$WORK/context/tracker_source.tar"
 git -C "$REPO/kv_tracker/thirdparty/Pi3" archive HEAD > "$WORK/context/pi3_source.tar"
 cp "$REPO/kv_tracker/thirdparty/Pi3/pi3/models/pi3.py" "$WORK/context/pi3.py"
@@ -462,6 +471,12 @@ elif [ "$MODE" = bridge-cameras ]; then
     "${CONTAINER[@]}" python "$REPO/tools/kvt_bridge_cameras.py" \
         --work "$WORK" --out "$OUT" --tag "$TAG" \
         2>&1 | tee "$WORK/context/bridge_cameras.log"
+elif [ "$MODE" = loopcd ]; then
+    "${CONTAINER[@]}" python "$REPO/tools/test_kvt_loopcd.py" \
+        2>&1 | tee "$WORK/context/loopcd_contracts.log"
+    "${CONTAINER[@]}" python "$REPO/tools/kvt_loopcd.py" \
+        --work "$WORK" --out "$OUT" --tag "$TAG" \
+        2>&1 | tee "$WORK/context/loopcd_pilot.log"
 elif [ "$MODE" = segment-detector ]; then
     case "${2:-single}" in
         single) DETECTOR_ARGS=() ;;

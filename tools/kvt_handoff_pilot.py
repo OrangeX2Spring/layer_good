@@ -27,6 +27,10 @@ def arm(config_path):
     torch.backends.cudnn.allow_tf32 = True
     model = move_pi3_mlps_to_bfloat32(load_pi3_from_pretrained().eval())
     executor = None
+    if config.get('depth_contrast') is not None:
+        assert not config.get('query_method')
+        from kv_tracker.depth_contrast import DepthContrastQueries
+        executor = DepthContrastQueries(**config['depth_contrast'])
     if config.get('query_method'):
         import os
         from kv_tracker.query_acceleration import QueryAcceleration
@@ -81,7 +85,8 @@ def arm(config_path):
             with np.load(result / 'evaluation.npz') as quality:
                 metrics['translation_p99_m'] = float(np.quantile(quality['rpe_translation_per_pair_m'], .99))
                 transitions = []
-                for boundary in (749, 799, 849, 899, 949):
+                for boundary in ((749, 799, 849, 899, 949)
+                                 if config.get('transition_windows', True) else ()):
                     starts = quality['rpe_pair_start_indices']
                     window = (starts >= boundary - 5) & (starts <= boundary + 5)
                     translations = quality['rpe_translation_per_pair_m'][window]
