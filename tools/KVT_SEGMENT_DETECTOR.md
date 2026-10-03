@@ -66,7 +66,13 @@ of matched full-sequence native; this diagnostic does not advance that gate.
 Requires `kvt_tum_out/tum_26127_oracle_maps_inputs.tar` with recorded SHA256;
 no new downloads, checkpoints or container changes. Existing `kvt_tum.sbatch`
 supplies the environment and archives source/revisions. Publish first and refresh
-inside an allocation, never on head. From `/mnt/projects/gr/3DRecon/layer_good`:
+inside an allocation, never on head. Slurm snapshots the wrapper at submission:
+its mode validation runs **before** its in-job pull. A stale wrapper therefore
+cannot bootstrap a newly added mode (job 26156 exited with `Unknown mode`).
+Before submitting, pull the parent with submodule fetch recursion disabled in
+an interactive allocation, and verify `segment-detector` appears in the wrapper.
+Release that allocation before the batch run (students_normal permits one job).
+From `/mnt/projects/gr/3DRecon/layer_good` after that refresh:
 
 ```bash
 sbatch tools/kvt_tum.sbatch segment-detector
