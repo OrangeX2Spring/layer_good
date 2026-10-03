@@ -117,3 +117,25 @@ W="$W && bash \$D/tools/kvt_tum.sbatch loopcd contract"
 Expected LOOPCD DEPTH CONTRAST CONTRACT OK, LOOPCD CONTRACT RETRY COMPLETE and
 JOB OK. This exits before all pilot arms. Review that evidence before submitting
 loopcd pilot. Independent query-contract26162 source is unaffected.
+
+
+## Full sequence after reviewed26168 pilot
+
+User authorized full-sequence comparison after pilot26168. Stage loopcd full
+runs native, full36 unguided fidelity control, and full36 guided(reference12,
+strength0.5), each2585 frames plus fresh32-frame prefix. The full control checks
+trajectory agreement with native; all arms match GT associations, keyframes,
+environment and cache bytes. Native must reproduce recorded full-sequence metrics
+within1e-4m and2583 evaluated frames/2582 RPE pairs. No reduced-depth arms or
+new threshold sweep. Same pixels/checkpoint/hash and independent processes.
+
+Review26168 saved archives before submission. Transfer using canonical field
+notes, extract each archive separately, inspect comparison/evaluation/provenance.
+Then the isolated submission procedure uses loopcd full instead of loopcd pilot,
+with explicit cd layer_good and absolute /mnt/projects/gr/3DRecon/kvt_tum_slurm-%j.log.
+Expected three LOOPCD COMPARE lines, LOOPCD FULL COMPLETE/JOB OK.
+
+Report full-sequence ATE/RPE/p99 and complete-loop FPS; pilot prefix informed
+method selection, so this is not a held-out sequence. Guidance selection remains
+fixed. Timing is one ordered observation per arm. Query acceleration and
+segmentation remain separate. Full evaluation runtime verification pending.

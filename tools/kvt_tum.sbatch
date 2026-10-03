@@ -472,7 +472,7 @@ elif [ "$MODE" = bridge-cameras ]; then
         --work "$WORK" --out "$OUT" --tag "$TAG" \
         2>&1 | tee "$WORK/context/bridge_cameras.log"
 elif [ "$MODE" = loopcd ]; then
-    case "${2:-pilot}" in pilot|contract) ;; *) echo "Unknown loopcd stage: $2" >&2; exit 2 ;; esac
+    case "${2:-pilot}" in pilot|contract|full) ;; *) echo "Unknown loopcd stage: $2" >&2; exit 2 ;; esac
     "${CONTAINER[@]}" python "$REPO/tools/test_kvt_loopcd.py" \
         2>&1 | tee "$WORK/context/loopcd_contracts.log"
     if [ "${2:-pilot}" = contract ]; then
@@ -481,8 +481,10 @@ elif [ "$MODE" = loopcd ]; then
         echo 'JOB OK'
         exit 0
     fi
+    LOOPCD_ARGS=()
+    if [ "${2:-pilot}" = full ]; then LOOPCD_ARGS=(--full); fi
     "${CONTAINER[@]}" python "$REPO/tools/kvt_loopcd.py" \
-        --work "$WORK" --out "$OUT" --tag "$TAG" \
+        --work "$WORK" --out "$OUT" --tag "$TAG" "${LOOPCD_ARGS[@]}" \
         2>&1 | tee "$WORK/context/loopcd_pilot.log"
 elif [ "$MODE" = segment-detector ]; then
     case "${2:-single}" in
