@@ -45,3 +45,27 @@ Outputs in `/mnt/projects/gr/3DRecon/kvt_tum_out/`:
 and shared context/all_runs archives. Inputs are archived separately.
 Completion requires `SEGMENT NO LOOP COMPLETE` and wrapper `JOB OK`;
 review comparison.json and saved artifacts before advancing any experiment.
+
+## With-loop transfer (2026-10-04)
+
+User selected the identical comparison on freiburg2_large_with_loop, all5182
+RGB frames, after reviewing no-loop26198 timing/metrics. Stage `with-loop`
+reuses the same driver with an explicit scene argument. Fresh native and fixed
+ORB25/max200 reanchor; no retuning or additional arms. No model edits.
+Existing contracts/checkpoint/pixel checks and matched GT comparisons apply.
+Historical GT coverage1268/5182 is partial; actual spans/counts are saved and
+missing windows remain null. One observation per arm cannot establish statistical
+speed or loop causality across videos with different content and trajectories.
+
+In the submission chunk above, replace its W extension with:
+
+```bash
+W="$W && bash tools/kvt_tum.sbatch segment-detector with-loop"
+```
+
+Outputs: tum_JOB_segment_with_loop_inputs.tar, tum_JOB_with_loop_native.tar,
+tum_JOB_with_loop_reanchor.tar, tum_JOB_segment_with_loop_comparison.tar,
+plus context/all_runs. Completion requires `SEGMENT WITH LOOP COMPLETE` and
+`JOB OK`; accuracy/FPS/memory interpretation requires comparison/artifact review.
+No-loop default and its output naming are preserved. Local syntax checks only;
+with-loop staging/contracts/full evaluation remain pending user submission.

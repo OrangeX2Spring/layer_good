@@ -1,4 +1,4 @@
-"""CAMP-only fixed office-policy transfer: no-loop native versus live reanchor."""
+"""CAMP-only fixed office-policy transfer: loop/no-loop native versus live reanchor."""
 import argparse
 import json
 from pathlib import Path
@@ -22,36 +22,37 @@ def main(args):
         checkpoint = json.load(packed.extractfile('./oracle_sources.json'))['checkpoint']
     snapshot = Path(snapshot_download('yyfz233/Pi3', local_files_only=True))
     assert {name: sha256(snapshot / name) for name in checkpoint} == checkpoint
-    scene = 'freiburg2_large_no_loop'
+    scene = args.scene
+    label = 'with_loop' if scene == 'freiburg2_large_with_loop' else 'no_loop'
     archive = Path('/mnt/datasets/tum-rgbd') / f'rgbd_dataset_{scene}.zip'
     inputs = args.work / 'inputs' / scene
     prepare(archive, inputs, 308, .02)
     digest = sha256(archive)
     (inputs / 'archive.sha256').write_text(f'{digest}  {archive}\n')
-    archive_inputs(inputs, args.out / f'{args.tag}_segment_no_loop_inputs.tar')
-    release_page_cache(archive, inputs, args.out / f'{args.tag}_segment_no_loop_inputs.tar')
+    archive_inputs(inputs, args.out / f'{args.tag}_segment_{label}_inputs.tar')
+    release_page_cache(archive, inputs, args.out / f'{args.tag}_segment_{label}_inputs.tar')
     manifest = json.loads((inputs / 'manifest.json').read_text())
     frames = len(manifest['inputs'])
-    assert frames == 3359
+    assert frames == {'freiburg2_large_no_loop': 3359, 'freiburg2_large_with_loop': 5182}[scene]
     tools = Path(__file__).parent
-    native = args.work / 'runs' / 'no_loop_native'
+    native = args.work / 'runs' / f'{label}_native'
     native.mkdir(parents=True)
     write_json(native / 'config.json', dict(mode='native', scene_dir=str(inputs),
         frames=frames, evaluate=True, sources={str(archive): digest}, checkpoint=checkpoint))
     subprocess.run([sys.executable, str(tools / 'kvt_handoff_pilot.py'),
                     '--run', str(native / 'config.json')], check=True)
-    archive_directory(native, args.out / f'{args.tag}_no_loop_native.tar')
+    archive_directory(native, args.out / f'{args.tag}_{label}_native.tar')
     baseline = json.loads((native / 'metrics.json').read_text())
     assert baseline['evaluated_frames'] == manifest['gt_valid_frames']
-    comparison = args.work / 'runs' / 'segment_no_loop_comparison'
+    comparison = args.work / 'runs' / f'segment_{label}_comparison'
     comparison.mkdir()
     policy = dict(detector='orb', minimum_inliers=25, maximum_segment_frames=200)
     write_json(comparison / 'policy.json', policy)
     subprocess.run([sys.executable, str(tools / 'kvt_reanchor_maps.py'),
         '--work', str(args.work), '--out', str(args.out), '--tag', args.tag,
         '--inputs', str(inputs), '--native-metrics', str(native / 'metrics.json'),
-        '--detector-config', str(comparison / 'policy.json'), '--name', 'no_loop_reanchor'], check=True)
-    result = args.work / 'runs' / 'no_loop_reanchor'
+        '--detector-config', str(comparison / 'policy.json'), '--name', f'{label}_reanchor'], check=True)
+    result = args.work / 'runs' / f'{label}_reanchor'
     run = json.loads((result / 'summary.json').read_text())
     assert json.loads((result / 'environment.json').read_text()) == json.loads(
         (native / 'environment.json').read_text())
@@ -83,9 +84,10 @@ def main(args):
         gt_used_by_tracker=False, alignment='one full-valid Sim(3) per arm; windows retain it',
         caveat='office-calibrated policy; one timing per arm; sparse GT cannot score the whole route; '
                'historical native provenance remains pending; fresh native is the matched control'))
-    archive_directory(comparison, args.out / f'{args.tag}_segment_no_loop_comparison.tar')
-    (args.work / 'JOB_OK').write_text('No-loop comparison complete; inspect accuracy and sparse GT\n')
-    print('SEGMENT NO LOOP COMPLETE: native + ORB25/max200 reanchor;', ratios, flush=True)
+    archive_directory(comparison, args.out / f'{args.tag}_segment_{label}_comparison.tar')
+    (args.work / 'JOB_OK').write_text(f'{scene} comparison complete; inspect accuracy and sparse GT\n')
+    print('SEGMENT', label.replace('_', ' ').upper(),
+          'COMPLETE: native + ORB25/max200 reanchor;', ratios, flush=True)
 
 
 if __name__ == '__main__':
@@ -93,4 +95,6 @@ if __name__ == '__main__':
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--tag', required=True)
+    parser.add_argument('--scene', default='freiburg2_large_no_loop',
+                        choices=('freiburg2_large_no_loop', 'freiburg2_large_with_loop'))
     main(parser.parse_args())
