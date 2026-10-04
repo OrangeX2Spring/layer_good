@@ -48,7 +48,13 @@ def main(args):
             packed.extractall(args.work / 'inputs')
     inputs = args.inputs if args.inputs is not None else args.work / 'inputs' / 'office'
     manifest = json.loads((inputs / 'manifest.json').read_text())
-    assert len(manifest['inputs']) == 2585
+    frames = len(manifest['inputs'])
+    native = json.loads(args.native_metrics.read_text()) if args.native_metrics else NATIVE
+    sources = {str(inputs): sha256(inputs / 'manifest.json')} if args.native_metrics else SOURCES
+    if not args.native_metrics:
+        assert frames == 2585
+    if args.native_metrics:
+        assert args.detector_config is not None, 'Non-office runs require a live detector policy'
 
     boundaries = list(BOUNDARIES)
     detector = None
@@ -59,7 +65,7 @@ def main(args):
         if args.segmentation is not None:
             expected_rows = [json.loads(line) for line in
                              args.segmentation.with_name('scores.jsonl').read_text().splitlines()]
-            assert segmentation['frames'] == len(expected_rows) == 2585
+            assert segmentation['frames'] == len(expected_rows) == frames
         flow = segmentation['detector'] == 'flow'
         assert segmentation['detector'] in ('flow', 'orb')
         maximum = segmentation.get('maximum_segment_frames')
@@ -70,14 +76,14 @@ def main(args):
         detector_policy['maximum_segment_frames'] = maximum
         cv2.setNumThreads(1)
         cv2.setRNGSeed(0)
-        boundaries = [0, 2585]  # Append only when the live detector triggers.
+        boundaries = [0, frames]  # Append only when the live detector triggers.
     result = args.work / 'runs' / args.name
     result.mkdir(parents=True)
-    write_json(result / 'config.json', dict(boundaries=boundaries, sources=SOURCES,
+    write_json(result / 'config.json', dict(boundaries=boundaries, sources=sources,
         checkpoint=checkpoint, keyframes='segment first frame + latest, rebuilt every 50; '
         'later rebuilds rescaled to the first via the anchor pointmap',
         connection='pose-anchored at b, point-fit scale, always committed, 49-frame delay',
-        history='old KV and images deleted at b', native=NATIVE, margin=MARGIN,
+        history='old KV and images deleted at b', native=native, margin=MARGIN,
         short_tail='at EOF rebuild [anchor,last] and commit pending connection',
         segmentation_policy=detector_policy if detector is not None else None,
         gt_used_by_tracker=False, seed=0))
@@ -131,7 +137,7 @@ def main(args):
         timing['includes'] = 'pixels, hashing, live detector, tracking, geometry, bridge and logging; excludes load/evaluation'
     if detector is not None:
         if expected_rows is not None:
-            assert boundaries == segmentation['boundaries'] + [2585]
+            assert boundaries == segmentation['boundaries'] + [frames]
         with (result / 'segmentation_live.jsonl').open('w') as stream:
             for row in detector_rows:
                 stream.write(json.dumps(row, allow_nan=False) + '\n')
@@ -139,7 +145,7 @@ def main(args):
     config['boundaries'] = boundaries
     write_json(result / 'config.json', config)
     local_poses = np.asarray(local_poses)
-    assert local_poses.shape == (2585, 4, 4) and np.isfinite(local_poses).all()
+    assert local_poses.shape == (frames, 4, 4) and np.isfinite(local_poses).all()
     assert tracker.pending is None and len(tracker.transforms) == len(boundaries) - 1
     assert [e['boundary'] for e in tracker.events] == boundaries[1:-1]
     rows = [json.loads(x) for x in (result / 'inference.jsonl').read_text().splitlines()]
@@ -164,15 +170,15 @@ def main(args):
         metrics['seams'] = dict(starts=q['rpe_pair_start_indices'][seams].tolist(),
                                 translation_m=rpe[seams].tolist())
     assert (metrics['evaluated_frames'], metrics['rpe_pairs']) == (
-        NATIVE['evaluated_frames'], NATIVE['rpe_pairs']), 'GT association differs from native'
-    checks = {key: metrics[key] <= MARGIN * NATIVE[key]
+        native['evaluated_frames'], native['rpe_pairs']), 'GT association differs from native'
+    checks = {key: metrics[key] <= MARGIN * native[key]
               for key in ('ate_m', 'rpe_translation_m', 'translation_p99_m')}
     timing['max_cache_bytes'] = max(row['cache_bytes'] for row in rows)
     for kind in ('bootstrap', 'query', 'rebuild', 'shared_geometry', 'update_total'):
         timing[kind + '_seconds'] = sum(row['seconds'] for row in rows if row['kind'] == kind)
     write_json(result / 'environment.json', dict(torch=torch.__version__, cuda=torch.version.cuda,
         gpu=torch.cuda.get_device_name(), seed=0, resize_dim=308))
-    write_json(result / 'summary.json', dict(metrics=metrics, native=NATIVE, margin=MARGIN,
+    write_json(result / 'summary.json', dict(metrics=metrics, native=native, margin=MARGIN,
         native_checks=checks, objective_achieved=all(checks.values()), timing=timing,
         events=tracker.events))
     archive_directory(result, args.out / f'{args.tag}_{args.name}.tar')
@@ -181,9 +187,9 @@ def main(args):
     if detector is None:
         (args.work / 'JOB_OK').write_text('Execution passed; read native_checks in summary.json\n')
     print('REANCHOR MAPS COMPLETE: ATE %.4f m (native %.4f), RPE %.4f (%.4f), p99 %.4f (%.4f), '
-          'within 5%% of native: %s' % (metrics['ate_m'], NATIVE['ate_m'],
-          metrics['rpe_translation_m'], NATIVE['rpe_translation_m'],
-          metrics['translation_p99_m'], NATIVE['translation_p99_m'], all(checks.values())),
+          'within 5%% of native: %s' % (metrics['ate_m'], native['ate_m'],
+          metrics['rpe_translation_m'], native['rpe_translation_m'],
+          metrics['translation_p99_m'], native['translation_p99_m'], all(checks.values())),
           flush=True)
 
 
@@ -193,6 +199,7 @@ if __name__ == '__main__':
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--tag', required=True)
     parser.add_argument('--inputs', type=Path)
+    parser.add_argument('--native-metrics', type=Path)
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument('--segmentation', type=Path)
     selection.add_argument('--detector-config', type=Path)
