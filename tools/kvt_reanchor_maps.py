@@ -53,6 +53,8 @@ def main(args):
     sources = {str(inputs): sha256(inputs / 'manifest.json')} if args.native_metrics else SOURCES
     if not args.native_metrics:
         assert frames == 2585
+    if args.object_scene:
+        assert args.inputs is not None and args.native_metrics is not None
     if args.native_metrics:
         assert args.detector_config is not None, 'Non-office runs require a live detector policy'
 
@@ -162,12 +164,17 @@ def main(args):
         rotation=r.tolist(), translation=t.tolist())
         for start, (s, r, t) in zip(boundaries[:-1], tracker.transforms, strict=True)])
 
-    metrics = evaluate(inputs, result, .02)
+    if args.object_scene:
+        from kvt_patch_select import evaluate_object
+        metrics = evaluate_object(args.object_scene, result, frames)
+    else:
+        metrics = evaluate(inputs, result, .02)
     with np.load(result / 'evaluation.npz') as q:
-        rpe = q['rpe_translation_per_pair_m']
+        rpe = q['translation_m'] if args.object_scene else q['rpe_translation_per_pair_m']
+        pair_starts = q['pair_end_frames'] - 1 if args.object_scene else q['rpe_pair_start_indices']
         metrics['translation_p99_m'] = float(np.quantile(rpe, .99))
-        seams = np.isin(q['rpe_pair_start_indices'], np.array(boundaries[1:-1]) - 1)
-        metrics['seams'] = dict(starts=q['rpe_pair_start_indices'][seams].tolist(),
+        seams = np.isin(pair_starts, np.array(boundaries[1:-1]) - 1)
+        metrics['seams'] = dict(starts=pair_starts[seams].tolist(),
                                 translation_m=rpe[seams].tolist())
     assert (metrics['evaluated_frames'], metrics['rpe_pairs']) == (
         native['evaluated_frames'], native['rpe_pairs']), 'GT association differs from native'
@@ -177,7 +184,7 @@ def main(args):
     for kind in ('bootstrap', 'query', 'rebuild', 'shared_geometry', 'update_total'):
         timing[kind + '_seconds'] = sum(row['seconds'] for row in rows if row['kind'] == kind)
     write_json(result / 'environment.json', dict(torch=torch.__version__, cuda=torch.version.cuda,
-        gpu=torch.cuda.get_device_name(), seed=0, resize_dim=308))
+        gpu=torch.cuda.get_device_name(), seed=0, resize_dim=518 if args.object_scene else 308))
     write_json(result / 'summary.json', dict(metrics=metrics, native=native, margin=MARGIN,
         native_checks=checks, objective_achieved=all(checks.values()), timing=timing,
         events=tracker.events))
@@ -200,6 +207,8 @@ if __name__ == '__main__':
     parser.add_argument('--tag', required=True)
     parser.add_argument('--inputs', type=Path)
     parser.add_argument('--native-metrics', type=Path)
+    parser.add_argument('--object-scene', choices=('box_grab_01', 'ketchup_grab_01',
+                                                  'espressomachine_grab_01'))
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument('--segmentation', type=Path)
     selection.add_argument('--detector-config', type=Path)
