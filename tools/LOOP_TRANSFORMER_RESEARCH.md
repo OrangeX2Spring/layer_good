@@ -1,5 +1,46 @@
 # Loop-transformer directions for KV-Tracker — 2026-10-08
 
+## Recovery review after 26348 — 2026-10-08
+
+Current decision: user authorized a correction and retry. The six failed pilots
+are recorded in FINDINGS 26348; they do not establish that looped architectures
+are intrinsically unsuitable. The old all-method/overnight directions below are
+historical. The next experiment is one bounded relaxed-model recovery attempt,
+with no automatic tracking/full promotion. See the implementation protocol.
+
+Primary-source review:
+
+| Source | Implementation lesson | Pi3 adaptation |
+|---|---|---|
+| [Relaxed Recursive Transformers, ICLR 2025](https://arxiv.org/html/2410.20672v2) | Pretrained conversion uses shared weights, depth-specific SVD-initialized low-rank residuals and uptraining; recovery depends on rank and sharing strength. | Keep all local/global executions, use two repetitions and rank 64 residuals; preserve entry/exit and frozen heads. This is a chosen diagnostic setting, not a paper-prescribed Pi3 optimum. |
+| [RAPTOR, ICLR 2026](https://arxiv.org/html/2512.19941v6) and [author code](https://github.com/KempnerInstitute/raptor) | Intermediate activation targets and teacher-forced/free-running training address error accumulation. | Supervise loop-boundary bank/query states and anneal teacher-state injection away. Our input interpolation and two fixed boundaries differ from its dual TF/AR loss and discovered phases; this is not a reproduction. |
+| [LoopFormer, ICLR 2026](https://arxiv.org/html/2602.11451v1), [official model](https://github.com/armenjeddi/loopformer/blob/master/models/loopformer.py), [training](https://github.com/armenjeddi/loopformer/blob/master/train.py) | Time/step conditioning modulates residual branches; long/short paths receive an explicit stop-gradient consistency objective. | Our additive embedding plus independent teacher losses did not implement this mechanism. Defer the elastic shortcut until a full-depth converted model recovers; do not label the old elastic path a LoopFormer reproduction. |
+| [Déjà View, 2026](https://arxiv.org/html/2605.30215v1), [official project](https://research.nvidia.com/labs/dvl/projects/dvlt/) | Directly relevant geometry model: time-conditioned frame/global recurrence, independently normalized geometry losses, and variable loop counts trained end-to-end. | Preserve Pi3's frame/global roles, registers, RoPE and two-state head interface. Its new depth/ray heads and large multi-dataset training are a separate model project, not an inexpensive Pi3 retrofit. |
+
+Code-level diagnosis versus hypotheses:
+
+- Confirmed: `map_scale` used in translation/geometry denominators was derived
+  from detached student bank points. The gradient therefore omitted part of the
+  very normalized objective being measured. Keep its graph; preserve detached
+  adaptive diagnostic map points. A missing gradient is evidence of an objective
+  mismatch, not proof that it alone caused the tracking failure.
+- Confirmed: old training supervised the final query feature/output; it did not
+  supervise the bank's intermediate trajectory. Recovery adds explicit targets
+  at native decoder indices 17/33 and teacher inputs at 1/17 (zero-based).
+- Confirmed: old optimizer updates used one query, while selection used the mean
+  over eight. Recovery accumulates the mean gradient over all eight before an
+  update. Conflicting queries/momentum remain hypotheses until the new logs.
+- Existing one-scene, eight-query training is an engineering diagnostic, not
+  adequate evidence of generalization. Development remains a separate TUM scene,
+  and office is untouched until a separately reviewed pilot. Passing relative
+  distillation-loss gates is not native tracking parity.
+
+No new datasets, checkpoints, environments or model replacements are introduced.
+No claim of 2x FPS/half total memory: the recovery path keeps all 36 decoder
+executions and 18 historical banks and may increase memory relative to the old
+four-repeat/rank 16 prototype. This deliberately tests recoverability first.
+
+
 Follow-up: user selected implementation of all seven. The prepared model paths,
 fixed settings and current contract-first procedure are in
 [LOOP_TRANSFORMER_IMPLEMENTATION.md](LOOP_TRANSFORMER_IMPLEMENTATION.md).

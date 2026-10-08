@@ -55,6 +55,89 @@ class PrimitiveContracts(unittest.TestCase):
 
 
 class DriverContracts(unittest.TestCase):
+    def test_recovery_accumulates_queries_and_gates_on_free_running_development(self):
+        from loop_transformer import train_one, SPLITS
+
+        class ModelFixture(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.weight = nn.Parameter(torch.tensor(2., device='cuda'))
+                self.config = LoopConfig('relaxed', core_pairs=8, full_loops=2,
+                                         short_loops=1, rank=64, recovery=True)
+
+            def save(self, path, provenance):
+                torch.save(dict(state_dict=self.state_dict(), provenance=provenance), path)
+
+            def storage_report(self):
+                return {}
+
+        for development_improves in (True, False):
+            with self.subTest(development_improves=development_improves), \
+                 tempfile.TemporaryDirectory(dir='/tmp') as temporary:
+                work = Path(temporary)
+                (work / 'labels').mkdir()
+                for split, scene in SPLITS.items():
+                    labels = [dict(frame=i, split=split) for i in range(8)]
+                    torch.save(dict(scene=scene, manifest_sha256='fixture', checkpoint_weights={},
+                                    labels=labels), work / 'labels' / f'{split}.pt')
+                model = ModelFixture()
+                calls = []
+
+                def loss_fixture(model, images, label, budget, teacher_mix=0., components=None):
+                    calls.append((torch.is_grad_enabled(), label['split'], teacher_mix, label['frame']))
+                    if label['split'] == 'development' and not development_improves:
+                        return (4 - model.weight).square()
+                    return model.weight.square()
+
+                class OptimizerFixture:
+                    param_groups = [dict(lr=1e-5)]
+
+                    def zero_grad(self, **kwargs):
+                        model.weight.grad = None
+
+                    def step(self):
+                        with torch.no_grad():
+                            model.weight.fill_(1.)
+
+                # Capture the accumulated gradient before clipping.
+                def clip_fixture(parameters, maximum):
+                    self.assertAlmostEqual(float(model.weight.grad), 2 * float(model.weight))
+                    return model.weight.grad.abs()
+
+                with patch('loop_transformer.build_model', return_value=(model, None)), \
+                     patch('loop_transformer.load_images', return_value=({}, [torch.zeros(3, 14, 14)])), \
+                     patch('loop_transformer.sha256', return_value='fixture'), \
+                     patch('loop_transformer.checkpoint_identity', return_value={}), \
+                     patch('loop_transformer.calibration', return_value=None), \
+                     patch('loop_transformer.query_loss', side_effect=loss_fixture), \
+                     patch('loop_transformer.torch.nn.utils.clip_grad_norm_', side_effect=clip_fixture), \
+                     patch('loop_transformer.torch.optim.AdamW', return_value=OptimizerFixture()):
+                    train_one(work, 'relaxed', steps=8, aggregate_gate=True, recovery=True)
+                trained = [row for row in calls if row[0]]
+                self.assertEqual(len(trained), 64)
+                self.assertEqual([row[3] for row in trained[:8]], list(range(8)))
+                self.assertEqual([trained[i * 8][2] for i in range(8)], [1., .5, 0., 0., 0., 0., 0., 0.])
+                self.assertTrue(all(row[2] == 0 for row in calls if row[1] == 'development'))
+                summary = json.loads((work / 'models/relaxed/summary.json').read_text())
+                self.assertEqual(summary['pilot_eligible'], development_improves)
+                self.assertEqual(summary['development_loss_decreased'], development_improves)
+                self.assertEqual(summary['selected_step'], 8)
+
+    def test_normalized_geometry_gradient_includes_scale(self):
+        from loop_transformer import distillation_loss, trajectory_loss
+        scale = torch.tensor(2., device='cuda', requires_grad=True)
+        pose = torch.eye(4, device='cuda')
+        pose = pose + torch.nn.functional.pad(scale.expand(3, 1), (3, 0, 0, 1))
+        label = dict(origin=torch.eye(4), pose=torch.eye(4).reshape(1, 1, 4, 4), scale=torch.tensor(1.))
+        loss = distillation_loss(dict(camera_poses=pose.reshape(1, 1, 4, 4)), label,
+                                 torch.eye(4, device='cuda'), scale)
+        gradient, = torch.autograd.grad(loss, scale)
+        torch.testing.assert_close(gradient, torch.zeros_like(gradient), atol=1e-6, rtol=0)
+        target = torch.ones(2, 9, 4, device='cuda')
+        features = target.clone().requires_grad_()
+        torch.testing.assert_close(trajectory_loss({17: features}, {17: target.reshape(1, 18, 4)}),
+                                   torch.zeros((), device='cuda'))
+
     def test_training_exports_best_measured_state_and_rejects_no_improvement(self):
         from loop_transformer import train_one, SPLITS
 
@@ -242,6 +325,61 @@ class Pi3Contracts(unittest.TestCase):
         cls.native = move_pi3_mlps_to_bfloat32(load_pi3_from_pretrained().eval())
         cls.native.requires_grad_(False)
         cls.images = torch.rand(1, 3, 3, 56, 84, device='cuda')
+
+    def test_recovery_teacher_boundaries_scale_gradient_and_round_trip(self):
+        from loop_transformer import teacher_labels, query_loss
+        with tempfile.TemporaryDirectory(dir='/tmp') as temporary:
+            root = Path(temporary)
+            with patch('loop_transformer.load_pi3_from_pretrained', return_value=self.native), \
+                 patch('loop_transformer.load_images', return_value=(dict(scene='fixture'), list(self.images[0]))), \
+                 patch('loop_transformer.QUERY_FRAMES', (2,)), \
+                 patch('loop_transformer.sha256', return_value='fixture'), \
+                 patch('loop_transformer.checkpoint_identity', return_value={}):
+                teacher_labels(root, root / 'labels.pt', recovery=True)
+            label = torch.load(root / 'labels.pt', weights_only=True)['labels'][0]
+            self.assertEqual(set(label['trajectory']), {1, 17, 33})
+            self.assertEqual(set(label['bank_trajectory']), {1, 17, 33})
+            config = LoopConfig('relaxed', core_pairs=8, full_loops=2, short_loops=1,
+                                rank=64, recovery=True)
+            model = LoopedPi3(self.native, config, initialize=False).train()
+            self.assertFalse(any(p.requires_grad for p in model.condition.parameters()))
+            for mixture in (1., 0.):
+                model.zero_grad(set_to_none=True)
+                inputs = []
+                handle = model.depth_blocks[len(model.core)].register_forward_pre_hook(
+                    lambda module, args: inputs.append(args[0].detach().clone()))
+                loss = query_loss(model, list(self.images[0]), label, 2, teacher_mix=mixture)
+                handle.remove()
+                self.assertEqual(len(inputs), 2)
+                if mixture == 1.:
+                    for actual_input, targets in zip(inputs, (label['bank_trajectory'], label['trajectory'])):
+                        torch.testing.assert_close(actual_input, targets[17].to(actual_input).reshape_as(actual_input),
+                                                   rtol=0, atol=0)
+                self.assertEqual(set(model.loop_features), {17, 33})
+                self.assertEqual(len(model.cache), 18)
+                self.assertTrue(model.map_scale.requires_grad)
+                self.assertIsNone(model.teacher_states)
+                scale_gradient, = torch.autograd.grad(model.map_scale, model.core[0].attn.qkv.weight,
+                                                      retain_graph=True)
+                self.assertTrue(torch.isfinite(scale_gradient).all())
+                self.assertGreater(float(scale_gradient.abs().sum()), 0.)
+                loss.backward()
+                self.assertTrue(all(p.grad is None or torch.isfinite(p.grad).all() for p in model.parameters()))
+            model.eval()
+            with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
+                model(self.images[:, :2], store_cache=True)
+                expected = model(self.images[:, 2:], cam_only=True, use_cache=True)['camera_poses']
+            model.save(root / 'model.pt', dict(recovery=True))
+            reloaded, provenance = load_looped(self.native, root / 'model.pt')
+            self.assertTrue(provenance['recovery'])
+            self.assertEqual(reloaded.config, config)
+            with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
+                reloaded(self.images[:, :2], store_cache=True)
+                actual = reloaded(self.images[:, 2:], cam_only=True, use_cache=True)['camera_poses']
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+            del model, reloaded, loss, scale_gradient, inputs
+            gc.collect()
+            torch.cuda.empty_cache()
 
     def test_rope_backward_strided_and_broadcast_gradients(self):
         native = self.native.decoder[0].attn.rope

@@ -5,6 +5,61 @@ paper links: [LOOP_TRANSFORMER_RESEARCH.md](LOOP_TRANSFORMER_RESEARCH.md).
 These are geometry prototypes inspired by the papers, not reproductions of
 their language/VLM architectures or demonstrated tracker improvements.
 
+## Current retry: relaxed recovery after 26348 — 2026-10-08
+
+Supersedes the historical all-method submission instructions below. User
+requested a paper-informed correction and retry. Research rationale and primary
+sources: [recovery review](LOOP_TRANSFORMER_RESEARCH.md#recovery-review-after-26348--2026-10-08).
+
+`train relaxed recovery` runs contracts and prepares exactly one new model:
+
+- Two recurrences of eight complete local/global pairs, rank 64 depth-specific
+  SVD residuals. Dedicated entry/exit pairs preserve all 36 executed blocks and
+  all 18 cache slots. Frozen additive conditioning remains zero; depth-specific
+  adapters/norms supply specialization. No short schedule or routing.
+- Native teacher records bank and query states at decoder indices 1/17/33.
+  Intermediate losses match 17/33, averaging normalized register/patch errors
+  equally. They augment the existing final feature and geometry/pose losses.
+- For optimizer indices 0–49, mix teacher states into the two loop inputs with
+  weight `max(0, 1-step/50)`; indices 50–199 use only student states. This
+  curriculum is a geometry adaptation inspired by RAPTOR, not its exact loss.
+- 200 optimizer updates, each accumulating all eight train queries (1600 query
+  examples including repeated examples), peak LR 1e-5, 20-update linear warmup,
+  then cosine decay toward 0.1x peak. Before/after diagnostics use the same
+  mixture and full-batch objective within each step; values across changing
+  mixtures are not directly comparable. Component losses and scales are logged.
+- Checkpoint selection uses the unchanged free-running mode every eight updates
+  and at the end, including during the curriculum. Retain best measured state.
+  Both fixed train mean and separate development-scene mean must improve over
+  initialization for preparation eligibility. Development is a gate, not a
+  gradient source. Selected development loss components are preserved.
+- Scale normalization now differentiates student bank scale as well as bank
+  features/origin. Diagnostic adaptive map points remain detached.
+
+Contracts cover curriculum accumulation/development rejection, scale gradients,
+real teacher capture, loop boundaries, inference without teacher states and
+checkpoint reload; existing native/cache/gradient contracts still run first.
+Local verification is Python 3.10 syntax, shell syntax and diff checks only.
+GPU contracts, SVD initialization at rank 64, peak memory and loss behavior await
+CAMP. Existing archives cannot be reused with changed source/driver hashes.
+
+After publication, user runs from `layer_good` on head:
+
+```bash
+W='git -c fetch.recurseSubmodules=0 pull --ff-only'
+W="$W && bash tools/loop_transformer.sbatch train relaxed recovery"
+O=../loop_transformer_slurm-%j.log
+sbatch -p 24g -w stuttgart --gres=gpu:1 --propagate=NONE \
+  -t 04:00:00 -o "$O" --wrap="$W"
+```
+
+This is one bounded job, not a runtime estimate. Expected evidence: contracts
+OK, one relaxed summary, TRAIN JOB OK, final `loop_JOB_train.tar` and Slurm 0:0.
+Review free-running checkpoint history, matched descent after teacher mixing
+ends, component scales and both train/development gates before proposing a
+256-frame paired pilot. No pilot/full job is queued behind this training.
+No teacher-assisted result is a deployment result; no automatic retry on failure.
+
 ## Authorized overnight experiment batch — 2026-10-08
 
 The user now requests one job for all seven designs, with automatic full-office

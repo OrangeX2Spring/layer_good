@@ -95,6 +95,13 @@ else
     if [ "$STAGE" = train ]; then
         # Same policy the overnight run used for its trained variants, for every variant.
         extra+=(--steps 200 --learning-rate 1e-5 --aggregate-gate)
+        if [ "${3:-}" = recovery ]; then
+            test "$VARIANT" = relaxed
+            extra+=(--recovery)
+        elif [ -n "${3:-}" ]; then
+            echo "Unknown training recipe: $3" >&2
+            exit 2
+        fi
     fi
     if [[ "$STAGE" = pilot || "$STAGE" = profile || "$STAGE" = full ]]; then
         SOURCE=${3:?Supply the reviewed training archive}

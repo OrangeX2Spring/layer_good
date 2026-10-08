@@ -5,6 +5,7 @@ import gc
 import hashlib
 import inspect
 import json
+import math
 from pathlib import Path
 import subprocess
 import sys
@@ -76,7 +77,7 @@ def calibration(scene, height, width, device):
     return k, distortion
 
 
-def build_model(variant, saved=None):
+def build_model(variant, saved=None, recovery=False):
     native = move_pi3_mlps_to_bfloat32(load_pi3_from_pretrained().eval())
     native.requires_grad_(False)
     if saved is not None:
@@ -86,25 +87,36 @@ def build_model(variant, saved=None):
         assert provenance['driver_sha256'] == sha256(__file__)
         assert model.config.variant == variant
     else:
-        model, provenance = LoopedPi3(native, LoopConfig(variant)), None
+        config = (LoopConfig(variant, core_pairs=8, full_loops=2, short_loops=1,
+                             rank=64, recovery=True) if recovery else LoopConfig(variant))
+        model, provenance = LoopedPi3(native, config), None
     del native
     gc.collect()
     return model, provenance
 
 
-def teacher_labels(inputs, output):
+def teacher_labels(inputs, output, recovery=False):
     torch.manual_seed(SEED)
     model = move_pi3_mlps_to_bfloat32(load_pi3_from_pretrained().eval())
     model.requires_grad_(False)
     manifest, images = load_images(inputs, 64)
     captured = []
     hook = model.camera_decoder.register_forward_pre_hook(lambda module, args: captured.append(args[0].detach()))
+    trajectory, hooks = {}, []
+    if recovery:
+        # Entry endpoint and the two complete 16-block middle trajectories.
+        for depth in (1, 17, 33):
+            def capture(module, args, result, depth=depth):
+                state = result[0] if isinstance(result, tuple) else result
+                trajectory[depth] = state.detach().cpu().clone()
+            hooks.append(model.decoder[depth].register_forward_hook(capture))
     labels = []
     with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
         for frame in QUERY_FRAMES:
             bank = [0, 0] if frame < 49 else [0, 49]
             captured.clear()
             reconstruction = model(torch.stack([images[i] for i in bank]).cuda()[None], store_cache=True)
+            bank_trajectory = dict(trajectory)
             origin = torch.linalg.inv(reconstruction['camera_poses'][0, 0].float())
             points = reconstruction['points'][0, :, 7::14, 7::14].reshape(-1, 3).float()
             scale = (points - points.mean(0)).norm(dim=-1).median().clamp_min(1e-6)
@@ -115,7 +127,11 @@ def teacher_labels(inputs, output):
                 pose=result['camera_poses'].float().cpu(), features=captured[0].cpu(),
                 local_points=result['local_points'].float().cpu(),
                 confidence=result['conf'].float().sigmoid().cpu()))
+            if recovery:
+                labels[-1].update(bank_trajectory=bank_trajectory, trajectory=dict(trajectory))
     hook.remove()
+    for handle in hooks:
+        handle.remove()
     torch.save(dict(labels=labels, scene=manifest['scene'], manifest_sha256=sha256(inputs / 'manifest.json'),
                     checkpoint_weights=checkpoint_identity()), output)
     print('LOOP TEACHER LABELS OK', manifest['scene'], len(labels), flush=True)
@@ -129,24 +145,50 @@ def rebuild(model, images, bank):
         return torch.linalg.inv(result['camera_poses'][0, 0].float())
 
 
-def distillation_loss(output, label, origin, scale):
+def distillation_loss(output, label, origin, scale, components=None):
     with torch.autocast('cuda', enabled=False):
         pose = output['camera_poses'][0, 0].float()
         predicted = origin @ pose
         expected = label['origin'].cuda() @ label['pose'][0, 0].cuda()
-        loss = F.mse_loss(predicted[:3, :3], expected[:3, :3])
-        loss = loss + F.mse_loss(predicted[:3, 3] / scale, expected[:3, 3] / label['scale'].cuda())
+        rotation = F.mse_loss(predicted[:3, :3], expected[:3, :3])
+        translation = F.mse_loss(predicted[:3, 3] / scale, expected[:3, 3] / label['scale'].cuda())
+        loss = rotation + translation
+        if components is not None:
+            components.update(rotation=float(rotation.detach()), translation=float(translation.detach()),
+                              student_scale=float(scale.detach()), teacher_scale=float(label['scale']))
         if 'local_points' in output:
             target = label['local_points'].cuda()[:, :, 7::14, 7::14]
             current = output['local_points'][:, :, 7::14, 7::14].float()
             weight = label['confidence'].cuda()[:, :, 7::14, 7::14]
-            loss = loss + ((current / scale - target / label['scale'].cuda()).square() * weight).mean()
+            geometry = ((current / scale - target / label['scale'].cuda()).square() * weight).mean()
+            loss = loss + geometry
+            if components is not None:
+                components['geometry'] = float(geometry.detach())
         return loss
 
 
-def query_loss(model, images, label, budget):
+def trajectory_loss(features, targets):
+    """Match native loop boundaries, weighting registers and patches equally."""
+    losses = []
+    for depth, features_at_depth in features.items():
+        target = targets[depth].to(features_at_depth.device).float().reshape_as(features_at_depth)
+        for rows in (slice(0, 5), slice(5, None)):
+            expected = target[:, rows]
+            norm = expected.square().mean().clamp_min(1e-6)
+            losses.append((features_at_depth[:, rows].float() - expected).square().mean() / norm)
+    return torch.stack(losses).mean()
+
+
+def query_loss(model, images, label, budget, teacher_mix=0., components=None):
     model.query_loops = budget
+    recovery = model.config.recovery
+    if recovery:
+        model.teacher_mix = teacher_mix
+        model.teacher_states = label['bank_trajectory'] if teacher_mix else None
     origin = rebuild(model, images, label['bank'])
+    if recovery:
+        bank_loss = trajectory_loss(model.loop_features, label['bank_trajectory'])
+        model.teacher_states = label['trajectory'] if teacher_mix else None
     if model.config.variant == 'refiner':
         # Match deployment history; train through the whole causal rollout.
         with torch.autocast('cuda', dtype=torch.bfloat16):
@@ -155,11 +197,21 @@ def query_loss(model, images, label, budget):
     with torch.autocast('cuda', dtype=torch.bfloat16):
         output = model(images[label['frame']].cuda()[None, None], use_cache=True,
                        cam_only=model.config.variant == 'refiner')
-        loss = distillation_loss(output, label, origin, model.map_scale)
+        loss = distillation_loss(output, label, origin, model.map_scale, components=components)
+        if recovery:
+            query_trajectory = trajectory_loss(model.loop_features, label['trajectory'])
+            loss = loss + bank_loss + query_trajectory
+            if components is not None:
+                components.update(bank_trajectory=float(bank_loss.detach()),
+                                  query_trajectory=float(query_trajectory.detach()))
+            model.teacher_states = None
         if model.config.variant != 'refiner':
             target = label['features'].cuda().float()
             norm = target.square().mean().sqrt().clamp_min(1e-6)
-            loss = loss + F.mse_loss(model.last_features.float() / norm, target / norm)
+            features = F.mse_loss(model.last_features.float() / norm, target / norm)
+            loss = loss + features
+            if components is not None:
+                components['features'] = float(features.detach())
             for features in model.exit_features.values():
                 # Supervise every prefix eligible for adaptive early stopping.
                 loss = loss + F.mse_loss(features.float() / norm, target / norm)
@@ -227,12 +279,15 @@ def calibrate_halting(model, images, labels, result):
     return passed
 
 
-def train_one(work, variant, steps=STEPS, learning_rate=1e-4, aggregate_gate=False, initialize_only=False):
+def train_one(work, variant, steps=STEPS, learning_rate=1e-4, aggregate_gate=False, initialize_only=False,
+              recovery=False):
     assert steps > 0 and learning_rate > 0
+    if recovery:
+        assert variant == 'relaxed' and aggregate_gate and not initialize_only and steps >= 8
     if initialize_only:
         assert variant in ('relaxed', 'shared_kv', 'adaptive', 'token', 'nested')
     torch.manual_seed(SEED)
-    model, _ = build_model(variant)
+    model, _ = build_model(variant, recovery=True) if recovery else build_model(variant)
     data = {}
     for split, scene in SPLITS.items():
         inputs = work / 'inputs' / split
@@ -251,6 +306,12 @@ def train_one(work, variant, steps=STEPS, learning_rate=1e-4, aggregate_gate=Fal
     model.geometry_calibration = calibration(SPLITS['train'], *images[0].shape[-2:], 'cuda')
     model.train()
     model.collect_exits = False
+    development_baseline = None
+    if recovery:
+        development_images, development_labels = data['development']
+        with torch.no_grad():
+            development_baseline = [float(query_loss(model, development_images, label, budgets[0]))
+                                    for label in development_labels]
     with torch.no_grad():
         baseline = [float(query_loss(model, images, label, budget))
                     for label in (labels if aggregate_gate else labels[:1])
@@ -263,24 +324,48 @@ def train_one(work, variant, steps=STEPS, learning_rate=1e-4, aggregate_gate=Fal
         trained = {name: p for name, p in model.named_parameters() if p.requires_grad}
         best_weights = {name: p.detach().cpu().clone() for name, p in trained.items()}
     for step in range(0 if initialize_only else steps):
-        label = labels[step % len(labels)]
+        teacher_mix = max(0., 1. - step / (steps // 4)) if recovery else 0.
+        if recovery:
+            warmup = max(1, steps // 10)
+            factor = ((step + 1) / warmup if step < warmup else
+                      .1 + .9 * .5 * (1 + math.cos(math.pi * (step - warmup) / (steps - warmup))))
+            for group in optimizer.param_groups:
+                group['lr'] = learning_rate * factor
+        step_labels = labels if recovery else [labels[step % len(labels)]]
         optimizer.zero_grad(set_to_none=True)
         losses = []
-        for budget in budgets:
-            loss = query_loss(model, images, label, budget) / len(budgets)
-            loss.backward()
-            losses.append(float(loss.detach()))
-            # Keep no old graph live across budgets or optimizer steps.
-            model.last_features = model.routing_features = model.routing_scores = None
-            model.exit_features = {}
+        component_rows = []
+        for label in step_labels:
+            for budget in budgets:
+                components = {} if recovery else None
+                loss = (query_loss(model, images, label, budget, teacher_mix=teacher_mix, components=components) if recovery
+                        else query_loss(model, images, label, budget)) / (len(budgets) * len(step_labels))
+                loss.backward()
+                losses.append(float(loss.detach()))
+                if recovery:
+                    component_rows.append(dict(frame=label['frame'], **components))
+                # Keep no old graph live across budgets or optimizer steps.
+                model.last_features = model.routing_features = model.routing_scores = None
+                model.exit_features = {}
+                if recovery:
+                    model.loop_features = {}
         assert all(p.grad is None or torch.isfinite(p.grad).all() for p in model.parameters())
         grad_norm = float(torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad], 1.))
         optimizer.step()
         # Descent diagnostic: same query and full budget, fresh rebuild after the update.
         with torch.no_grad():
-            after = float(query_loss(model, images, label, budgets[0]))
-        updates.append(dict(step=step + 1, frame=label['frame'], loss=sum(losses), gradient_norm=grad_norm,
-                            full_budget_before=losses[0] * len(budgets), full_budget_after=after))
+            if recovery:
+                after = sum(float(query_loss(model, images, label, budgets[0], teacher_mix=teacher_mix))
+                            for label in step_labels) / len(step_labels)
+            else:
+                after = float(query_loss(model, images, label, budgets[0]))
+        updates.append(dict(step=step + 1, frame=None if recovery else label['frame'],
+                            loss=sum(losses), gradient_norm=grad_norm,
+                            full_budget_before=sum(losses) if recovery else losses[0] * len(budgets),
+                            full_budget_after=after,
+                            teacher_mix=teacher_mix, queries_per_update=len(step_labels),
+                            components=component_rows,
+                            learning_rate=optimizer.param_groups[0]['lr'] if recovery else learning_rate))
         write_json(result / 'updates.json', updates)
         # Select on the same fixed objective as the gate, after each query cycle.
         if (step + 1) % len(labels) == 0 or step + 1 == steps:
@@ -310,18 +395,28 @@ def train_one(work, variant, steps=STEPS, learning_rate=1e-4, aggregate_gate=Fal
     images, labels = data['development']
     model.geometry_calibration = calibration(SPLITS['development'], *images[0].shape[-2:], 'cuda')
     development = []
+    development_components = []
     # Train-mode without gradients suppresses deployment halting until calibrated.
     model.train()
     with torch.no_grad():
         for label in labels:
-            development.append(float(query_loss(model, images, label, budgets[0])))
+            if recovery:
+                components = {}
+                development.append(float(query_loss(model, images, label, budgets[0], components=components)))
+                development_components.append(dict(frame=label['frame'], **components))
+            else:
+                development.append(float(query_loss(model, images, label, budgets[0])))
     calibration_pass = calibrate_halting(model, images, labels, result) if variant == 'adaptive' else None
     model.eval()
     improved = selected_step > 0 and final < initial
+    development_improved = (sum(development) < sum(development_baseline)) if recovery else None
     pilot_eligible = (initialize_only or improved) and (variant != 'adaptive' or calibration_pass)
+    if recovery:
+        pilot_eligible = pilot_eligible and development_improved
     provenance = dict(seed=SEED, steps=0 if initialize_only else steps,
         learning_rate=None if initialize_only else learning_rate, splits=SPLITS,
         preparation='initialized' if initialize_only else 'trained', pilot_eligible=pilot_eligible,
+        recovery=recovery, development_loss_decreased=development_improved,
         selected_step=None if initialize_only else selected_step,
         last_update_loss=None if initialize_only else selections[-1]['loss'],
         loss_gate=('not applicable: initialized candidate' if initialize_only else
@@ -341,6 +436,8 @@ def train_one(work, variant, steps=STEPS, learning_rate=1e-4, aggregate_gate=Fal
     del saved, current
     summary = dict(variant=variant, config=asdict(model.config), initial_loss=initial, final_loss=final,
         development_losses=development, calibration_pass=calibration_pass,
+        development_baseline=development_baseline, development_loss_decreased=development_improved,
+        development_components=development_components,
         baseline_losses=baseline, endpoint_losses=endpoint, loss_gate=provenance['loss_gate'],
         preparation=provenance['preparation'], pilot_eligible=pilot_eligible,
         selected_step=None if initialize_only else selected_step,
@@ -498,10 +595,10 @@ def main(args):
         return arm(args.arm)
     assert args.work is not None and args.work.is_relative_to('/tmp')
     if args.labels:
-        return teacher_labels(args.labels, args.label_output)
+        return teacher_labels(args.labels, args.label_output, recovery=args.recovery)
     if args.train_one:
         return train_one(args.work, args.train_one, args.steps, args.learning_rate,
-                         args.aggregate_gate, args.initialize_only)
+                         args.aggregate_gate, args.initialize_only, recovery=args.recovery)
     if args.stage == 'overnight':
         assert args.variant == 'all'
         # User-authorized automatic promotion; no tuning/retries within this job.
@@ -570,26 +667,30 @@ def main(args):
         assert args.variant in ('relaxed', 'shared_kv', 'adaptive', 'token', 'nested')
     protocol = dict(variants=VARIANTS, splits=SPLITS, seed=SEED, steps=0 if args.initialize_only else args.steps,
         learning_rate=None if args.initialize_only else args.learning_rate, aggregate_gate=args.aggregate_gate, initialize_only=args.initialize_only,
-        query_frames=QUERY_FRAMES, resize=RESIZE, stage=args.stage,
+        query_frames=QUERY_FRAMES, resize=RESIZE, stage=args.stage, recovery=args.recovery,
         checkpoint_weights=checkpoint_identity(), source_sha256=sha256(inspect.getfile(LoopedPi3)),
         scope='bounded engineering training or separately reviewed scene evaluation',
         calibration_source='TUM official RGB camera calibration; exact resize with half-pixel centers',
         calibration_url='https://cvg.cit.tum.de/data/datasets/rgbd-dataset/file_formats')
     write_json(args.work / 'protocol.json', protocol)
     if args.stage == 'train':
+        if args.recovery:
+            assert args.variant == 'relaxed' and args.aggregate_gate and not args.initialize_only
         (args.work / 'labels').mkdir()
         for split, scene in SPLITS.items():
             source = Path('/mnt/datasets/tum-rgbd') / f'rgbd_dataset_{scene}.zip'
             inputs = args.work / 'inputs' / split
             prepare(source, inputs, RESIZE, .02, count=64)
             (inputs / 'archive.sha256').write_text(f'{sha256(source)}  {source}\n')
-            invoke('--work', args.work, '--labels', inputs, '--label-output', args.work / 'labels' / f'{split}.pt')
+            invoke('--work', args.work, '--labels', inputs, '--label-output', args.work / 'labels' / f'{split}.pt',
+                   *(['--recovery'] if args.recovery else []))
             release_page_cache(inputs)
         variants = VARIANTS if args.variant == 'all' else (args.variant,)
         for variant in variants:
             invoke('--work', args.work, '--train-one', variant, '--steps', args.steps,
                    '--learning-rate', args.learning_rate, *(['--aggregate-gate'] if args.aggregate_gate else []),
-                   *(['--initialize-only'] if args.initialize_only else []))
+                   *(['--initialize-only'] if args.initialize_only else []),
+                   *(['--recovery'] if args.recovery else []))
         write_json(args.work / 'training_complete.json', dict(variants=variants, steps_per_variant=0 if args.initialize_only else args.steps,
             summaries={v: json.loads((args.work / 'models' / v / 'summary.json').read_text()) for v in variants},
             eligible_for_full_evaluation=False))
@@ -641,7 +742,12 @@ def main(args):
             if variant not in ('native', 'native_compact'):
                 assert summaries[variant]['pilot_eligible']
                 assert variant != 'adaptive' or summaries[variant]['calibration_pass']
-            budgets = (2, 4) if variant in ('elastic', 'shared_kv', 'combined') else (4,)
+            if variant in ('native', 'native_compact'):
+                budgets = (4,)
+            else:
+                settings = summaries[variant]['config']
+                budgets = ((settings['short_loops'], settings['full_loops'])
+                           if variant in ('elastic', 'shared_kv', 'combined') else (settings['full_loops'],))
             for budget in budgets:
                 name = f'{variant}_b{budget}_r{repeat}'
                 result = args.work / 'runs' / name
@@ -683,6 +789,7 @@ if __name__ == '__main__':
     parser.add_argument('--steps', type=int, default=STEPS)
     parser.add_argument('--learning-rate', type=float, default=1e-4)
     parser.add_argument('--aggregate-gate', action='store_true')
+    parser.add_argument('--recovery', action='store_true')
     parser.add_argument('--initialize-only', action='store_true')
     parser.add_argument('--checkpoint', type=Path)
     parser.add_argument('--reviewed-pilot', type=Path)
