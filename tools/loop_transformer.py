@@ -255,6 +255,11 @@ def train_one(work, variant, steps=STEPS, learning_rate=1e-4, aggregate_gate=Fal
                     for budget in (budgets if aggregate_gate else budgets[:1])]
         initial = sum(baseline) / len(baseline)
     updates = []
+    selected_step, selected_loss = 0, initial
+    selections = [dict(step=0, loss=initial, losses=baseline)]
+    if not initialize_only:
+        trained = {name: p for name, p in model.named_parameters() if p.requires_grad}
+        best_weights = {name: p.detach().cpu().clone() for name, p in trained.items()}
     for step in range(0 if initialize_only else steps):
         label = labels[step % len(labels)]
         optimizer.zero_grad(set_to_none=True)
@@ -271,6 +276,24 @@ def train_one(work, variant, steps=STEPS, learning_rate=1e-4, aggregate_gate=Fal
         optimizer.step()
         updates.append(dict(step=step + 1, frame=label['frame'], loss=sum(losses), gradient_norm=grad_norm))
         write_json(result / 'updates.json', updates)
+        # Select on the same fixed objective as the gate, after each query cycle.
+        if (step + 1) % len(labels) == 0 or step + 1 == steps:
+            with torch.no_grad():
+                measured = [float(query_loss(model, images, label, budget))
+                            for label in (labels if aggregate_gate else labels[:1])
+                            for budget in (budgets if aggregate_gate else budgets[:1])]
+            measured_loss = sum(measured) / len(measured)
+            selections.append(dict(step=step + 1, loss=measured_loss, losses=measured))
+            if measured_loss < selected_loss:
+                selected_step, selected_loss = step + 1, measured_loss
+                best_weights = {name: p.detach().cpu().clone() for name, p in trained.items()}
+            write_json(result / 'checkpoint_selection.json', dict(
+                selected_step=selected_step, selected_loss=selected_loss, measurements=selections))
+    if not initialize_only:
+        with torch.no_grad():
+            for name, parameter in trained.items():
+                parameter.copy_(best_weights[name])
+        del best_weights, trained
     write_json(result / 'updates.json', updates)
     with torch.no_grad():
         endpoint = baseline if initialize_only else [float(query_loss(model, images, label, budget))
@@ -288,13 +311,16 @@ def train_one(work, variant, steps=STEPS, learning_rate=1e-4, aggregate_gate=Fal
             development.append(float(query_loss(model, images, label, budgets[0])))
     calibration_pass = calibrate_halting(model, images, labels, result) if variant == 'adaptive' else None
     model.eval()
-    pilot_eligible = (initialize_only or final < initial) and (variant != 'adaptive' or calibration_pass)
+    improved = selected_step > 0 and final < initial
+    pilot_eligible = (initialize_only or improved) and (variant != 'adaptive' or calibration_pass)
     provenance = dict(seed=SEED, steps=0 if initialize_only else steps,
         learning_rate=None if initialize_only else learning_rate, splits=SPLITS,
         preparation='initialized' if initialize_only else 'trained', pilot_eligible=pilot_eligible,
+        selected_step=None if initialize_only else selected_step,
+        last_update_loss=None if initialize_only else selections[-1]['loss'],
         loss_gate=('not applicable: initialized candidate' if initialize_only else
                    'fixed-query-budget mean' if aggregate_gate else 'first-query full-budget'),
-        checkpoint_weights=checkpoint_identity(), training_loss_decreased=None if initialize_only else final < initial,
+        checkpoint_weights=checkpoint_identity(), training_loss_decreased=None if initialize_only else improved,
         halting_calibration_pass=calibration_pass, engineering_smoke_only=True,
         training_protocol_sha256=sha256(work / 'protocol.json'),
         source_sha256=sha256(inspect.getfile(LoopedPi3)), driver_sha256=sha256(__file__),
@@ -311,7 +337,9 @@ def train_one(work, variant, steps=STEPS, learning_rate=1e-4, aggregate_gate=Fal
         development_losses=development, calibration_pass=calibration_pass,
         baseline_losses=baseline, endpoint_losses=endpoint, loss_gate=provenance['loss_gate'],
         preparation=provenance['preparation'], pilot_eligible=pilot_eligible,
-        training_loss_decreased=None if initialize_only else final < initial, checkpoint_sha256=sha256(path),
+        selected_step=None if initialize_only else selected_step,
+        last_update_loss=None if initialize_only else selections[-1]['loss'],
+        training_loss_decreased=None if initialize_only else improved, checkpoint_sha256=sha256(path),
         trainable_parameters=sum(p.numel() for p in model.parameters() if p.requires_grad),
         storage=model.storage_report(), eligible_for_full_evaluation=False,
         next_gate='review smoke and calibration before an isolated tracking pilot')
@@ -451,6 +479,7 @@ def comparison(paths, output):
             speedup=metrics['fps'] / reference['fps'], memory_ratio=metrics['peak_allocated_bytes'] / reference['peak_allocated_bytes'],
             doubled_fps=timed and quality and metrics['fps'] >= 2 * reference['fps'],
             half_memory=timed and quality and metrics['peak_allocated_bytes'] <= .5 * reference['peak_allocated_bytes'])
+        print('LOOP COMPARISON', name, json.dumps(comparisons[name]), flush=True)
     write_json(output, dict(runs=records, comparisons=comparisons,
         limitation='scene-only evaluation; no ARCTIC/SAM or unobserved-GT claims'))
 
@@ -624,11 +653,14 @@ def main(args):
         gates = args.work / 'pilot_gates'
         gates.mkdir()
         for variant in eligible:
-            selected = [row for key, row in compared.items() if key.startswith(variant + '_')]
+            selected = {key: row for key, row in compared.items() if key.startswith(variant + '_')}
             assert len(selected) == (4 if variant in ('elastic', 'shared_kv', 'combined') else 2)
             gate = dict(variant=variant, checkpoint_archive_sha256=sha256(args.checkpoint),
                         driver_sha256=sha256(__file__), source_sha256=sha256(inspect.getfile(LoopedPi3)),
-                        quality_pass=all(r['quality_pass'] for r in selected),
+                        quality_pass=all(r['quality_pass'] for r in selected.values()),
+                        failed_metrics={key: {metric: ratio for metric, ratio in row['quality_ratios'].items()
+                                              if not ratio <= 1.05}
+                                        for key, row in selected.items() if not row['quality_pass']},
                         comparison_sha256=sha256(args.work / 'comparison.json'),
                         next_gate='full if passing under authorized overnight mode; otherwise manual review')
             write_json(gates / f'{variant}.json', gate)

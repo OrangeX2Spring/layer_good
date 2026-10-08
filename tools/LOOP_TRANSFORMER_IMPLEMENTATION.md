@@ -75,6 +75,39 @@ Return the job ID. This requests a12-hour allocation, not a runtime guarantee.
 No assistant-operated submission. Completion evidence: contract success,
 per-variant outcomes, `LOOP OVERNIGHT COMPLETE`, archive exit0 and Slurm status.
 
+## Checkpoint selection correction after26337 partial results
+
+The trained paths now measure the same fixed gate objective after each complete
+cycle of eight training queries and after the final update (including a partial
+cycle). They retain the lowest measured loss state, starting with initialization
+as step0, and restore those trainable weights before final loss, development,
+calibration and checkpoint serialization. The training update budget and learning
+rate are unchanged. Frozen weights are not copied; the best trainable state is
+held on CPU. `checkpoint_selection.json` records every measured query/budget
+loss, mean and selected step. Summary/checkpoint provenance separately record
+`selected_step` and `last_update_loss`; `final_loss` describes the restored state.
+If no trained state improves, step0 is retained and training eligibility remains
+false. Initialized paths retain their separate no-training policy.
+
+This corrects last-update-only selection; it does not establish a cause or cure
+for unstable optimization. There is no saved intermediate checkpoint from26337
+with which to demonstrate that this would have rescued elastic. Training-set
+selection is not held-out validation; unchanged pilot/full quality gates remain
+required. Failed relaxed/shared-KV/token pilots are not repaired by checkpoint
+selection because those candidates were not trained.
+
+Every comparison now prints per-run quality ratios, speedup and memory ratio;
+pilot gate JSON also records failed metrics by budget/repeat. This makes future
+blocked_pilot results interpretable directly from the log without relaxing gates.
+A regression exercises early improvement followed by regression, no improvement,
+and a final partial query cycle, checking actual exported weights/provenance.
+It is scheduled in CAMP contracts; local verification is syntax/whitespace only.
+
+Job26337 remains on submitted source170fad9; do not pull into its checkout while
+it runs or queue a duplicate. Review its remaining results and archive first.
+This correction changes the driver hash, so26337 checkpoints cannot be promoted
+using the corrected driver. Historical artifacts remain intact for inspection.
+
 ## Implemented architecture paths
 
 Model code: `kv_tracker/kv_tracker/loop_models.py` in the model fork. Driver:

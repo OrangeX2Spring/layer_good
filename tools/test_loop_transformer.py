@@ -55,6 +55,60 @@ class PrimitiveContracts(unittest.TestCase):
 
 
 class DriverContracts(unittest.TestCase):
+    def test_training_exports_best_measured_state_and_rejects_no_improvement(self):
+        from loop_transformer import train_one, SPLITS
+
+        class ModelFixture(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.weight = nn.Parameter(torch.tensor(2., device='cuda'))
+                self.config = LoopConfig('refiner')
+
+            def save(self, path, provenance):
+                torch.save(dict(state_dict=self.state_dict(), provenance=provenance), path)
+
+            def storage_report(self):
+                return {}
+
+        for improves, steps in ((True, 16), (False, 16), (True, 10)):
+            with self.subTest(improves=improves, steps=steps), tempfile.TemporaryDirectory(dir='/tmp') as temporary:
+                work = Path(temporary)
+                (work / 'labels').mkdir()
+                labels = [dict(frame=i) for i in range(8)]
+                for split, scene in SPLITS.items():
+                    torch.save(dict(scene=scene, manifest_sha256='fixture', checkpoint_weights={},
+                                    labels=labels), work / 'labels' / f'{split}.pt')
+                model = ModelFixture()
+
+                class OptimizerFixture:
+                    step_count = 0
+
+                    def zero_grad(self, **kwargs):
+                        model.weight.grad = None
+
+                    def step(self):
+                        self.step_count += 1
+                        with torch.no_grad():
+                            model.weight.fill_(1. if improves and self.step_count <= 8 else 3.)
+
+                with patch('loop_transformer.build_model', return_value=(model, None)), \
+                     patch('loop_transformer.load_images', return_value=({}, [torch.zeros(3, 14, 14)])), \
+                     patch('loop_transformer.sha256', return_value='fixture'), \
+                     patch('loop_transformer.checkpoint_identity', return_value={}), \
+                     patch('loop_transformer.calibration', return_value=None), \
+                     patch('loop_transformer.query_loss', side_effect=lambda *args: model.weight.square()), \
+                     patch('loop_transformer.torch.optim.AdamW', return_value=OptimizerFixture()):
+                    train_one(work, 'refiner', steps=steps, aggregate_gate=True)
+                result = work / 'models' / 'refiner'
+                summary = json.loads((result / 'summary.json').read_text())
+                saved = torch.load(result / 'model.pt', weights_only=True)
+                self.assertEqual(summary['selected_step'], 8 if improves else 0)
+                self.assertEqual(summary['final_loss'], 1. if improves else 4.)
+                self.assertEqual(summary['last_update_loss'], 9.)
+                self.assertEqual(summary['pilot_eligible'], improves)
+                self.assertEqual(float(saved['state_dict']['weight']), 1. if improves else 2.)
+                self.assertEqual(saved['provenance']['selected_step'], summary['selected_step'])
+
     def test_overnight_preparation_gates_failure_isolation_and_full_order(self):
         from loop_transformer import main
         for failures in (False, True, 'all_blocked'):
