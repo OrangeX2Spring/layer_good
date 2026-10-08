@@ -1,4 +1,4 @@
-"""CAMP-only bounded training and separately reviewed loop-transformer pilots."""
+"""CAMP-only loop preparation, gated pilots and authorized overnight evaluation."""
 import argparse
 from dataclasses import asdict
 import gc
@@ -225,7 +225,10 @@ def calibrate_halting(model, images, labels, result):
     return passed
 
 
-def train_one(work, variant):
+def train_one(work, variant, steps=STEPS, learning_rate=1e-4, aggregate_gate=False, initialize_only=False):
+    assert steps > 0 and learning_rate > 0
+    if initialize_only:
+        assert variant in ('relaxed', 'shared_kv', 'adaptive', 'token', 'nested')
     torch.manual_seed(SEED)
     model, _ = build_model(variant)
     data = {}
@@ -238,7 +241,8 @@ def train_one(work, variant):
         data[split] = images, saved['labels']
     result = work / 'models' / variant
     result.mkdir(parents=True)
-    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=1e-4)
+    if not initialize_only:
+        optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=learning_rate)
     budgets = ([model.config.full_loops, model.config.short_loops]
                if variant in ('elastic', 'shared_kv', 'combined') else [model.config.full_loops])
     images, labels = data['train']
@@ -246,9 +250,12 @@ def train_one(work, variant):
     model.train()
     model.collect_exits = False
     with torch.no_grad():
-        initial = float(query_loss(model, images, labels[0], budgets[0]))
+        baseline = [float(query_loss(model, images, label, budget))
+                    for label in (labels if aggregate_gate else labels[:1])
+                    for budget in (budgets if aggregate_gate else budgets[:1])]
+        initial = sum(baseline) / len(baseline)
     updates = []
-    for step in range(STEPS):
+    for step in range(0 if initialize_only else steps):
         label = labels[step % len(labels)]
         optimizer.zero_grad(set_to_none=True)
         losses = []
@@ -264,8 +271,12 @@ def train_one(work, variant):
         optimizer.step()
         updates.append(dict(step=step + 1, frame=label['frame'], loss=sum(losses), gradient_norm=grad_norm))
         write_json(result / 'updates.json', updates)
+    write_json(result / 'updates.json', updates)
     with torch.no_grad():
-        final = float(query_loss(model, images, labels[0], budgets[0]))
+        endpoint = baseline if initialize_only else [float(query_loss(model, images, label, budget))
+                    for label in (labels if aggregate_gate else labels[:1])
+                    for budget in (budgets if aggregate_gate else budgets[:1])]
+        final = sum(endpoint) / len(endpoint)
     model.eval()
     images, labels = data['development']
     model.geometry_calibration = calibration(SPLITS['development'], *images[0].shape[-2:], 'cuda')
@@ -277,8 +288,13 @@ def train_one(work, variant):
             development.append(float(query_loss(model, images, label, budgets[0])))
     calibration_pass = calibrate_halting(model, images, labels, result) if variant == 'adaptive' else None
     model.eval()
-    provenance = dict(seed=SEED, steps=STEPS, learning_rate=1e-4, splits=SPLITS,
-        checkpoint_weights=checkpoint_identity(), training_loss_decreased=final < initial,
+    pilot_eligible = (initialize_only or final < initial) and (variant != 'adaptive' or calibration_pass)
+    provenance = dict(seed=SEED, steps=0 if initialize_only else steps,
+        learning_rate=None if initialize_only else learning_rate, splits=SPLITS,
+        preparation='initialized' if initialize_only else 'trained', pilot_eligible=pilot_eligible,
+        loss_gate=('not applicable: initialized candidate' if initialize_only else
+                   'fixed-query-budget mean' if aggregate_gate else 'first-query full-budget'),
+        checkpoint_weights=checkpoint_identity(), training_loss_decreased=None if initialize_only else final < initial,
         halting_calibration_pass=calibration_pass, engineering_smoke_only=True,
         training_protocol_sha256=sha256(work / 'protocol.json'),
         source_sha256=sha256(inspect.getfile(LoopedPi3)), driver_sha256=sha256(__file__),
@@ -293,12 +309,14 @@ def train_one(work, variant):
     del saved, current
     summary = dict(variant=variant, config=asdict(model.config), initial_loss=initial, final_loss=final,
         development_losses=development, calibration_pass=calibration_pass,
-        training_loss_decreased=final < initial, checkpoint_sha256=sha256(path),
+        baseline_losses=baseline, endpoint_losses=endpoint, loss_gate=provenance['loss_gate'],
+        preparation=provenance['preparation'], pilot_eligible=pilot_eligible,
+        training_loss_decreased=None if initialize_only else final < initial, checkpoint_sha256=sha256(path),
         trainable_parameters=sum(p.numel() for p in model.parameters() if p.requires_grad),
         storage=model.storage_report(), eligible_for_full_evaluation=False,
         next_gate='review smoke and calibration before an isolated tracking pilot')
     write_json(result / 'summary.json', summary)
-    print('LOOP TRAINING SMOKE COMPLETE', variant, json.dumps(summary), flush=True)
+    print('LOOP PREPARATION COMPLETE', variant, json.dumps(summary), flush=True)
 
 
 class PhaseRecorder:
@@ -360,7 +378,7 @@ def arm(config_path):
     if config['variant'] == 'adaptive':
         assert provenance['halting_calibration_pass'] and (model.halt_thresholds >= 0).all()
     if provenance is not None:
-        assert provenance['training_loss_decreased'], 'Failed smoke is not eligible for a tracking pilot'
+        assert provenance['pilot_eligible'], 'Checkpoint preparation did not pass its eligibility gate'
     profiler = PhaseRecorder(model) if config['profile'] else None
     rows, poses = [], []
     def log(row):
@@ -434,7 +452,7 @@ def comparison(paths, output):
             doubled_fps=timed and quality and metrics['fps'] >= 2 * reference['fps'],
             half_memory=timed and quality and metrics['peak_allocated_bytes'] <= .5 * reference['peak_allocated_bytes'])
     write_json(output, dict(runs=records, comparisons=comparisons,
-        limitation='scene-only pilot; no ARCTIC/SAM or unobserved-GT claims; no automatic full evaluation'))
+        limitation='scene-only evaluation; no ARCTIC/SAM or unobserved-GT claims'))
 
 
 def main(args):
@@ -447,8 +465,76 @@ def main(args):
     if args.labels:
         return teacher_labels(args.labels, args.label_output)
     if args.train_one:
-        return train_one(args.work, args.train_one)
-    protocol = dict(variants=VARIANTS, splits=SPLITS, seed=SEED, steps=STEPS,
+        return train_one(args.work, args.train_one, args.steps, args.learning_rate,
+                         args.aggregate_gate, args.initialize_only)
+    if args.stage == 'overnight':
+        assert args.variant == 'all'
+        # User-authorized automatic promotion; no tuning/retries within this job.
+        variants = tuple(v for v in VARIANTS if v != 'combined')
+        results = {}
+        ready = []
+        write_json(args.work / 'overnight_policy.json', dict(variants=variants,
+            trained_variants=['elastic', 'refiner'],
+            initialized_variants=[v for v in variants if v not in ('elastic', 'refiner')],
+            steps_for_trained=200, learning_rate_for_trained=1e-5, training_gate='fixed-query-budget mean decreases',
+            pilot_gate='both repeats and all budgets within 5% on ATE/RPE/p99',
+            automatic_full_authorized=True, retries=0))
+        for variant in variants:
+            root = args.work / variant
+            training = root / 'train'
+            training.mkdir(parents=True)
+            phase = 'preparation'
+            try:
+                invoke('--work', training, '--stage', 'train', '--variant', variant,
+                       '--steps', 200, '--learning-rate', 1e-5, '--aggregate-gate',
+                       *([] if variant in ('elastic', 'refiner') else ['--initialize-only']))
+                summary = json.loads((training / 'models' / variant / 'summary.json').read_text())
+                if not summary['pilot_eligible']:
+                    results[variant] = dict(status='blocked_preparation', summary=summary)
+                else:
+                    archive = root / 'training.tar'
+                    with tarfile.open(archive, 'w') as packed:
+                        packed.add(training, arcname='.')
+                    phase = 'pilot'
+                    pilot = root / 'pilot'
+                    pilot.mkdir()
+                    invoke('--work', pilot, '--stage', 'pilot', '--variant', variant,
+                           '--checkpoint', archive)
+                    gate_path = pilot / 'pilot_gate.json'
+                    gate = json.loads(gate_path.read_text())
+                    if gate['quality_pass']:
+                        ready.append(variant)
+                        results[variant] = dict(status='eligible_full', pilot_gate=gate)
+                    else:
+                        results[variant] = dict(status='blocked_pilot', pilot_gate=gate)
+            except subprocess.CalledProcessError as error:
+                # Isolate process failures, retain traceback in run.log, never retry silently.
+                results[variant] = dict(status='process_failed', phase=phase, exit_code=error.returncode)
+                print('LOOP OVERNIGHT FAILURE', variant, phase, error.returncode, flush=True)
+            write_json(args.work / 'overnight_results.json', results)
+            print('LOOP OVERNIGHT RESULT', variant, results[variant]['status'], flush=True)
+        # Give every design its bounded attempt before spending time on full sequences.
+        for variant in ready:
+            root = args.work / variant
+            full = root / 'full'
+            full.mkdir()
+            try:
+                invoke('--work', full, '--stage', 'full', '--variant', variant,
+                       '--checkpoint', root / 'training.tar',
+                       '--reviewed-pilot', root / 'pilot' / 'pilot_gate.json')
+                results[variant]['status'] = 'full_complete'
+            except subprocess.CalledProcessError as error:
+                results[variant].update(status='process_failed', phase='full', exit_code=error.returncode)
+                print('LOOP OVERNIGHT FAILURE', variant, 'full', error.returncode, flush=True)
+            write_json(args.work / 'overnight_results.json', results)
+            print('LOOP OVERNIGHT RESULT', variant, results[variant]['status'], flush=True)
+        print('LOOP OVERNIGHT COMPLETE: inspect per-variant outcomes; completion is not a quality claim', flush=True)
+        return
+    assert args.steps > 0 and args.learning_rate > 0
+    if args.initialize_only:
+        assert args.variant in ('relaxed', 'shared_kv', 'adaptive', 'token', 'nested')
+    protocol = dict(variants=VARIANTS, splits=SPLITS, seed=SEED, steps=0 if args.initialize_only else args.steps,
+        learning_rate=None if args.initialize_only else args.learning_rate, aggregate_gate=args.aggregate_gate, initialize_only=args.initialize_only,
         query_frames=QUERY_FRAMES, resize=RESIZE, stage=args.stage,
         checkpoint_weights=checkpoint_identity(), source_sha256=sha256(inspect.getfile(LoopedPi3)),
         scope='bounded engineering training or separately reviewed scene evaluation',
@@ -466,11 +552,13 @@ def main(args):
             release_page_cache(inputs)
         variants = VARIANTS if args.variant == 'all' else (args.variant,)
         for variant in variants:
-            invoke('--work', args.work, '--train-one', variant)
-        write_json(args.work / 'training_complete.json', dict(variants=variants, steps_per_variant=STEPS,
+            invoke('--work', args.work, '--train-one', variant, '--steps', args.steps,
+                   '--learning-rate', args.learning_rate, *(['--aggregate-gate'] if args.aggregate_gate else []),
+                   *(['--initialize-only'] if args.initialize_only else []))
+        write_json(args.work / 'training_complete.json', dict(variants=variants, steps_per_variant=0 if args.initialize_only else args.steps,
             summaries={v: json.loads((args.work / 'models' / v / 'summary.json').read_text()) for v in variants},
             eligible_for_full_evaluation=False))
-        print('LOOP TRAINING ENGINEERING COMPLETE: review each smoke/calibration; no automatic tracking', flush=True)
+        print('LOOP PREPARATION STAGE COMPLETE: inspect summaries/calibration', flush=True)
         return
     assert args.checkpoint is not None, 'Supply the reviewed training archive'
     assert args.variant in VARIANTS or args.variant == 'all'
@@ -501,8 +589,8 @@ def main(args):
     for variant in variants:
         assert variant in summaries
         assert sha256(training / 'models' / variant / 'model.pt') == summaries[variant]['checkpoint_sha256']
-        if not summaries[variant]['training_loss_decreased']:
-            blocked[variant] = 'Training smoke did not decrease the fixed-example loss'
+        if not summaries[variant]['pilot_eligible']:
+            blocked[variant] = 'Preparation failed its training or calibration gate'
         elif variant == 'adaptive' and not summaries[variant]['calibration_pass']:
             blocked[variant] = 'Halting calibration failed; adaptive deployment is unavailable'
     write_json(args.work / 'blocked_variants.json', blocked)
@@ -516,7 +604,7 @@ def main(args):
     for repeat in range(2 if args.stage != 'profile' else 1):
         for variant in ('native', 'native_compact') + eligible:
             if variant not in ('native', 'native_compact'):
-                assert summaries[variant]['training_loss_decreased']
+                assert summaries[variant]['pilot_eligible']
                 assert variant != 'adaptive' or summaries[variant]['calibration_pass']
             budgets = (2, 4) if variant in ('elastic', 'shared_kv', 'combined') else (4,)
             for budget in budgets:
@@ -542,7 +630,7 @@ def main(args):
                         driver_sha256=sha256(__file__), source_sha256=sha256(inspect.getfile(LoopedPi3)),
                         quality_pass=all(r['quality_pass'] for r in selected),
                         comparison_sha256=sha256(args.work / 'comparison.json'),
-                        next_gate='manual artifact review before full stage')
+                        next_gate='full if passing under authorized overnight mode; otherwise manual review')
             write_json(gates / f'{variant}.json', gate)
             if args.variant != 'all':
                 write_json(args.work / 'pilot_gate.json', gate)
@@ -552,8 +640,12 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--work', type=Path)
-    parser.add_argument('--stage', choices=('train', 'pilot', 'profile', 'full'), default='train')
+    parser.add_argument('--stage', choices=('train', 'pilot', 'profile', 'full', 'overnight'), default='train')
     parser.add_argument('--variant', choices=VARIANTS + ('all',), default='all')
+    parser.add_argument('--steps', type=int, default=STEPS)
+    parser.add_argument('--learning-rate', type=float, default=1e-4)
+    parser.add_argument('--aggregate-gate', action='store_true')
+    parser.add_argument('--initialize-only', action='store_true')
     parser.add_argument('--checkpoint', type=Path)
     parser.add_argument('--reviewed-pilot', type=Path)
     parser.add_argument('--arm', type=Path)

@@ -1,6 +1,9 @@
 """Meaningful tensor/native/cache/gradient contracts; run only on CAMP."""
 from copy import deepcopy
 import gc
+import json
+import subprocess
+from types import SimpleNamespace
 from pathlib import Path
 import tempfile
 import unittest
@@ -52,6 +55,55 @@ class PrimitiveContracts(unittest.TestCase):
 
 
 class DriverContracts(unittest.TestCase):
+    def test_overnight_preparation_gates_failure_isolation_and_full_order(self):
+        from loop_transformer import main
+        for failures in (False, True, 'all_blocked'):
+            with self.subTest(failures=failures), tempfile.TemporaryDirectory(dir='/tmp') as temporary:
+                calls = []
+
+                def invoke_fixture(*arguments):
+                    options = list(map(str, arguments))
+                    stage = options[options.index('--stage') + 1]
+                    variant = options[options.index('--variant') + 1]
+                    work = Path(options[options.index('--work') + 1])
+                    calls.append((stage, variant, options))
+                    if failures is True and ((stage == 'train' and variant == 'elastic') or
+                                     (stage == 'full' and variant == 'shared_kv')):
+                        raise subprocess.CalledProcessError(7, options)
+                    if stage == 'train':
+                        initialized = '--initialize-only' in options
+                        self.assertEqual(initialized, variant not in ('elastic', 'refiner'))
+                        result = work / 'models' / variant
+                        result.mkdir(parents=True)
+                        (result / 'summary.json').write_text(json.dumps(dict(
+                            pilot_eligible=not (failures == 'all_blocked' or (failures and variant == 'adaptive')))))
+                    elif stage == 'pilot':
+                        (work / 'pilot_gate.json').write_text(json.dumps(dict(
+                            quality_pass=not (failures and variant == 'relaxed'))))
+
+                args = SimpleNamespace(arm=None, labels=None, train_one=None,
+                                       work=Path(temporary), stage='overnight', variant='all')
+                with patch('loop_transformer.invoke', side_effect=invoke_fixture):
+                    main(args)
+                results = json.loads((Path(temporary) / 'overnight_results.json').read_text())
+                self.assertEqual(set(results), set(VARIANTS) - {'combined'})
+                self.assertEqual(sum(stage == 'train' for stage, _, _ in calls), 7)
+                first_full = next((i for i, (stage, _, _) in enumerate(calls) if stage == 'full'), len(calls))
+                self.assertTrue(all(stage == 'full' for stage, _, _ in calls[first_full:]))
+                if failures == 'all_blocked':
+                    self.assertEqual(first_full, len(calls))
+                    self.assertTrue(all(row['status'] == 'blocked_preparation' for row in results.values()))
+                elif failures:
+                    self.assertEqual(results['elastic']['status'], 'process_failed')
+                    self.assertEqual(results['adaptive']['status'], 'blocked_preparation')
+                    self.assertEqual(results['relaxed']['status'], 'blocked_pilot')
+                    self.assertEqual(results['shared_kv']['status'], 'process_failed')
+                    self.assertEqual(results['nested']['status'], 'full_complete')
+                    self.assertFalse(any(stage == 'full' and variant in ('elastic', 'adaptive', 'relaxed')
+                                         for stage, variant, _ in calls))
+                else:
+                    self.assertTrue(all(row['status'] == 'full_complete' for row in results.values()))
+
     def test_pose_distillation_is_independent_of_outer_autocast(self):
         from loop_transformer import distillation_loss
         origin = torch.eye(4, device='cuda')

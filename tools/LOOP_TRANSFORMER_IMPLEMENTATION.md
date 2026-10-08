@@ -5,6 +5,76 @@ paper links: [LOOP_TRANSFORMER_RESEARCH.md](LOOP_TRANSFORMER_RESEARCH.md).
 These are geometry prototypes inspired by the papers, not reproductions of
 their language/VLM architectures or demonstrated tracker improvements.
 
+## Authorized overnight experiment batch — 2026-10-08
+
+The user now requests one job for all seven designs, with automatic full-office
+promotion for feasible candidates. This explicitly supersedes the manual pause
+between pilot and full for `overnight all` only. The old `train all` was an
+engineering smoke, not seven completed scientific experiments. No repeated
+single-method diagnostic cycle or tuning sweep is part of this batch.
+
+`bash tools/loop_transformer.sbatch overnight all` first runs the contract suite,
+including orchestration failure/gate tests. It then prepares and pilots each of
+the seven variants, with fresh processes and independent checkpoints. Combined
+is not an eighth experiment in this batch. Every feasibility attempt finishes
+before any full-sequence evaluation begins.
+
+| Design | Preparation in this batch |
+|---|---|
+| elastic | One bounded200-update AdamW attempt at1e-5, full/short budgets |
+| relaxed | Pretrained group-mean projections + rank16 SVD residuals; no optimizer |
+| shared_kv | Initialized shared decoder and paired historical banks; no optimizer |
+| adaptive | Initialized recurrent endpoints, then disjoint-fit/validation halting calibration; no optimizer |
+| token | Initialized decoder and fixed-seed untrained router; no optimizer |
+| refiner | One bounded200-update AdamW attempt at1e-5 with causal history replay |
+| nested | Initialized local/global schedule; no optimizer |
+
+The200-update budget is a fixed engineering attempt for the two trained paths,
+not a convergence guarantee. Their gate compares mean losses over the identical
+fixed eight train queries and every trained budget before/after training. Both
+lists are saved. Initialized candidates have `training_loss_decreased=null`;
+they do not need to manufacture a loss decrease without optimization. Their
+checkpoint provenance explicitly records initialized preparation and pilot
+eligibility. Adaptive still cannot deploy unless calibration passes. Previous
+checkpoints are not reused because source/driver hashes bind the preparation.
+
+Direct tests of initialized weight sharing, token selection and nested schedules
+are zero-update feasibility tests, not claims to reproduce learned paper methods.
+The untrained token router is not learned pose relevance. Failures here cannot
+rule out later trained versions. No trainable parameter is updated in these five
+preparations, although frozen-teacher labels/losses are recorded for inspection.
+
+Eligible candidates get256-frame office pilots against fresh native and compact
+native, with two paired repetitions. Every tested budget/repeat must remain
+within5% of native ATE, translation RPE and translation-RPE p99. All passing
+candidates then automatically run the full office sequence with the same paired
+controls/budgets. Passing quality is feasibility, not proof of2x speed or half
+memory; those targets remain separate measured flags. Failure to pass means
+skip, not retry. A child-process failure records phase/exit code and continues
+with the remaining candidates; shared contract failure stops the entire job.
+`overnight_results.json` distinguishes blocked preparation, blocked pilot,
+process failure and completed full evaluation. Job completion is not a quality
+claim. Full comparisons still need result review after the overnight run.
+
+One final `loop_JOB_overnight.tar` preserves policy, all per-variant preparation,
+checkpoints, pilots, full outputs and root provenance/logs. Nested checkpoint
+archives are retained; redundant `reviewed_training` extractions are omitted.
+No separate container build or new model download. Runtime remains CAMP-only.
+
+After publication, from `layer_good` on head (pull runs inside allocation):
+
+```bash
+W='git -c fetch.recurseSubmodules=0 pull --ff-only'
+W="$W && bash tools/loop_transformer.sbatch overnight all"
+O=../loop_transformer_slurm-%j.log
+sbatch -p 24g -w muenchen --gres=gpu:1 --propagate=NONE \
+  -t 12:00:00 -o "$O" --wrap="$W"
+```
+
+Return the job ID. This requests a12-hour allocation, not a runtime guarantee.
+No assistant-operated submission. Completion evidence: contract success,
+per-variant outcomes, `LOOP OVERNIGHT COMPLETE`, archive exit0 and Slurm status.
+
 ## Implemented architecture paths
 
 Model code: `kv_tracker/kv_tracker/loop_models.py` in the model fork. Driver:

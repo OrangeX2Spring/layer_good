@@ -13,7 +13,7 @@
 set -euo pipefail
 STAGE=${1:-contracts}
 VARIANT=${2:-all}
-case "$STAGE" in contracts|train|pilot|profile|full) ;;
+case "$STAGE" in contracts|train|pilot|profile|full|overnight) ;;
     *) echo "Unknown loop stage: $STAGE" >&2; exit 2 ;; esac
 case "$VARIANT" in all|elastic|relaxed|shared_kv|adaptive|token|refiner|nested|combined) ;;
     *) echo "Unknown loop variant: $VARIANT" >&2; exit 2 ;; esac
@@ -37,7 +37,7 @@ finish() {
     printf '%s\n' "$status" > "$WORK/exit_status.txt"
     # Preserve exact resized pixels, masks/manifests, partial models and logs.
     # Original source PNGs are reproducible from the separately hashed TUM ZIP.
-    tar --exclude='./inputs/*/rgb' --exclude='./reviewed_training' \
+    tar --exclude='*/inputs/*/rgb' --exclude='reviewed_training' \
         -C "$WORK" -cf "$ARCHIVE.partial" .
     mv "$ARCHIVE.partial" "$ARCHIVE"
     echo "LOOP ARCHIVED $ARCHIVE exit=$status"
@@ -86,6 +86,11 @@ if [ "$STAGE" = contracts ]; then
         -p test_loop_transformer.py -v
     echo "LOOP ALL VARIANT GPU CONTRACTS OK"
 else
+    if [ "$STAGE" = overnight ]; then
+        "${CONTAINER[@]}" python -m unittest discover -s "$REPO/tools" \
+            -p test_loop_transformer.py -v
+        echo "LOOP OVERNIGHT CONTRACTS OK"
+    fi
     extra=()
     if [[ "$STAGE" = pilot || "$STAGE" = profile || "$STAGE" = full ]]; then
         SOURCE=${3:?Supply the reviewed training archive}
