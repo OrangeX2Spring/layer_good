@@ -122,9 +122,11 @@ def teacher_labels(inputs, output):
 
 
 def rebuild(model, images, bank):
-    with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
+    # Follows the caller's grad mode: a training step differentiates the bank
+    # and origin it is measured with; measurement and calibration run no_grad.
+    with torch.autocast('cuda', dtype=torch.bfloat16):
         result = model(torch.stack([images[i] for i in bank]).cuda()[None], store_cache=True)
-        return torch.linalg.inv(result['camera_poses'][0, 0].float()).detach()
+        return torch.linalg.inv(result['camera_poses'][0, 0].float())
 
 
 def distillation_loss(output, label, origin, scale):
@@ -146,8 +148,8 @@ def query_loss(model, images, label, budget):
     model.query_loops = budget
     origin = rebuild(model, images, label['bank'])
     if model.config.variant == 'refiner':
-        # Match deployment history; truncate gradients at each predicted pose.
-        with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
+        # Match deployment history; train through the whole causal rollout.
+        with torch.autocast('cuda', dtype=torch.bfloat16):
             for frame in range(label['bank'][-1] + 1, label['frame']):
                 model(images[frame].cuda()[None, None], cam_only=True, use_cache=True)
     with torch.autocast('cuda', dtype=torch.bfloat16):
@@ -274,7 +276,11 @@ def train_one(work, variant, steps=STEPS, learning_rate=1e-4, aggregate_gate=Fal
         assert all(p.grad is None or torch.isfinite(p.grad).all() for p in model.parameters())
         grad_norm = float(torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad], 1.))
         optimizer.step()
-        updates.append(dict(step=step + 1, frame=label['frame'], loss=sum(losses), gradient_norm=grad_norm))
+        # Descent diagnostic: same query and full budget, fresh rebuild after the update.
+        with torch.no_grad():
+            after = float(query_loss(model, images, label, budgets[0]))
+        updates.append(dict(step=step + 1, frame=label['frame'], loss=sum(losses), gradient_norm=grad_norm,
+                            full_budget_before=losses[0] * len(budgets), full_budget_after=after))
         write_json(result / 'updates.json', updates)
         # Select on the same fixed objective as the gate, after each query cycle.
         if (step + 1) % len(labels) == 0 or step + 1 == steps:

@@ -172,7 +172,7 @@ class DriverContracts(unittest.TestCase):
             actual = distillation_loss(output, label, origin, torch.tensor(1., device='cuda'))
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
-    def test_refiner_training_replays_only_causal_history(self):
+    def test_refiner_training_replays_causal_history_in_graph(self):
         from loop_transformer import query_loss
 
         class RefinerFixture:
@@ -192,7 +192,7 @@ class DriverContracts(unittest.TestCase):
              patch('loop_transformer.distillation_loss', return_value=torch.tensor(0., device='cuda')):
             query_loss(model, images, dict(bank=[0, 2], frame=5), 4)
         self.assertEqual([(frame, grad) for frame, grad, _ in model.calls],
-                         [(3, False), (4, False), (5, True)])
+                         [(3, True), (4, True), (5, True)])
         self.assertTrue(all(options == dict(cam_only=True, use_cache=True)
                             for _, _, options in model.calls))
 
@@ -306,6 +306,34 @@ class Pi3Contracts(unittest.TestCase):
         self.assertGreater(float(x.grad[:, inactive].abs().sum()), 0., 'Inactive keys must remain context')
         self.assertTrue(torch.isfinite(x.grad).all())
         del block, x, compact
+
+    def test_training_gradients_include_bank_and_refiner_history(self):
+        for variant in ('elastic', 'refiner'):
+            with self.subTest(variant=variant):
+                torch.manual_seed(17)
+                model = LoopedPi3(self.native, LoopConfig(variant), initialize=False).train()
+                parameter = (model.refiner.readout[-1].weight if variant == 'refiner'
+                             else model.core[0].attn.qkv.weight)
+                gradients = []
+                for bank_grad in (True, False):
+                    model.zero_grad(set_to_none=True)
+                    with torch.autocast('cuda', dtype=torch.bfloat16):
+                        with torch.set_grad_enabled(bank_grad and variant != 'refiner'):
+                            model(self.images[:, :2], store_cache=True)
+                        if variant == 'refiner':
+                            with torch.set_grad_enabled(bank_grad):
+                                model(self.images[:, 2:], cam_only=True, use_cache=True)
+                            self.assertEqual(model.refiner_state.requires_grad, bank_grad)
+                        else:
+                            self.assertEqual(model.cache['core_0_0']['k'].requires_grad, bank_grad)
+                        output = model(self.images[:, 2:], cam_only=True, use_cache=True)
+                        output['camera_poses'][0, 0, :3, 3].sum().backward()
+                    self.assertTrue(torch.isfinite(parameter.grad).all())
+                    gradients.append(parameter.grad.clone())
+                self.assertFalse(torch.equal(*gradients), 'Bank/history must contribute gradient')
+                del model, parameter, gradients, output
+                gc.collect()
+                torch.cuda.empty_cache()
 
     def test_every_variant_cache_readonly_gradients_and_reload(self):
         for variant in VARIANTS:

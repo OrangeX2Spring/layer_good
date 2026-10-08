@@ -108,6 +108,40 @@ it runs or queue a duplicate. Review its remaining results and archive first.
 This correction changes the driver hash, so26337 checkpoints cannot be promoted
 using the corrected driver. Historical artifacts remain intact for inspection.
 
+## Training gradient correction after the 26337 audit
+
+26337 per-step logs (`updates.json`): elastic improved for 16 steps, then rose
+almost monotonically on every frame (130→9600 from step ~80) while its gradient
+norm grew with it; one refiner update raised frame-48 loss 0.03→8.4, while
+frames replaying few history steps stayed near zero. Both trained against a
+truncated objective: the rebuilt bank/origin (same weights) was `no_grad` and
+detached, and the refiner's replayed history was cut at every pose. Training
+now differentiates the bank, origin and the refiner rollout. Inference, pilots,
+calibration and no-grad measurements are unchanged.
+
+`train all` now trains every variant (no initialized-only arm) with the
+overnight trained-variant policy: 200 steps, 1e-5, aggregate fixed-query gate,
+best-measured checkpoint retention (4bf298f). It runs the contracts first; a new
+contract checks that the bank and refiner history change the gradient.
+`updates.json` adds `full_budget_before`/`full_budget_after` per step: the same
+query re-measured with a fresh rebuild after the update. If steps still fail to
+descend with the full gradient, the remaining cause is step size/conditioning,
+not truncation. This is a cause hypothesis under test, not a demonstrated cure.
+No pilot or full runs in this job; review training before `pilot all`.
+
+From `layer_good` on head (pull runs inside the allocation):
+
+```bash
+W='git -c fetch.recurseSubmodules=0 pull --ff-only'
+W="$W && bash tools/loop_transformer.sbatch train all"
+O=../loop_transformer_slurm-%j.log
+sbatch -p 24g -w stuttgart --gres=gpu:1 --propagate=NONE \
+  -t 06:00:00 -o "$O" --wrap="$W"
+```
+
+Evidence: `LOOP TRAIN CONTRACTS OK`, one `LOOP PREPARATION COMPLETE` per
+variant, `LOOP TRAIN JOB OK`, archive `loop_<job>_train.tar`.
+
 ## Implemented architecture paths
 
 Model code: `kv_tracker/kv_tracker/loop_models.py` in the model fork. Driver:
@@ -121,8 +155,8 @@ register tokens, original RoPE coordinates and the concatenated final pair
 input to the native camera/point/confidence heads. Frozen encoder/heads remain
 in eval mode during training. The middle has four shared local/global pairs,
 normally repeated four times. Rebuilds use the full schedule; query budgets use
-matching full-schedule history slots. Rebuild KV is detached; gradient training
-is through current-frame computations, with block checkpointing. These initial
+matching full-schedule history slots. Training rebuilds keep bank KV and origin
+in the graph (inference banks are grad-free), with block checkpointing. These
 pilots use dense resized scene RGB and the fixed native50-frame/cap20 schedule.
 They do not use the stock token_drop/decoder-index-hook/cache-transform paths.
 
@@ -150,9 +184,8 @@ their retained state. Adaptive geometry readouts and host decisions are timed
 and may outweigh early-exit savings. The refiner stores the full native decoder
 and KV for rebuilds, so it does not claim weight/cache memory savings. Refiner
 queries return poses only, not new dense reconstruction. Its smoke replays every preceding query since the last bank update with the
-current model, then differentiates the labeled query only. This matches causal
-warm-start inputs but does not perform temporal backpropagation. The
-nested schedule is a geometry adaptation of hierarchical recurrence, not LoopVL.
+current model and backpropagates through that whole causal rollout (BPTT).
+The nested schedule is a geometry adaptation of hierarchical recurrence, not LoopVL.
 
 ## Gates and reproducibility
 
@@ -167,7 +200,7 @@ nested schedule is a geometry adaptation of hierarchical recurrence, not LoopVL.
    It creates native teacher targets for frames1/8/16/32/48/50/56/63 with causal
    banks `[0,0]` before49 and `[0,49]` afterward. Native source/weights, exact
    pixel and ZIP hashes, manifests and labels are archived. Eight fresh training
-   processes each run20 AdamW updates at1e-4. This tests training plumbing;
+   processes each run 200 AdamW updates at 1e-5, aggregate gate. Still bounded:
    it is not a sufficient training budget for a scientific claim.
 3. **Calibrate adaptive stopping within the engineering stage.** Fixed25th
    percentiles are fitted only to safe exits from the first four development

@@ -86,12 +86,16 @@ if [ "$STAGE" = contracts ]; then
         -p test_loop_transformer.py -v
     echo "LOOP ALL VARIANT GPU CONTRACTS OK"
 else
-    if [ "$STAGE" = overnight ]; then
+    if [[ "$STAGE" = overnight || "$STAGE" = train ]]; then
         "${CONTAINER[@]}" python -m unittest discover -s "$REPO/tools" \
             -p test_loop_transformer.py -v
-        echo "LOOP OVERNIGHT CONTRACTS OK"
+        echo "LOOP ${STAGE^^} CONTRACTS OK"
     fi
     extra=()
+    if [ "$STAGE" = train ]; then
+        # Same policy the overnight run used for its trained variants, for every variant.
+        extra+=(--steps 200 --learning-rate 1e-5 --aggregate-gate)
+    fi
     if [[ "$STAGE" = pilot || "$STAGE" = profile || "$STAGE" = full ]]; then
         SOURCE=${3:?Supply the reviewed training archive}
         test -f "$SOURCE"
