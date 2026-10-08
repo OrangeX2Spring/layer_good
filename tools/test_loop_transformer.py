@@ -317,17 +317,20 @@ class Pi3Contracts(unittest.TestCase):
                 gradients = []
                 for bank_grad in (True, False):
                     model.zero_grad(set_to_none=True)
+                    # One autocast region per call, backward outside, as in the driver:
+                    # a shared region reuses weight casts cached under no_grad.
+                    with torch.set_grad_enabled(bank_grad and variant != 'refiner'), \
+                         torch.autocast('cuda', dtype=torch.bfloat16):
+                        model(self.images[:, :2], store_cache=True)
+                    if variant == 'refiner':
+                        with torch.set_grad_enabled(bank_grad), torch.autocast('cuda', dtype=torch.bfloat16):
+                            model(self.images[:, 2:], cam_only=True, use_cache=True)
+                        self.assertEqual(model.refiner_state.requires_grad, bank_grad)
+                    else:
+                        self.assertEqual(model.cache['core_0_0']['k'].requires_grad, bank_grad)
                     with torch.autocast('cuda', dtype=torch.bfloat16):
-                        with torch.set_grad_enabled(bank_grad and variant != 'refiner'):
-                            model(self.images[:, :2], store_cache=True)
-                        if variant == 'refiner':
-                            with torch.set_grad_enabled(bank_grad):
-                                model(self.images[:, 2:], cam_only=True, use_cache=True)
-                            self.assertEqual(model.refiner_state.requires_grad, bank_grad)
-                        else:
-                            self.assertEqual(model.cache['core_0_0']['k'].requires_grad, bank_grad)
                         output = model(self.images[:, 2:], cam_only=True, use_cache=True)
-                        output['camera_poses'][0, 0, :3, 3].sum().backward()
+                    output['camera_poses'][0, 0, :3, 3].sum().backward()
                     self.assertTrue(torch.isfinite(parameter.grad).all())
                     gradients.append(parameter.grad.clone())
                 self.assertFalse(torch.equal(*gradients), 'Bank/history must contribute gradient')
