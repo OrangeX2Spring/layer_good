@@ -45,7 +45,7 @@ def checkpoint_identity():
     return {p.name: sha256(p) for p in files}
 
 
-def load_images(inputs, count):
+def load_images(inputs, count, pixels=False):
     manifest = json.loads((inputs / 'manifest.json').read_text())
     assert count <= manifest['frames']
     images = []
@@ -54,7 +54,7 @@ def load_images(inputs, count):
         assert bgr is not None
         rgb = bgr[:, :, ::-1].copy()
         assert hashlib.sha256(rgb.tobytes()).hexdigest() == row['model_rgb_sha256']
-        images.append(torch.from_numpy(rgb).permute(2, 0, 1).float().div(255.))
+        images.append(rgb if pixels else torch.from_numpy(rgb).permute(2, 0, 1).float().div(255.))
     return manifest, images
 
 
@@ -83,6 +83,7 @@ def build_model(variant, saved=None):
         model, provenance = load_looped(native, saved)
         assert provenance['checkpoint_weights'] == checkpoint_identity()
         assert provenance['source_sha256'] == sha256(inspect.getfile(LoopedPi3))
+        assert provenance['driver_sha256'] == sha256(__file__)
         assert model.config.variant == variant
     else:
         model, provenance = LoopedPi3(native, LoopConfig(variant)), None
@@ -127,22 +128,28 @@ def rebuild(model, images, bank):
 
 
 def distillation_loss(output, label, origin, scale):
-    pose = output['camera_poses'][0, 0].float()
-    predicted = origin @ pose
-    expected = label['origin'].cuda() @ label['pose'][0, 0].cuda()
-    loss = F.mse_loss(predicted[:3, :3], expected[:3, :3])
-    loss = loss + F.mse_loss(predicted[:3, 3] / scale, expected[:3, 3] / label['scale'].cuda())
-    if 'local_points' in output:
-        target = label['local_points'].cuda()[:, :, 7::14, 7::14]
-        current = output['local_points'][:, :, 7::14, 7::14].float()
-        weight = label['confidence'].cuda()[:, :, 7::14, 7::14]
-        loss = loss + ((current / scale - target / label['scale'].cuda()).square() * weight).mean()
-    return loss
+    with torch.autocast('cuda', enabled=False):
+        pose = output['camera_poses'][0, 0].float()
+        predicted = origin @ pose
+        expected = label['origin'].cuda() @ label['pose'][0, 0].cuda()
+        loss = F.mse_loss(predicted[:3, :3], expected[:3, :3])
+        loss = loss + F.mse_loss(predicted[:3, 3] / scale, expected[:3, 3] / label['scale'].cuda())
+        if 'local_points' in output:
+            target = label['local_points'].cuda()[:, :, 7::14, 7::14]
+            current = output['local_points'][:, :, 7::14, 7::14].float()
+            weight = label['confidence'].cuda()[:, :, 7::14, 7::14]
+            loss = loss + ((current / scale - target / label['scale'].cuda()).square() * weight).mean()
+        return loss
 
 
 def query_loss(model, images, label, budget):
     model.query_loops = budget
     origin = rebuild(model, images, label['bank'])
+    if model.config.variant == 'refiner':
+        # Match deployment history; truncate gradients at each predicted pose.
+        with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
+            for frame in range(label['bank'][-1] + 1, label['frame']):
+                model(images[frame].cuda()[None, None], cam_only=True, use_cache=True)
     with torch.autocast('cuda', dtype=torch.bfloat16):
         output = model(images[label['frame']].cuda()[None, None], use_cache=True,
                        cam_only=model.config.variant == 'refiner')
@@ -151,14 +158,14 @@ def query_loss(model, images, label, budget):
             target = label['features'].cuda().float()
             norm = target.square().mean().sqrt().clamp_min(1e-6)
             loss = loss + F.mse_loss(model.last_features.float() / norm, target / norm)
-            if model.short_features is not None:
-                # Prefix endpoint supervision supports adaptive early stopping.
-                loss = loss + F.mse_loss(model.short_features.float() / norm, target / norm)
+            for features in model.exit_features.values():
+                # Supervise every prefix eligible for adaptive early stopping.
+                loss = loss + F.mse_loss(features.float() / norm, target / norm)
                 h, w = images[0].shape[-2:]
                 pos = model.position_getter(1, h // 14, w // 14, target.device) + 1
                 pos = torch.cat((pos.new_zeros(1, 5, 2), pos), 1)
-                short = dict(camera_poses=model.read_pose(model.short_features, pos, h, w).reshape(1, 1, 4, 4),
-                             local_points=model.read_local(model.short_features, pos, h, w)[None])
+                short = dict(camera_poses=model.read_pose(features, pos, h, w).reshape(1, 1, 4, 4),
+                             local_points=model.read_local(features, pos, h, w)[None])
                 loss = loss + distillation_loss(short, label, origin, model.map_scale)
             if model.routing_scores is not None:
                 # Detached per-patch feature error supervises discrete top/spread routing.
@@ -173,15 +180,18 @@ def calibrate_halting(model, images, labels, result):
     model.eval()
     model.collect_exits = True
     signals, safe, records = [], [], []
+    calibration_frames = {label['frame'] for label in labels[:len(labels) // 2]}
     with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
         for label in labels:
             origin = rebuild(model, images, label['bank'])
             model(images[label['frame']].cuda()[None, None], cam_only=True, use_cache=True)
-            target = label['origin'].cuda() @ label['pose'][0, 0].cuda()
+            with torch.autocast('cuda', enabled=False):
+                target = label['origin'].cuda() @ label['pose'][0, 0].cuda()
             for row in model.exit_records:
                 if not model.config.short_loops <= row['loop'] < model.config.full_loops:
                     continue
-                predicted = origin @ row['pose']
+                with torch.autocast('cuda', enabled=False):
+                    predicted = origin @ row['pose'].float()
                 # Both translations normalized by their bank scale, fixed for the episode.
                 normalized = predicted.clone()
                 normalized[:3, 3] /= model.map_scale
@@ -192,23 +202,26 @@ def calibrate_halting(model, images, labels, result):
                 signals.append(row['signals'].float())
                 safe.append(good)
                 records.append(dict(frame=label['frame'], loop=row['loop'], safe=good,
+                    partition='fit' if label['frame'] in calibration_frames else 'validation',
                     error=error.cpu().tolist(),
                     signals=[float(v) if torch.isfinite(v) else None for v in row['signals']]))
     x = torch.stack(signals)
     good = torch.tensor(safe, device=x.device) & torch.isfinite(x).all(1)
     passed = False
     thresholds = None
-    if good.any():
-        candidate = torch.quantile(x[good], .25, dim=0)
+    fit = torch.tensor([row['partition'] == 'fit' for row in records], device=x.device)
+    if (good & fit).any():
+        candidate = torch.quantile(x[good & fit], .25, dim=0)
         accepted = (x <= candidate).all(1)
-        passed = bool(accepted.any() and not (accepted & ~good).any())
+        passed = bool((accepted & fit).any() and (accepted & ~fit).any()
+                      and not (accepted & ~good).any())
         if passed:
             model.halt_thresholds.copy_(candidate)
             thresholds = candidate.cpu().tolist()
     model.collect_exits = False
     write_json(result / 'halting_calibration.json', dict(passed=passed, thresholds=thresholds,
-        rule='25th percentile of safe development exits; reject if any unsafe exit accepted',
-        limitation='development distillation-error gate, not held-out trajectory quality', records=records))
+        rule='Fit on first four development queries; require safe acceptance on disjoint last four',
+        limitation='Same-scene frame holdout, not independent-scene or trajectory quality', records=records))
     return passed
 
 
@@ -244,7 +257,8 @@ def train_one(work, variant):
             loss.backward()
             losses.append(float(loss.detach()))
             # Keep no old graph live across budgets or optimizer steps.
-            model.last_features = model.short_features = model.routing_features = model.routing_scores = None
+            model.last_features = model.routing_features = model.routing_scores = None
+            model.exit_features = {}
         assert all(p.grad is None or torch.isfinite(p.grad).all() for p in model.parameters())
         grad_norm = float(torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad], 1.))
         optimizer.step()
@@ -267,14 +281,16 @@ def train_one(work, variant):
         checkpoint_weights=checkpoint_identity(), training_loss_decreased=final < initial,
         halting_calibration_pass=calibration_pass, engineering_smoke_only=True,
         training_protocol_sha256=sha256(work / 'protocol.json'),
-        source_sha256=sha256(inspect.getfile(LoopedPi3)),
+        source_sha256=sha256(inspect.getfile(LoopedPi3)), driver_sha256=sha256(__file__),
         label_sha256={s: sha256(work / 'labels' / f'{s}.pt') for s in SPLITS})
     path = result / 'model.pt'
     model.save(path, provenance)
     # Exact state round-trip, followed by live output equality in the GPU contracts.
-    saved = torch.load(path, weights_only=True)
+    saved = torch.load(path, map_location='cpu', weights_only=True)
+    current = model.state_dict()
     for key, value in saved['state_dict'].items():
-        assert torch.equal(value.cuda(), model.state_dict()[key])
+        assert torch.equal(value, current[key].detach().cpu())
+    del saved, current
     summary = dict(variant=variant, config=asdict(model.config), initial_loss=initial, final_loss=final,
         development_losses=development, calibration_pass=calibration_pass,
         training_loss_decreased=final < initial, checkpoint_sha256=sha256(path),
@@ -334,13 +350,13 @@ def arm(config_path):
     torch.manual_seed(SEED)
     result = config_path.parent
     inputs = Path(config['inputs'])
-    manifest, images = load_images(inputs, config['frames'])
+    manifest, images = load_images(inputs, config['frames'], pixels=True)
     checkpoint_path = None if config['variant'] in ('native', 'native_compact') else Path(config['checkpoint'])
     model, provenance = build_model(config['variant'], checkpoint_path)
     model.eval()
     model.record_details = config['details']
     model.query_loops = config['budget']
-    model.geometry_calibration = calibration(manifest['scene'], *images[0].shape[-2:], 'cuda')
+    model.geometry_calibration = calibration(manifest['scene'], *images[0].shape[:2], 'cuda')
     if config['variant'] == 'adaptive':
         assert provenance['halting_calibration_pass'] and (model.halt_thresholds >= 0).all()
     if provenance is not None:
@@ -362,18 +378,16 @@ def arm(config_path):
         torch.cuda.synchronize()
         started = time.perf_counter()
         try:
-            for frame, image in enumerate(images):
-                pixels = (image.permute(1, 2, 0).numpy() * 255).round().astype(np.uint8)
-                assert hashlib.sha256(pixels.tobytes()).hexdigest() == manifest['inputs'][frame]['model_rgb_sha256']
+            for frame, pixels in enumerate(images):
                 poses.append(tracker.bootstrap(pixels) if frame == 0 else tracker.step(pixels, frame))
+            torch.cuda.synchronize()
+            seconds = time.perf_counter() - started
         finally:
             write_json(result / 'tracking_progress.json', dict(completed_frames=len(poses),
                        requested_frames=len(images), complete=len(poses) == len(images)))
             if poses:
                 filename = 'traj.npy' if len(poses) == len(images) else 'partial_traj.npy'
                 np.save(result / filename, np.asarray(poses))
-        torch.cuda.synchronize()
-        seconds = time.perf_counter() - started
         np.save(result / 'kf_idx.npy', np.asarray(tracker.ids))
         metrics = dict(frames=len(poses), seconds=seconds, fps=len(poses) / seconds,
             peak_allocated_bytes=torch.cuda.max_memory_allocated(),
@@ -413,10 +427,12 @@ def comparison(paths, output):
         np.testing.assert_array_equal(np.load(paths[reference_name] / 'kf_idx.npy'), np.load(paths[name] / 'kf_idx.npy'))
         ratios = {key: metrics[key] / reference[key] for key in ('ate_m', 'rpe_translation_m', 'translation_p99_m')}
         quality = all(v <= 1.05 for v in ratios.values())
+        timed = not (metrics['profile'] or reference['profile']
+                     or metrics['details'] or reference['details'])
         comparisons[name] = dict(reference=reference_name, quality_ratios=ratios, quality_pass=quality,
             speedup=metrics['fps'] / reference['fps'], memory_ratio=metrics['peak_allocated_bytes'] / reference['peak_allocated_bytes'],
-            doubled_fps=quality and metrics['fps'] >= 2 * reference['fps'],
-            half_memory=quality and metrics['peak_allocated_bytes'] <= .5 * reference['peak_allocated_bytes'])
+            doubled_fps=timed and quality and metrics['fps'] >= 2 * reference['fps'],
+            half_memory=timed and quality and metrics['peak_allocated_bytes'] <= .5 * reference['peak_allocated_bytes'])
     write_json(output, dict(runs=records, comparisons=comparisons,
         limitation='scene-only pilot; no ARCTIC/SAM or unobserved-GT claims; no automatic full evaluation'))
 
@@ -464,13 +480,15 @@ def main(args):
         pilot = json.loads(args.reviewed_pilot.read_text())
         assert pilot['variant'] == args.variant and pilot['checkpoint_archive_sha256'] == sha256(args.checkpoint)
         assert pilot['quality_pass'], 'Full evaluation requires a reviewed passing pilot'
+        assert pilot['driver_sha256'] == sha256(__file__)
+        assert pilot['source_sha256'] == sha256(inspect.getfile(LoopedPi3))
     training = args.work / 'reviewed_training'
     training.mkdir()
     with tarfile.open(args.checkpoint) as packed:
         # External archive is a filesystem boundary; reject traversal and links.
         for member in packed.getmembers():
             assert not Path(member.name).is_absolute() and '..' not in Path(member.name).parts
-            assert not member.issym() and not member.islnk()
+            assert member.isfile() or member.isdir()
         packed.extractall(training)
     summaries = json.loads((training / 'training_complete.json').read_text())['summaries']
     inputs = args.work / 'inputs' / 'office'
@@ -519,7 +537,9 @@ def main(args):
         gates.mkdir()
         for variant in eligible:
             selected = [row for key, row in compared.items() if key.startswith(variant + '_')]
+            assert len(selected) == (4 if variant in ('elastic', 'shared_kv', 'combined') else 2)
             gate = dict(variant=variant, checkpoint_archive_sha256=sha256(args.checkpoint),
+                        driver_sha256=sha256(__file__), source_sha256=sha256(inspect.getfile(LoopedPi3)),
                         quality_pass=all(r['quality_pass'] for r in selected),
                         comparison_sha256=sha256(args.work / 'comparison.json'),
                         next_gate='manual artifact review before full stage')

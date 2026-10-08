@@ -4,6 +4,7 @@ import gc
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import torch
 from torch import nn
@@ -25,6 +26,10 @@ class PrimitiveContracts(unittest.TestCase):
         self.assertTrue(torch.isfinite(low_rank.down.grad).all())
         self.assertTrue(torch.isfinite(low_rank.up.grad).all())
 
+    def test_invalid_zero_short_budget(self):
+        with self.assertRaises(AssertionError):
+            LoopConfig('elastic', short_loops=0)
+
     def test_selection_registers_and_spatial_coverage(self):
         rows = active_rows(torch.arange(24).float(), .5)
         self.assertEqual(len(rows), 17)
@@ -44,6 +49,82 @@ class PrimitiveContracts(unittest.TestCase):
         pose = se3_update(torch.tensor([.1, .2, -.1, .3, -.2, .4]), torch.tensor(2.))
         torch.testing.assert_close(pose[:3, :3].T @ pose[:3, :3], torch.eye(3), atol=1e-6, rtol=1e-6)
         self.assertAlmostEqual(float(torch.det(pose[:3, :3])), 1., places=5)
+
+
+class DriverContracts(unittest.TestCase):
+    def test_pose_distillation_is_independent_of_outer_autocast(self):
+        from loop_transformer import distillation_loss
+        origin = torch.eye(4, device='cuda')
+        origin[:3, 3] = torch.tensor([1.003, 2.007, 3.011], device='cuda')
+        pose = torch.eye(4, device='cuda').reshape(1, 1, 4, 4)
+        pose[0, 0, :3, 3] = torch.tensor([.013, .017, .019], device='cuda')
+        label = dict(origin=origin.cpu(), pose=torch.eye(4).reshape(1, 1, 4, 4),
+                     scale=torch.tensor(1.))
+        output = dict(camera_poses=pose)
+        expected = distillation_loss(output, label, origin, torch.tensor(1., device='cuda'))
+        with torch.autocast('cuda', dtype=torch.bfloat16):
+            actual = distillation_loss(output, label, origin, torch.tensor(1., device='cuda'))
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+    def test_refiner_training_replays_only_causal_history(self):
+        from loop_transformer import query_loss
+
+        class RefinerFixture:
+            config = LoopConfig('refiner')
+            map_scale = torch.tensor(1., device='cuda')
+
+            def __init__(self):
+                self.calls = []
+
+            def __call__(self, image, **kwargs):
+                self.calls.append((int(image.flatten()[0]), torch.is_grad_enabled(), kwargs))
+                return {}
+
+        model = RefinerFixture()
+        images = [torch.full((3, 14, 14), float(i)) for i in range(6)]
+        with patch('loop_transformer.rebuild', return_value=torch.eye(4, device='cuda')), \
+             patch('loop_transformer.distillation_loss', return_value=torch.tensor(0., device='cuda')):
+            query_loss(model, images, dict(bank=[0, 2], frame=5), 4)
+        self.assertEqual([(frame, grad) for frame, grad, _ in model.calls],
+                         [(3, False), (4, False), (5, True)])
+        self.assertTrue(all(options == dict(cam_only=True, use_cache=True)
+                            for _, _, options in model.calls))
+
+    def test_adaptive_calibration_rejects_unsafe_or_uncovered_validation(self):
+        from loop_transformer import calibrate_halting
+
+        class ExitFixture:
+            config = LoopConfig('adaptive')
+
+            def __init__(self, unsafe, uncovered):
+                self.unsafe, self.uncovered = unsafe, uncovered
+                self.map_scale = torch.tensor(1., device='cuda')
+                self.halt_thresholds = torch.full((3,), -1., device='cuda')
+
+            def eval(self):
+                return self
+
+            def __call__(self, image, **kwargs):
+                frame = int(image.flatten()[0])
+                pose = torch.eye(4, device='cuda')
+                if frame >= 4 and self.unsafe:
+                    pose[0, 3] = 1.
+                signal = 2. if frame >= 4 and self.uncovered else 1.
+                self.exit_records = [dict(loop=loop, pose=pose,
+                    signals=torch.full((3,), signal, device='cuda')) for loop in (2, 3)]
+
+        images = [torch.full((3, 14, 14), float(i)) for i in range(8)]
+        labels = [dict(frame=i, bank=[0, 0], origin=torch.eye(4),
+                       pose=torch.eye(4).reshape(1, 1, 4, 4), scale=torch.tensor(1.))
+                  for i in range(8)]
+        for unsafe, uncovered, expected in ((False, False, True), (True, False, False),
+                                             (False, True, False)):
+            with self.subTest(unsafe=unsafe, uncovered=uncovered), \
+                 tempfile.TemporaryDirectory(dir='/tmp') as temporary, \
+                 patch('loop_transformer.rebuild', return_value=torch.eye(4, device='cuda')):
+                model = ExitFixture(unsafe, uncovered)
+                self.assertEqual(calibrate_halting(model, images, labels, Path(temporary)), expected)
+                self.assertEqual(bool((model.halt_thresholds >= 0).all()), expected)
 
 
 class Pi3Contracts(unittest.TestCase):
@@ -81,6 +162,11 @@ class Pi3Contracts(unittest.TestCase):
         rows = torch.arange(29, device=x.device)
         torch.testing.assert_close(selected_block(block, x, pos, rows), block(x, xpos=pos),
                                    rtol=1e-5, atol=1e-5)
+        with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
+            _, k, v = block(x.detach(), xpos=pos, ret_kv=True)
+            history = dict(k=k, v=v)
+            torch.testing.assert_close(selected_block(block, x, pos, rows, history),
+                block(x, xpos=pos, kv_cache=history), rtol=2e-2, atol=2e-2)
         rows = active_rows(torch.arange(24, device=x.device).float(), .5)
         compact = selected_block(block, x, pos, rows)
         inactive = torch.ones(29, device=x.device, dtype=torch.bool)
@@ -116,6 +202,8 @@ class Pi3Contracts(unittest.TestCase):
                     if variant != 'refiner':
                         loss = loss + model.last_features.float().square().mean()
                         loss = loss + output['local_points'].square().mean() / model.map_scale.square()
+                    for features in model.exit_features.values():
+                        loss = loss + features.float().square().mean()
                     loss.backward()
                 grads = [p.grad for p in model.parameters() if p.requires_grad and p.grad is not None]
                 self.assertTrue(grads and all(torch.isfinite(g).all() for g in grads))
@@ -129,10 +217,12 @@ class Pi3Contracts(unittest.TestCase):
                     self.assertEqual(len(model.last_execution['active_rows']), 3)
                     self.assertEqual(len(model.last_execution['active_rows'][0]), 17)
                 if variant == 'adaptive':
-                    self.assertIsNotNone(model.short_features)
+                    self.assertEqual(set(model.exit_features), {2, 3})
+                    self.assertTrue(all(features.requires_grad for features in model.exit_features.values()))
                     model.halt_thresholds.fill_(0.)
                 model.zero_grad(set_to_none=True)
-                model.last_features = model.short_features = model.routing_features = model.routing_scores = None
+                model.last_features = model.routing_features = model.routing_scores = None
+                model.exit_features = {}
                 model.eval()
                 with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
                     model(self.images[:, :2], store_cache=True)

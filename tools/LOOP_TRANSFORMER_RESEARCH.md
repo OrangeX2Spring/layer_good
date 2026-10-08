@@ -3,6 +3,11 @@
 Follow-up: user selected implementation of all seven. The prepared model paths,
 fixed settings and current contract-first procedure are in
 [LOOP_TRANSFORMER_IMPLEMENTATION.md](LOOP_TRANSFORMER_IMPLEMENTATION.md).
+The implementation review records important limits in that protocol: the fixed
+20/36-block short path cannot double total FPS through block skipping alone, and
+paper-inspired prototypes are not full paper reproductions. The refiner remains
+the strongest structural speed hypothesis; memory targets require measured total
+resident/peak bytes. No runtime result is implied.
 The research-stage selection/profiling recommendation below is historical;
 the implementation protocol supersedes it. No runtime benefit is established.
 

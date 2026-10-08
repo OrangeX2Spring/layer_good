@@ -46,8 +46,9 @@ error proxy, not demonstrated pose importance; inactive K/V are recomputed from
 their retained state. Adaptive geometry readouts and host decisions are timed
 and may outweigh early-exit savings. The refiner stores the full native decoder
 and KV for rebuilds, so it does not claim weight/cache memory savings. Refiner
-queries return poses only, not new dense reconstruction. Its smoke learns
-individual bank-conditioned queries, not full temporal backpropagation. The
+queries return poses only, not new dense reconstruction. Its smoke replays every preceding query since the last bank update with the
+current model, then differentiates the labeled query only. This matches causal
+warm-start inputs but does not perform temporal backpropagation. The
 nested schedule is a geometry adaptation of hierarchical recurrence, not LoopVL.
 
 ## Gates and reproducibility
@@ -66,11 +67,15 @@ nested schedule is a geometry adaptation of hierarchical recurrence, not LoopVL.
    processes each run20 AdamW updates at1e-4. This tests training plumbing;
    it is not a sufficient training budget for a scientific claim.
 3. **Calibrate adaptive stopping within the engineering stage.** Fixed25th
-   percentiles from safe development exits are accepted only if they select at
-   least one exit and no unsafe development exit. Safety here means both
+   percentiles are fitted only to safe exits from the first four development
+   queries. They must accept at least one exit in each of the fit and disjoint
+   final-four validation partitions, with no unsafe accepted exit in either.
+   Both eligible early endpoints (loops2 and3) receive direct supervision. Safety here means both
    map-scale-normalized translation and rotation chordal error≤.05 versus the
    frozen teacher. Unknown map support cannot trigger stopping. Calibration
    failure is recorded explicitly; an uncalibrated adaptive model cannot deploy.
+   This small chronological holdout is still one scene, not independent-scene
+   validation or evidence of safe full-trajectory behavior.
 4. **Reviewed tracking pilot.** `pilot all <training.tar>` extracts the reviewed
    checkpoint archive into `/tmp`, stages256 office frames, and evaluates native,
    native_compact and each eligible implementation in fresh processes. There
@@ -83,7 +88,8 @@ nested schedule is a geometry adaptation of hierarchical recurrence, not LoopVL.
    compact token blocks are explicitly timed. Dynamic readout costs are included.
    Profiling is diagnostic, not the timed method performance.
 6. **Reviewed full evaluation.** `full <variant> <training.tar> <gate.json>`
-   requires that variant's passing pilot gate tied to the same checkpoint archive.
+   requires that variant's passing pilot gate tied to the same checkpoint archive
+   and exact driver/model source hashes; all expected repeats/budgets must exist.
    It runs the full office sequence, not a sweep or automatic successor. Inspect
    trajectory drift and both budget controls before claiming a result. Subsequent
    held-out scenes and ARCTIC/SAM transfer remain separate future validations.
@@ -97,8 +103,8 @@ after each bank rebuild resets refiner state to that bank's last raw pose.
 
 Changed-module checkpoints omit frozen pretrained encoder/head/entry/exit
 weights. Deployment loads the same offline pretrained Pi3 and verifies source,
-weight identities and complete changed-state keys. Inference does not load the
-teacher model. Checkpoints contain no episode caches or retained query graph.
+weight identities, exact training-driver hash and complete changed-state keys.
+Inference does not load the teacher model. Checkpoints contain no episode caches or retained query graph.
 Unique parameter, KV and auxiliary map-state bytes are reported separately;
 actual peak allocated/reserved memory and device samples are also archived.
 
@@ -106,10 +112,54 @@ Evaluation uses identical pixels, keyframe IDs and GT/RPE associations. The
 three-metric gate allows at most5% regression in ATE, translation RPE and
 translation-RPE p99. A2x FPS or half-memory success additionally requires that
 quality gate. Timing includes upload, queries, all bank updates and CPU pose/log
-output, but preloads RGB and is scene-only. Do not call it complete video/SAM FPS.
+processing, but preloads verified uint8 RGB and is scene-only. Pixel conversion,
+integrity hashing and final artifact serialization are outside the timer. Profile
+or detailed-instrumentation runs cannot set doubled-FPS/half-memory success flags.
+Do not call it complete video/SAM FPS.
 Two paired observations are diagnostic evidence, not statistical significance.
 Memory measurements include full resident model and refiner/map state; native
 and compact controls expose differences in KV backing storage.
+
+
+## Review corrections and design limits — 2026-10-08
+
+Review found and corrected unsupervised third-loop adaptive exits, reuse of
+threshold-fitting examples as the only validation, and isolated refiner training
+that omitted deployed motion-history inputs. Adaptive execution now skips the
+first-loop depth residual (ineligible exit) and all redundant final-depth checks.
+The frozen final heads still run for the actual returned prediction; early-exit
+camera heads are not free. Low-rank execution indexes the registered depth list
+directly instead of constructing temporary ModuleLists for every pair.
+
+Checkpoint round-trip verification loads on CPU, avoiding a second checkpoint
+copy on GPU. Tracking keeps uint8 frames rather than float32 copies on the host.
+Pose losses and calibration gauge transforms stay FP32 even under outer BF16
+autocast. Compact attention follows native SDPA backend selection. Archive extraction
+accepts regular files/directories only. Source-bound provenance deliberately
+rejects checkpoints/pilot gates produced by the earlier implementation: retrain
+after contracts; do not reuse an earlier checkpoint as a corrected result.
+
+The short elastic schedule executes20 versus36 decoder blocks: its idealized
+block-count speedup is1.8x before encoder, heads and full rebuilds. Thus skipping
+these blocks alone cannot meet2x total FPS. Nested28/36 is a smaller reduction.
+The refiner avoids the native query decoder and remains the strongest structural
+speed candidate. Shared weights/KV are memory hypotheses, not half-total-memory
+results. Trainable recurrent weights remain FP32 with BF16 autocast, whereas
+native decoder projections are stored BF16; reported resident bytes include this
+actual precision difference. No post-training precision conversion is applied.
+
+Elastic training distills both budgets against the teacher; it does not implement
+LoopFormer's additional long/short consistency objective. Paired history sharing
+is a geometry adaptation, not an exact MoR reproduction. Token routing lacks an
+equal-cost trained uniform-routing ablation; adaptive lacks a matched-cost fixed
+exit ablation. These are necessary for later causal method attribution, but are
+not added as an unrequested control sweep to the engineering smoke. None of the
+seven paths has runtime-verified quality, speed or memory benefit yet.
+
+New CAMP contracts cover both supervised adaptive endpoints, calibration success
+and rejection on unsafe/uncovered validation, causal refiner history with stopped
+history gradients, and invalid zero budgets. Existing native/cache/reload
+contracts remain required. Local checks are AST/whitespace/Bash only.
 
 ## CAMP operation
 
