@@ -84,6 +84,7 @@ MONITOR_PID=$!
 if [ "$STAGE" = contracts ]; then
     "${CONTAINER[@]}" python -m unittest discover -s "$REPO/tools" \
         -p test_loop_transformer.py -v
+    echo "LOOP ALL VARIANT GPU CONTRACTS OK"
 else
     extra=()
     if [[ "$STAGE" = pilot || "$STAGE" = profile || "$STAGE" = full ]]; then

@@ -161,6 +161,30 @@ and rejection on unsafe/uncovered validation, causal refiner history with stoppe
 history gradients, and invalid zero budgets. Existing native/cache/reload
 contracts remain required. Local checks are AST/whitespace/Bash only.
 
+## Contract failure26333 and retry
+
+User-supplied job26333 log reports seven decoder variants failing at
+`loss.backward()` in `pi3/curope/curope2d.py` with `tokens are not contiguous`.
+The refiner subtest and other listed tests did not report failures, but the suite
+ended `FAILED (errors=7)`: no training gate passed. The old unconditional Python
+success print was misleading under unittest subtests. It is removed; the wrapper
+now prints the all-variant success marker only after unittest exits successfully.
+Archive completion/exit status was not included in the supplied log.
+
+The pinned cuRoPE backward mutates its input gradient without materializing the
+contiguous B,N,H,D layout required by the CUDA kernel. The model fork now installs
+TrainingRoPE on the recurrent decoder and frozen readout decoders. Its custom
+first-order autograd path clones an owned contiguous buffer before the in-place
+forward/inverse kernels; no-grad inference delegates to original cuRoPE. Frozen
+head module shells are copied while parameter/buffer tensors remain shared, so
+the caller's native model is not patched or duplicated. No container or nested
+Pi3 source modification. New GPU contracts cover FP32/BF16 native forward parity,
+strided/broadcast backward, residual-branch gradient preservation and isolation
+of native modules. Existing all-variant backward/reload contracts remain the
+integration gate. This correction is locally syntax-checked, not GPU-verified.
+
+Next is another contracts-only allocation using the chunk below, not training.
+
 ## CAMP operation
 
 All commands below are user-operated; no assistant SSH/submission/transfer.

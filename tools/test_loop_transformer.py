@@ -10,7 +10,7 @@ import torch
 from torch import nn
 
 from kv_tracker.loop_models import (LoopConfig, LoopedPi3, LowRankLinear, VARIANTS,
-                                    active_rows, selected_block, se3_update, load_looped)
+                                    active_rows, selected_block, se3_update, load_looped, TrainingRoPE)
 from kv_tracker.pi3_utilts import load_pi3_from_pretrained, move_pi3_mlps_to_bfloat32
 
 
@@ -137,6 +137,30 @@ class Pi3Contracts(unittest.TestCase):
         cls.native.requires_grad_(False)
         cls.images = torch.rand(1, 3, 3, 56, 84, device='cuda')
 
+    def test_rope_backward_strided_and_broadcast_gradients(self):
+        native = self.native.decoder[0].attn.rope
+        rope = TrainingRoPE(native.base, native.F0)
+        inverse = type(native)(native.base, -native.F0)
+        pos = self.native.position_getter(1, 4, 6, 'cuda') + 1
+        for dtype in (torch.float32, torch.bfloat16):
+            tokens = torch.randn(1, 16, 24, 64, device='cuda', dtype=dtype, requires_grad=True)
+            original = tokens.detach().clone()
+            with torch.no_grad():
+                expected = native(tokens.detach().clone(), pos)
+            actual = rope(tokens, pos)
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+            torch.testing.assert_close(tokens, original, rtol=0, atol=0)
+            strided = torch.randn(1, 24, 16, 64, device='cuda', dtype=dtype).transpose(1, 2)
+            broadcast = torch.ones((), device='cuda', dtype=dtype).expand_as(tokens)
+            for gradient in (strided, broadcast):
+                self.assertFalse(gradient.is_contiguous())
+                original_gradient = gradient.clone()
+                with torch.no_grad():
+                    expected_gradient = inverse(gradient.clone(), pos) + gradient
+                result, = torch.autograd.grad(actual + tokens, tokens, gradient, retain_graph=True)
+                torch.testing.assert_close(result, expected_gradient, rtol=0, atol=0)
+                torch.testing.assert_close(gradient, original_gradient, rtol=0, atol=0)
+
     def test_native_wrapper_fidelity(self):
         for variant in ('native', 'native_compact'):
             wrapped = LoopedPi3(self.native, LoopConfig(variant)).eval()
@@ -183,6 +207,11 @@ class Pi3Contracts(unittest.TestCase):
                 # Initialization SVD is covered separately; this checks live wiring.
                 model = LoopedPi3(self.native, LoopConfig(variant), initialize=False).train()
                 model.record_details = True
+                if variant != 'refiner':
+                    self.assertIsNot(model.camera_decoder, self.native.camera_decoder)
+                    self.assertIs(next(model.camera_decoder.parameters()),
+                                  next(self.native.camera_decoder.parameters()))
+                    self.assertFalse(any(isinstance(m, TrainingRoPE) for m in self.native.modules()))
                 if variant == 'adaptive':
                     model.geometry_calibration = (torch.tensor([[50., 0., 42.], [0., 50., 28.],
                         [0., 0., 1.]], device='cuda'), None)
@@ -241,7 +270,6 @@ class Pi3Contracts(unittest.TestCase):
                 del model, cache, rebuilt, output, expected, loss, grads
                 gc.collect()
                 torch.cuda.empty_cache()
-        print('LOOP ALL VARIANT GPU CONTRACTS OK', flush=True)
 
 
 if __name__ == '__main__':
