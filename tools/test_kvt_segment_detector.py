@@ -106,6 +106,78 @@ class DetectorContracts(unittest.TestCase):
             self.assertEqual(row['anchor_frame'], 75)
             self.assertFalse(row['boundary'])
 
+    def test_object_coverage_uses_anchor_support_not_image_area(self):
+        # All 64 features occupy one image cell, but span 16 object-relative cells.
+        keypoints = [cv2.KeyPoint(float(x), float(y), 3.)
+                     for y in (10, 20, 30, 40) for x in (10, 20, 30, 40)
+                     for _ in range(4)]
+        descriptors = np.zeros((64, 32), np.uint8)
+        pairs = [[cv2.DMatch(i, i, 10.), cv2.DMatch(i, (i + 1) % 64, 100.)]
+                 for i in range(64)]
+        full = np.ones((64, 1), np.uint8)
+        for mode in ('image', 'anchor_support'):
+            detector = SegmentDetector(25, coverage_mode=mode)
+            with patch.object(detector, 'orb') as orb, patch.object(
+                    detector, 'matcher') as matcher, patch(
+                    'kvt_segment_detector.cv2.findHomography', return_value=(None, full)), patch(
+                    'kvt_segment_detector.cv2.findFundamentalMat', return_value=(None, full)):
+                orb.detectAndCompute.return_value = (keypoints, descriptors)
+                matcher.knnMatch.return_value = pairs
+                detector.step(self.image, 0)
+                # Current object translated/scaled: anchor support is unchanged.
+                orb.detectAndCompute.return_value = (
+                    [cv2.KeyPoint(p.pt[0] * .5 + 10, p.pt[1] * .5 + 10, 3.)
+                     for p in keypoints], descriptors)
+                row, _ = detector.step(self.image, 1)
+                self.assertEqual(row['cells'], 1)
+                self.assertEqual(row['status'], 'supported' if mode == 'anchor_support' else 'low_overlap')
+                if mode == 'anchor_support':
+                    self.assertEqual(row['anchor_coverage'], 1.)
+                    self.assertEqual(row['anchor_cells'], 16)
+
+    def test_object_support_persistence_unknown_and_prefix(self):
+        def run(count):
+            cv2.setRNGSeed(0)
+            detector = SegmentDetector(25, coverage_mode='anchor_support')
+            rows = []
+            for frame in range(count):
+                if frame < 50:
+                    row, _ = detector.step(self.image, frame)
+                else:
+                    with patch.object(detector, 'matcher') as matcher:
+                        matcher.knnMatch.return_value = []
+                        row, _ = detector.step(
+                            np.zeros_like(self.image) if frame == 53 else self.image, frame)
+                row.pop('seconds')
+                rows.append(row)
+            return rows
+        prefix = run(59)
+        self.assertEqual(prefix, run(62)[:59])
+        self.assertEqual(prefix[53]['status'], 'unknown_texture')
+        self.assertEqual([r['frame'] for r in prefix if r['boundary']], [58])
+
+    def test_object_coverage_can_fail_with_enough_inliers(self):
+        points = [cv2.KeyPoint(float(x), float(y), 3.)
+                  for y in (10, 60, 110, 160) for x in (10, 60, 110, 160)
+                  for _ in range(8)]
+        descriptors = np.zeros((128, 32), np.uint8)
+        pairs = [[cv2.DMatch(i, i, 10.), cv2.DMatch(i, (i + 1) % 128, 100.)]
+                 for i in range(128)]
+        inliers = np.zeros((128, 1), np.uint8)
+        inliers[:32] = 1  # Four of sixteen anchor cells, despite enough matches.
+        detector = SegmentDetector(25, coverage_mode='anchor_support')
+        with patch.object(detector, 'orb') as orb, patch.object(
+                detector, 'matcher') as matcher, patch(
+                'kvt_segment_detector.cv2.findHomography', return_value=(None, inliers)), patch(
+                'kvt_segment_detector.cv2.findFundamentalMat', return_value=(None, inliers)):
+            orb.detectAndCompute.return_value = (points, descriptors)
+            matcher.knnMatch.return_value = pairs
+            detector.step(self.image, 0)
+            row, _ = detector.step(self.image, 1)
+        self.assertEqual(row['anchor_coverage'], .25)
+        self.assertFalse(row['low_inliers'])
+        self.assertTrue(row['low_coverage'])
+
     def test_flow_tracks_gradual_motion_and_checks_prefix_causality(self):
         images = [np.roll(self.image, shift, axis=1) for shift in range(12)]
         def run(frames):

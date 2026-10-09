@@ -71,11 +71,18 @@ def main(args):
         flow = segmentation['detector'] == 'flow'
         assert segmentation['detector'] in ('flow', 'orb')
         maximum = segmentation.get('maximum_segment_frames')
+        coverage_mode = segmentation.get('coverage_mode', 'image')
+        if coverage_mode == 'anchor_support':
+            assert args.object_scene and not flow, 'Anchor-support coverage requires masked object inputs'
         detector = FlowSegmentDetector(segmentation.get('surviving_fraction', .25), maximum) \
-            if flow else SegmentDetector(segmentation['minimum_inliers'], maximum)
+            if flow else SegmentDetector(segmentation['minimum_inliers'], maximum,
+                coverage_mode, segmentation.get('minimum_anchor_coverage', .5))
         detector_policy = dict(FLOW_POLICY, surviving_fraction=detector.surviving_fraction) if flow \
             else dict(POLICY, minimum_inliers=segmentation['minimum_inliers'])
         detector_policy['maximum_segment_frames'] = maximum
+        if coverage_mode == 'anchor_support':
+            detector_policy.update(coverage_mode=coverage_mode,
+                                   minimum_anchor_coverage=detector.minimum_anchor_coverage)
         cv2.setNumThreads(1)
         cv2.setRNGSeed(0)
         boundaries = [0, frames]  # Append only when the live detector triggers.

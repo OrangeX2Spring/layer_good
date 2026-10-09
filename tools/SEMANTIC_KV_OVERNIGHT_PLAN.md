@@ -1,5 +1,11 @@
 # Semantic and geometric KV patch selection: bounded overnight design
 
+2026-10-09: Named object parts and object-relative views (cap/front/top) are a
+separate follow-on design in [OBJECT_SEMANTIC_KV_PLAN.md](OBJECT_SEMANTIC_KV_PLAN.md).
+That plan does not relabel the appearance clusters below as semantic parts or
+restart this historical screen. Current implementation is the object-aware
+segmentation diagnostic in KVT_SEGMENT_ARCTIC.md; semantic KV remains planned.
+
 Design dated 2026-09-28. User selected strongest established reference per task,
 limited later cross-host confirmation, and 12 hours on one GPU; on implementation
 (same day) the user lifted the 12-hour cap. Implemented for KV-Tracker: see

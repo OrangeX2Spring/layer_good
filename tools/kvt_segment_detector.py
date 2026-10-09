@@ -120,9 +120,14 @@ class FlowSegmentDetector:
 
 
 class SegmentDetector:
-    def __init__(self, minimum_inliers=20, maximum_segment_frames=None):
+    def __init__(self, minimum_inliers=20, maximum_segment_frames=None,
+                 coverage_mode='image', minimum_anchor_coverage=.5):
         assert isinstance(minimum_inliers, int) and minimum_inliers > 0
         assert maximum_segment_frames is None or maximum_segment_frames >= 50
+        assert coverage_mode in ('image', 'anchor_support')
+        assert 0 < minimum_anchor_coverage <= 1
+        self.coverage_mode = coverage_mode
+        self.minimum_anchor_coverage = minimum_anchor_coverage
         self.maximum_segment_frames = maximum_segment_frames
         self.minimum_inliers = minimum_inliers
         self.orb = cv2.ORB_create(nfeatures=POLICY['features'])
@@ -184,7 +189,26 @@ class SegmentDetector:
                 grid = POLICY['grid']
                 cells = np.floor(target[inliers] * [grid / w, grid / h]).astype(int)
                 occupied = len(np.unique(cells, axis=0))
-                low = int(inliers.sum()) < self.minimum_inliers or occupied < POLICY['minimum_cells']
+                low_coverage = occupied < POLICY['minimum_cells']
+                if self.coverage_mode == 'anchor_support':
+                    # Same features/matches as the image-grid control. Measure
+                    # surviving anchor support in its own feature extent, so
+                    # object size/position in the image cannot impose four cells.
+                    origin = anchor_points.min(axis=0)
+                    extent = np.maximum(anchor_points.max(axis=0) - origin, 1.)
+                    anchor_cells = np.clip(np.floor(
+                        (anchor_points - origin) * grid / extent), 0, grid - 1).astype(int)
+                    supported_cells = np.clip(np.floor(
+                        (source[inliers] - origin) * grid / extent), 0, grid - 1).astype(int)
+                    available = len(np.unique(anchor_cells, axis=0))
+                    supported = len(np.unique(supported_cells, axis=0))
+                    coverage = supported / available
+                    low_coverage = coverage < self.minimum_anchor_coverage
+                    row.update(anchor_cells=available, supported_anchor_cells=supported,
+                               anchor_coverage=coverage,
+                               low_inliers=int(inliers.sum()) < self.minimum_inliers,
+                               low_coverage=low_coverage)
+                low = int(inliers.sum()) < self.minimum_inliers or low_coverage
                 eligible = frame - anchor_frame >= POLICY['minimum_segment_frames']
                 self.low_run = self.low_run + 1 if low and eligible else 0
                 boundary = self.low_run >= POLICY['persistence']
