@@ -55,6 +55,8 @@ def main(args):
         assert frames == 2585
     if args.object_scene:
         assert args.inputs is not None and args.native_metrics is not None
+    if args.disable_retirement:
+        assert args.object_scene and args.detector_config is not None and args.segmentation is None
     if args.native_metrics:
         assert args.detector_config is not None, 'Non-office runs require a live detector policy'
 
@@ -91,9 +93,12 @@ def main(args):
     write_json(result / 'config.json', dict(boundaries=boundaries, sources=sources,
         checkpoint=checkpoint, keyframes='segment first frame + latest, rebuilt every 50; '
         'later rebuilds rescaled to the first via the anchor pointmap',
-        connection='pose-anchored at b, point-fit scale, always committed, 49-frame delay',
-        history='old KV and images deleted at b', native=native, margin=MARGIN,
+        connection='none' if args.disable_retirement else
+                   'pose-anchored at b, point-fit scale, always committed, 49-frame delay',
+        history='first anchor plus latest; no map retirement' if args.disable_retirement else
+                'old KV and images deleted at b', native=native, margin=MARGIN,
         short_tail='at EOF rebuild [anchor,last] and commit pending connection',
+        disable_retirement=args.disable_retirement,
         segmentation_policy=detector_policy if detector is not None else None,
         gt_used_by_tracker=False, seed=0))
     torch.manual_seed(0)
@@ -133,7 +138,7 @@ def main(args):
                     assert {k: v for k, v in decision.items() if k != 'seconds'} == {
                         k: v for k, v in expected_rows[frame].items() if k not in ('seconds', 'timestamp')}, frame
                 detector_rows.append(decision)
-                if decision['boundary']:
+                if decision['boundary'] and not args.disable_retirement:
                     boundaries.insert(-1, frame)
             local_poses.append(tracker.step(image, frame))
         tracker.finish(image, frame)
@@ -220,4 +225,6 @@ if __name__ == '__main__':
     selection.add_argument('--segmentation', type=Path)
     selection.add_argument('--detector-config', type=Path)
     parser.add_argument('--name', default='reanchor_maps')
+    parser.add_argument('--disable-retirement', action='store_true',
+                        help='Diagnostic: keep the first local map; still log the live detector')
     main(parser.parse_args())
