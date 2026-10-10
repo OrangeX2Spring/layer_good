@@ -17,7 +17,9 @@ and point-fit connections and changes only the segment bank to three images
 (segment anchor + previous + latest keyframe). Stage 'two-way' keeps the same cuts and
 replaces each connection's scale by one confidence-weighted Sim(3) over two frames
 each map covers (b and the old map's latest keyframe), with two- and three-image
-segment banks.
+segment banks. Stage 'latest-anchor' pins each connection's rotation and position on the
+old map's latest rebuild keyframe L instead of the cut frame b (point-fit scale kept),
+with three-image segment banks; it carries both segmented controls.
 """
 import argparse
 import io
@@ -57,7 +59,8 @@ ARMS = dict(gate=('native', 'no_retirement', 'three_frame'),
             retrieval=('native', 'three_frame_pinned', 'retrieval_bank'),
             overlap=('native', 'segmented', 'segmented_overlap'),
             **{'segment-three': ('native', 'segmented', 'segmented_three'),
-               'two-way': ('native', 'segmented', 'segmented_twoway', 'segmented_three_twoway')})
+               'two-way': ('native', 'segmented', 'segmented_twoway', 'segmented_three_twoway'),
+               'latest-anchor': ('native', 'segmented', 'segmented_three', 'segmented_three_latest')})
 # Reviewed 26159 segmented reanchor at 25 inliers (Mac audit): archive and SHA256.
 SEGMENTED = ('tum_26159_segment_reanchor_inliers25.tar',
              'c6617206f6f8bd18da0276c9606c5c9ac5575f80fd0d10a37a6d087c0b15af32')
@@ -66,7 +69,7 @@ COMPARE = dict(three_frame_pinned='three_frame', three_frame_pinned_scale='three
                three_frame_pinned_shared='three_frame_pinned', three_frame_pinned_fused='three_frame_pinned',
                retrieval_bank='three_frame_pinned', segmented_overlap='segmented',
                segmented_three='segmented', segmented_twoway='segmented',
-               segmented_three_twoway='segmented')
+               segmented_three_twoway='segmented', segmented_three_latest='segmented_three')
 
 
 def refresh_pairs(result):
@@ -92,7 +95,7 @@ def main(args):
     if args.stage in CONTROLS:
         control_archive, control_sha256, control_arm = CONTROLS[args.stage]
         sources[control_archive] = control_sha256
-    if args.stage in ('overlap', 'segment-three', 'two-way'):
+    if args.stage in ('overlap', 'segment-three', 'two-way', 'latest-anchor'):
         sources[SEGMENTED[0]] = SEGMENTED[1]
     for name, digest in sources.items():
         assert sha256(args.out / name) == digest, name
@@ -114,7 +117,7 @@ def main(args):
         with tarfile.open(args.out / control_archive) as packed:
             control_trajectory = np.load(io.BytesIO(
                 packed.extractfile(f'camera_history_{control_arm}/traj.npy').read()))
-    if args.stage in ('overlap', 'segment-three', 'two-way'):
+    if args.stage in ('overlap', 'segment-three', 'two-way', 'latest-anchor'):
         with tarfile.open(args.out / SEGMENTED[0]) as packed:
             segmented_trajectory = np.load(io.BytesIO(
                 packed.extractfile('segment_reanchor_inliers25/traj.npy').read()))
@@ -172,6 +175,8 @@ def main(args):
                     command.extend(['--local-keyframe-cap', '3'])
                 if arm.endswith('_twoway'):
                     command.append('--two-way-bridge')
+                if arm.endswith('_latest'):
+                    command.append('--latest-anchor')
             elif arm == 'retrieval_bank':
                 command.extend(['--detector-config', str(policy), '--disable-retirement',
                                 '--retrieval-bank', '4'])
@@ -216,6 +221,7 @@ def main(args):
             assert len(summary['events']) == len(expected_boundaries) - 2
             assert bool(config['overlap_bridge']) == (arm == 'segmented_overlap')
             assert bool(config['two_way_bridge']) == arm.endswith('_twoway')
+            assert bool(config['latest_anchor']) == arm.endswith('_latest')
             if arm.startswith('segmented'):
                 assert config['local_keyframe_cap'] == (3 if '_three' in arm else 2)
             assert bool(config['pin_rebuilds']) == ('pinned' in arm)
@@ -256,6 +262,11 @@ def main(args):
             # Same cuts as 26159 are asserted above; trajectory identity is recorded, not required.
             row['difference_from_26159'] = float(np.abs(trajectory - segmented_trajectory).max())
             print('SEGMENTED CONTROL max abs difference from 26159', row['difference_from_26159'], flush=True)
+        if arm.endswith('_latest'):
+            row['connections'] = [{k: e.get(k) for k in ('boundary', 'scale', 'latest_frame',
+                                                          'anchor_disagreement_deg', 'validation_median')}
+                                  for e in summary['events']]
+            assert all(c['anchor_disagreement_deg'] is not None for c in row['connections'])
         if arm == 'segmented_overlap' or arm.endswith('_twoway'):
             row['connections'] = [{k: e.get(k) for k in (
                 'boundary', 'point_fit_scale', 'overlap_scale', 'overlap_pairs', 'overlap_old_displacement',

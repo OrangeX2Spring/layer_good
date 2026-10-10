@@ -397,3 +397,31 @@ reproduces 26458 within 1e-4), reanchor_twoway. Markers: OBJECT HISTORY COMPLETE
 two-way 3, OBJECT HISTORY JOB OK.
 Success: two-way lowers ATE versus the in-job segmented control on both sequences
 without worse RPE/p99; for ketchup read alignment_scale and rotation RPE too.
+
+Outcome, 2026-10-10: 26516 (camera) and 26517 (ketchup) ran at f2d76dd/0ee7fcf with
+both controls reproduced. Two-way does not help on camera (ATE 0.0865/0.0845 versus
+point-fit 0.0838/0.0823); b and L agree on scale within ~2%, so connection scale is
+not the lever. Ketchup gains 2.7% ATE, but the pooled scale leaves the per-frame
+range at 3 of 11 cuts, so the mechanism is doubtful (FINDINGS 26516/26517).
+
+## L-anchored connection batch on the user's design
+
+Saved-data analysis (FINDINGS 26516): pose anchoring beats point-fit rotation, and
+rotation drift inside segments is about twice native near segment ends, so pinning
+the new segment to the old map's query pose of the cut frame b carries that drift
+forward. ReanchorMaps latest_anchor (runner --latest-anchor): keep the point-fit scale
+at b, but pin rotation and position on the old map's latest rebuild keyframe L (its
+pose from the joint rebuild); the new map locates a CPU copy of L's image once at
+b+49. anchor_disagreement_deg logs the rotation difference between the two anchors.
+No extra GPU memory; one extra query per cut. Three-image segment banks throughout,
+since they were best in 26515.
+
+Entries, each from layer_good (one batch, two jobs):
+`bash tools/kvt_tum.sbatch camera-history latest-anchor`: native, segmented (26159
+control, difference printed), segmented_three (26515 arm), segmented_three_latest.
+Markers: CAMERA HISTORY COMPLETE latest-anchor 4 2585, JOB OK.
+`bash tools/kvt_tum.sbatch object-history latest-anchor`: ketchup native, reanchor
+(26458 control), reanchor_three, reanchor_three_latest. Markers: OBJECT HISTORY
+COMPLETE latest-anchor 4, OBJECT HISTORY JOB OK.
+Success: *_three_latest lowers ATE versus *_three on both sequences without worse
+RPE/p99.

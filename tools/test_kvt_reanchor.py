@@ -595,6 +595,57 @@ class ReanchorTests(unittest.TestCase):
             self.assertAlmostEqual(event[key], 2., places=5)
         self.assertAlmostEqual(float(tracker.transforms[1][0]), 2., places=5)
 
+    def test_latest_anchor_pins_rotation_and_position_on_old_rebuild_keyframe(self):
+        old_b, raw_latest = pose(.4, [1., 2., 3.]), pose(.3, [1., -.5, .25])
+        new_latest = torch.from_numpy(pose(-.2, [.4, .1, -.3])).double()
+        test = self
+
+        class LocalMap:
+            def __init__(self, model, mode, log, save, query_executor=None, local_keyframe_cap=2,
+                         pin_rebuilds=False, pin_scale=False, shared_scale=False, fuse_scale=False,
+                         novelty_refresh=None):
+                self.model, self.rebuild_scale = model, 1.
+                self.transform = (torch.tensor(1., dtype=torch.float64),
+                                  torch.eye(3, dtype=torch.float64), torch.zeros(3, dtype=torch.float64))
+
+            def bootstrap(self, image, mask=None):
+                self.origin, self.images, self.ids = int(image[0, 0, 0]), [image], [0]
+                self.model.cache = {1: {'k': torch.ones(4)}}
+                return np.eye(4, dtype=np.float32)
+
+            def step(self, image, frame, update=True, dense_query=False, mask=None):
+                if frame == 49:
+                    self.images, self.ids = [self.images[0], image], [0, 49]
+                    self.model.cache = {1: {'k': torch.ones(8)}}
+                    # Old map: raw rebuild pose of L, restored to output units by rebuild_scale 2.
+                    self.rebuild_scale, self.latest_pose = 2., torch.from_numpy(raw_latest)
+                    self.latest_points, self.latest_conf = grid(), torch.ones(80, 80)
+                    self.anchor_points, self.anchor_conf = grid(), torch.ones(80, 80)
+                return old_b if self.origin == 0 and frame == 125 else np.eye(4, dtype=np.float32)
+
+            def query_geometry(self, image, frame):
+                if self.origin == 0:
+                    return grid().double(), torch.from_numpy(old_b).double(), torch.ones(80, 80)
+                test.assertEqual(int(image[0, 0, 0]), 49)
+                return grid().double(), new_latest, torch.ones(80, 80)
+
+        model = SimpleNamespace(cache={})
+        with patch('kv_tracker.reanchor_maps.MapHandoff', LocalMap), patch(
+                'kv_tracker.reanchor_maps.bridge',
+                return_value=(None, dict(accepted=False, scale=3.), {})):
+            tracker = ReanchorMaps(model, (0, 125, 250), lambda row: None, lambda e, d: None,
+                                   latest_anchor=True)
+            for frame in range(250):
+                tracker.step(np.full((80, 80, 3), frame, dtype=np.uint8), frame)
+        event = tracker.events[0]
+        self.assertEqual(event['latest_frame'], 49)
+        self.assertGreater(event['anchor_disagreement_deg'], 1.)
+        self.assertAlmostEqual(float(tracker.transforms[1][0]), 3.)
+        expected = torch.from_numpy(raw_latest).double()
+        expected[:3, 3] *= 2.
+        torch.testing.assert_close(transform_pose(new_latest, tracker.transforms[1]), expected,
+                                   atol=1e-5, rtol=1e-5)
+
     def test_overlap_connection_requires_retirement_without_pin(self):
         with self.assertRaises(AssertionError):
             ReanchorMaps(SimpleNamespace(cache={}), (0, 60), Mock(), Mock(), pin_rebuilds=True,

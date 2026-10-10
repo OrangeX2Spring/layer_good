@@ -34,9 +34,13 @@ RETRIEVAL = ('native', 'three_frame_pinned', 'retrieval_bank')
 # Stage 'two-way': the user's segmented reanchor (26458 policy; must reproduce it) and the
 # same cuts with the two-frame confidence-weighted connection scale.
 TWO_WAY = ('native', 'reanchor', 'reanchor_twoway')
+# Stage 'latest-anchor': the same control, three-image segment banks, and three-image banks
+# with each connection pinned on the old map's latest rebuild keyframe instead of b.
+LATEST = ('native', 'reanchor', 'reanchor_three', 'reanchor_three_latest')
 COMPARE = dict(three_frame_pinned='three_frame', three_frame_pinned_scale='three_frame_pinned',
                three_frame_pinned_novelty='three_frame_pinned', retrieval_bank='three_frame_pinned',
-               reanchor_twoway='reanchor')
+               reanchor_twoway='reanchor', reanchor_three='reanchor',
+               reanchor_three_latest='reanchor_three')
 ORDERS = (('native', 'reanchor', 'no_retirement'),
           ('reanchor', 'no_retirement', 'native'),
           ('no_retirement', 'native', 'reanchor'))
@@ -83,8 +87,9 @@ def main(args):
     orders = (('native', 'no_retirement', 'three_frame'),) if args.stage == 'three-frame' else (
         (PINNED,) if args.stage == 'pinned' else (NOVELTY,) if args.stage == 'novelty' else
         (RETRIEVAL,) if args.stage == 'retrieval' else (TWO_WAY,) if args.stage == 'two-way' else
+        (LATEST,) if args.stage == 'latest-anchor' else
         ORDERS[:1] if args.stage == 'pilot' else ORDERS)
-    profiled = args.stage in ('three-frame', 'pinned', 'novelty', 'retrieval', 'two-way')
+    profiled = args.stage in ('three-frame', 'pinned', 'novelty', 'retrieval', 'two-way', 'latest-anchor')
     source_archives = dict(SOURCES)
     if args.stage == 'three-frame':
         source_archives['tum_26471_object_history_r0_no_retirement.tar'] = (
@@ -198,7 +203,9 @@ def main(args):
                     command.append('--disable-retirement')
                 if arm == 'reanchor_twoway':
                     command.append('--two-way-bridge')
-                if arm.startswith('three_frame'):
+                if arm.endswith('_latest'):
+                    command.append('--latest-anchor')
+                if arm.startswith('three_frame') or '_three' in arm:
                     command.extend(['--local-keyframe-cap', '3'])
                 if 'pinned' in arm:
                     command.append('--pin-rebuilds')
@@ -279,6 +286,13 @@ def main(args):
                 assert bool(actual_config['novelty_refresh']) == arm.endswith('_novelty')
                 assert actual_config['retrieval_bank'] == (4 if arm == 'retrieval_bank' else None)
                 assert bool(actual_config['two_way_bridge']) == (arm == 'reanchor_twoway')
+                assert bool(actual_config['latest_anchor']) == arm.endswith('_latest')
+                assert actual_config['local_keyframe_cap'] == (3 if (arm.startswith('three_frame') or '_three' in arm) else 2)
+                if arm.endswith('_latest'):
+                    row['connections'] = [{k: e.get(k) for k in ('boundary', 'scale', 'latest_frame',
+                                                                  'anchor_disagreement_deg', 'validation_median')}
+                                          for e in metrics['events']]
+                    assert all(c['anchor_disagreement_deg'] is not None for c in row['connections'])
                 if arm == 'reanchor_twoway':
                     row['connections'] = [{k: e.get(k) for k in (
                         'boundary', 'point_fit_scale', 'two_way_scale', 'frame_b_scale', 'latest_frame',
@@ -305,7 +319,7 @@ if __name__ == '__main__':
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--tag', required=True)
     parser.add_argument('--stage', choices=('pilot', 'overnight', 'three-frame', 'pinned', 'novelty',
-                                            'retrieval', 'two-way'),
+                                            'retrieval', 'two-way', 'latest-anchor'),
                         required=True)
     parser.add_argument('--deadline', type=float, required=True)
     parser.add_argument('--reviewed-pilot', type=Path)
