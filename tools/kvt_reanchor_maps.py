@@ -60,6 +60,8 @@ def main(args):
     assert args.disable_retirement or not args.pin_rebuilds
     assert args.pin_rebuilds or not args.pin_scale
     assert not args.shared_scale or (args.pin_rebuilds and not args.pin_scale and args.local_keyframe_cap == 3)
+    assert args.shared_scale or not args.fuse_scale
+    assert not args.novelty_refresh or (args.object_scene and args.disable_retirement)
     if args.native_metrics:
         assert args.detector_config is not None, 'Non-office runs require a live detector policy'
 
@@ -107,6 +109,8 @@ def main(args):
         pin_rebuilds=args.pin_rebuilds and 'each rebuild rigidly pinned to the outgoing pose of its frame',
         pin_scale=args.pin_scale and 'rebuild scale from the outgoing bank depths of the refresh frame',
         shared_scale=args.shared_scale and 'rebuild scale from the previous keyframe shared by both rebuilds',
+        fuse_scale=args.fuse_scale and 'geometric mean of the shared-keyframe chain and the anchor scale',
+        novelty_refresh=args.novelty_refresh and 'extra rebuild after frame 49 when native check_if_keyframe fires',
         segmentation_policy=detector_policy if detector is not None else None,
         gt_used_by_tracker=False, seed=0))
     torch.manual_seed(0)
@@ -131,10 +135,15 @@ def main(args):
         def log(row):
             stream.write(json.dumps(row, allow_nan=False) + '\n')
             stream.flush()
+        novelty = None
+        if args.novelty_refresh:
+            from main import check_if_keyframe  # native object keyframe rule, unchanged thresholds
+            novelty = check_if_keyframe
         tracker = ReanchorMaps(model, boundaries, log, save_bridge,
                                local_keyframe_cap=args.local_keyframe_cap,
                                pin_rebuilds=args.pin_rebuilds, pin_scale=args.pin_scale,
-                               shared_scale=args.shared_scale)
+                               shared_scale=args.shared_scale, fuse_scale=args.fuse_scale,
+                               novelty_refresh=novelty)
         torch.cuda.reset_peak_memory_stats()
         torch.cuda.synchronize()
         started = time.perf_counter()
@@ -154,7 +163,12 @@ def main(args):
                 detector_rows.append(decision)
                 if decision['boundary'] and not args.disable_retirement:
                     boundaries.insert(-1, frame)
-            local_poses.append(tracker.step(image, frame))
+            mask = None
+            if args.novelty_refresh:
+                mask = cv2.imread(str(inputs / 'model_masks' / Path(row['file']).name), cv2.IMREAD_GRAYSCALE) > 127
+                assert hashlib.sha256(mask.tobytes()).hexdigest() == row['model_mask_sha256'], frame
+                mask = torch.from_numpy(mask)
+            local_poses.append(tracker.step(image, frame, mask))
         tracker.finish(image, frame)
         torch.cuda.synchronize()
         timing = dict(tracking_seconds=time.perf_counter() - started,
@@ -253,4 +267,8 @@ if __name__ == '__main__':
                         help='Take rebuild scale from the refresh frame, not the anchor; requires --pin-rebuilds')
     parser.add_argument('--shared-scale', action='store_true',
                         help='Take rebuild scale from the shared previous keyframe; cap 3 with --pin-rebuilds')
+    parser.add_argument('--fuse-scale', action='store_true',
+                        help='Geometric mean of the shared-keyframe and anchor scales; requires --shared-scale')
+    parser.add_argument('--novelty-refresh', action='store_true',
+                        help='Object scenes: also rebuild when native check_if_keyframe fires after frame 49')
     main(parser.parse_args())

@@ -5,7 +5,8 @@ three-image control (must reproduce 26476) and three-image with pinned rebuilds.
 Stage 'scale' runs native, the pinned three-image control (must reproduce 26481),
 three-image with pinned rebuilds and scale, and two-image with pinned rebuilds.
 Stage 'shared' runs native, the same pinned control and three-image with pinned
-rebuilds and scale from the shared previous keyframe.
+rebuilds and scale from the shared previous keyframe. Stage 'fused' replaces that
+arm with the geometric mean of the shared-keyframe chain and the anchor scale.
 """
 import argparse
 import io
@@ -32,14 +33,17 @@ CONTROLS = dict(
     scale=('tum_26481_camera_history_three_frame_pinned.tar',
            'f7b6ffe7f54cc7bdef8c25037138715f38f24edbb14093fdb2f1148f726330f8', 'three_frame_pinned'),
     shared=('tum_26481_camera_history_three_frame_pinned.tar',
-            'f7b6ffe7f54cc7bdef8c25037138715f38f24edbb14093fdb2f1148f726330f8', 'three_frame_pinned'))
+            'f7b6ffe7f54cc7bdef8c25037138715f38f24edbb14093fdb2f1148f726330f8', 'three_frame_pinned'),
+    fused=('tum_26481_camera_history_three_frame_pinned.tar',
+           'f7b6ffe7f54cc7bdef8c25037138715f38f24edbb14093fdb2f1148f726330f8', 'three_frame_pinned'))
 ARMS = dict(gate=('native', 'no_retirement', 'three_frame'),
             pinned=('native', 'three_frame', 'three_frame_pinned'),
             scale=('native', 'three_frame_pinned', 'three_frame_pinned_scale', 'no_retirement_pinned'),
-            shared=('native', 'three_frame_pinned', 'three_frame_pinned_shared'))
+            shared=('native', 'three_frame_pinned', 'three_frame_pinned_shared'),
+            fused=('native', 'three_frame_pinned', 'three_frame_pinned_fused'))
 # Within-job comparison arm for each pinned variant.
 COMPARE = dict(three_frame_pinned='three_frame', three_frame_pinned_scale='three_frame_pinned',
-               three_frame_pinned_shared='three_frame_pinned')
+               three_frame_pinned_shared='three_frame_pinned', three_frame_pinned_fused='three_frame_pinned')
 
 
 def refresh_pairs(result):
@@ -131,8 +135,10 @@ def main(args):
                 command.append('--pin-rebuilds')
             if arm.endswith('_scale'):
                 command.append('--pin-scale')
-            if arm.endswith('_shared'):
+            if arm.endswith(('_shared', '_fused')):
                 command.append('--shared-scale')
+            if arm.endswith('_fused'):
+                command.append('--fuse-scale')
         report['active_run'] = dict(name=name, command=command)
         write_json(comparison / 'comparison.json', report)
         print('CAMERA HISTORY ARM', arm, frames, flush=True)
@@ -161,7 +167,8 @@ def main(args):
             assert config['boundaries'] == [0, frames] and not summary['events']
             assert bool(config['pin_rebuilds']) == ('pinned' in arm)
             assert bool(config['pin_scale']) == arm.endswith('_scale')
-            assert bool(config['shared_scale']) == arm.endswith('_shared')
+            assert bool(config['shared_scale']) == arm.endswith(('_shared', '_fused'))
+            assert bool(config['fuse_scale']) == arm.endswith('_fused')
             current_decisions = [{k: v for k, v in json.loads(line).items() if k != 'seconds'}
                 for line in (result / 'segmentation_live.jsonl').read_text().splitlines()]
             assert len(current_decisions) == frames

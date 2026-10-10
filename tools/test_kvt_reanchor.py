@@ -148,6 +148,75 @@ class ReanchorTests(unittest.TestCase):
         self.assertEqual(scales, {49: 1., 99: 2., 149: 4.})
         tracker.query_geometry.assert_not_called()
 
+    def test_fused_scale_is_geometric_mean_of_chain_and_anchor(self):
+        model = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]), cache={})
+        rows = []
+        tracker = MapHandoff(model, 'reanchor', rows.append, None, local_keyframe_cap=3,
+                             pin_rebuilds=True, shared_scale=True, fuse_scale=True)
+
+        def reconstruct(images, ids, frame, kind):
+            # Anchor member: depth 7 at the first rebuild, 7/8 later (anchor says 8x).
+            # Shared keyframe: depth 2 as newest member, 1 as middle member (chain says 2x).
+            poses = torch.eye(4).repeat(len(ids), 1, 1)
+            points = torch.zeros(len(ids), 28, 28, 3)
+            points[0, ..., 2] = 7. if frame <= 49 else .875
+            points[-1, ..., 2] = 2.
+            if len(ids) == 3:
+                points[1, ..., 2] = 1.
+            if frame == 49:
+                tracker.anchor_points, tracker.anchor_conf = points[0].clone(), torch.ones(28, 28)
+            return points, poses, torch.ones(len(ids), 28, 28), torch.eye(4)
+
+        tracker.reconstruct = reconstruct
+        image = np.zeros((28, 28, 3), dtype=np.uint8)
+        scales = {}
+        with patch('torch.cuda.synchronize'), patch('kv_tracker.map_handoff.pi3_inference',
+                return_value=torch.eye(4)[None, None]):
+            tracker.bootstrap(image)
+            for frame in range(1, 150):
+                tracker.step(image, frame)
+                if frame in (49, 99, 149):
+                    scales[frame] = tracker.rebuild_scale
+        self.assertEqual(scales, {49: 1., 99: 4., 149: 8.})
+        update = [r for r in rows if r['kind'] == 'update_total']
+        self.assertNotIn('anchor_scale', update[0])
+        self.assertAlmostEqual(update[1]['anchor_scale'], 8.)
+        self.assertAlmostEqual(update[1]['chain_scale'], 2.)
+
+    def test_novelty_refresh_adds_rebuilds_after_first_schedule(self):
+        model = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]), cache={})
+        rows, calls, consulted = [], [], []
+        state = {}
+
+        def novelty(center, pose, members):
+            consulted.append(state['frame'])
+            self.assertEqual(tuple(center.shape), (3,))
+            self.assertEqual(tuple(members.shape), (len(tracker.ids), 4, 4))
+            return state['frame'] in (30, 70)
+
+        tracker = MapHandoff(model, 'reanchor', rows.append, None, local_keyframe_cap=3,
+                             pin_rebuilds=True, novelty_refresh=novelty)
+
+        def reconstruct(images, ids, frame, kind):
+            calls.append(list(ids))
+            if frame == 49:
+                tracker.anchor_points, tracker.anchor_conf = torch.ones(28, 28, 3), torch.ones(28, 28)
+            return (torch.ones(len(ids), 28, 28, 3), torch.eye(4).repeat(len(ids), 1, 1),
+                    torch.ones(len(ids), 28, 28), torch.eye(4))
+
+        tracker.reconstruct = reconstruct
+        image, mask = np.zeros((28, 28, 3), dtype=np.uint8), torch.ones(28, 28, dtype=torch.bool)
+        with patch('torch.cuda.synchronize'), patch('kv_tracker.map_handoff.pi3_inference',
+                return_value=torch.eye(4)[None, None]):
+            tracker.bootstrap(image, mask)
+            for frame in range(1, 120):
+                state['frame'] = frame
+                tracker.step(image, frame, mask=mask)
+        self.assertEqual(calls, [[0, 0], [0, 49], [0, 49, 70], [0, 70, 99]])
+        self.assertTrue(all(f > 49 and (f + 1) % 50 for f in consulted))
+        self.assertEqual([(r['frame'], r['trigger']) for r in rows if r['kind'] == 'update_total'],
+                         [(49, 'schedule'), (70, 'novelty'), (99, 'schedule')])
+
     def test_shared_scale_requires_three_image_rigid_pin(self):
         model = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]), cache={})
         for options in (dict(pin_rebuilds=True), dict(local_keyframe_cap=3),
@@ -167,17 +236,18 @@ class ReanchorTests(unittest.TestCase):
     def test_short_final_segment_connects_at_eof(self):
         class LocalMap:
             def __init__(self, model, mode, log, save, query_executor=None, local_keyframe_cap=2,
-                         pin_rebuilds=False, pin_scale=False, shared_scale=False):
+                         pin_rebuilds=False, pin_scale=False, shared_scale=False, fuse_scale=False,
+                         novelty_refresh=None):
                 self.model = model
                 self.transform = (torch.tensor(1., dtype=torch.float64),
                                   torch.eye(3, dtype=torch.float64), torch.zeros(3, dtype=torch.float64))
 
-            def bootstrap(self, image):
+            def bootstrap(self, image, mask=None):
                 self.images, self.ids = [image], [0]
                 self.model.cache = {1: {'k': torch.ones(4)}}
                 return np.eye(4, dtype=np.float32)
 
-            def step(self, image, frame, update=True, dense_query=False):
+            def step(self, image, frame, update=True, dense_query=False, mask=None):
                 return np.eye(4, dtype=np.float32)
 
             def query_geometry(self, image, frame):
@@ -283,17 +353,18 @@ class ReanchorTests(unittest.TestCase):
 
         class LocalMap:
             def __init__(self, model, mode, log, save, query_executor=None, local_keyframe_cap=2,
-                         pin_rebuilds=False, pin_scale=False, shared_scale=False):
+                         pin_rebuilds=False, pin_scale=False, shared_scale=False, fuse_scale=False,
+                         novelty_refresh=None):
                 self.model = model
                 self.transform = (torch.tensor(1., dtype=torch.float64),
                                   torch.eye(3, dtype=torch.float64), torch.zeros(3, dtype=torch.float64))
 
-            def bootstrap(self, image):
+            def bootstrap(self, image, mask=None):
                 self.images, self.ids = [image], [0]
                 self.model.cache = {1: {'k': torch.ones(4)}}
                 return new_b if int(image[0, 0, 0]) == 125 else np.eye(4, dtype=np.float32)
 
-            def step(self, image, frame, update=True, dense_query=False):
+            def step(self, image, frame, update=True, dense_query=False, mask=None):
                 if frame == 49:
                     self.images, self.ids = [self.images[0], image], [0, 49]
                     self.model.cache = {1: {'k': torch.ones(8)}}

@@ -254,3 +254,26 @@ three_frame_pinned_shared. Markers: three CAMERA HISTORY ARM lines, CAMERA HISTO
 COMPLETE shared 3 2585, CAMERA HISTORY JOB OK. Review per-refresh rebuild_scale
 against the anchor scale (bias), windowed Sim(3) scales and the native5% gate.
 Object is not rerun: its deficit is between refreshes (FINDINGS audit26487/26488).
+
+## Fused-scale camera gate and object novelty-refresh gate after reviewed26493
+
+User said go ahead on both candidates after26493. (1) Camera: `fuse_scale` takes the
+geometric mean of the shared-keyframe chain and the absolute anchor-pointmap scale
+at each three-image refresh (26493: chain unbiased but random-walks; anchor
+bounded). Equal weight is the one new parameter, chosen as the simplest default,
+not tuned. Entry `bash tools/kvt_tum.sbatch camera-history fused`: native,
+three_frame_pinned (control; reproduce26481 within1e-4), three_frame_pinned_fused.
+Markers: CAMERA HISTORY COMPLETE fused 3 2585, CAMERA HISTORY JOB OK. Both scale
+sources are logged per refresh.
+
+(2) Object: ketchup error is bursts when the object turns away from all three bank
+images (FINDINGS ketchup diagnosis). `novelty_refresh` adds a rebuild after frame49
+whenever native's own object keyframe rule (main.py check_if_keyframe, unchanged
+10-degree elevation/azimuth thresholds about the masked object centre) fires against
+the current bank poses; same three-image cap, rigid pin, anchor scale. Masks are the
+saved hash-checked model_masks. Entry `bash tools/kvt_tum.sbatch object-history
+novelty`: native, three_frame_pinned (control; reproduce
+tum_26488_object_history_r0_three_frame_pinned.tar within1e-4),
+three_frame_pinned_novelty. Markers: OBJECT HISTORY COMPLETE novelty 3, OBJECT HISTORY
+JOB OK. comparison.json records novelty_refreshes and per-rebuild triggers; extra
+rebuilds cost time, so report speed with accuracy.

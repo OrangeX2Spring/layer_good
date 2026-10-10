@@ -25,7 +25,11 @@ SOURCES = {
 # Stage 'pinned': unpinned three-image control (must reproduce 26472), pinned rebuilds,
 # and pinned rebuilds with refresh-frame scale.
 PINNED = ('native', 'three_frame', 'three_frame_pinned', 'three_frame_pinned_scale')
-COMPARE = dict(three_frame_pinned='three_frame', three_frame_pinned_scale='three_frame_pinned')
+# Stage 'novelty': pinned control (must reproduce 26488) and pinned rebuilds that also
+# refresh when native's object keyframe rule fires.
+NOVELTY = ('native', 'three_frame_pinned', 'three_frame_pinned_novelty')
+COMPARE = dict(three_frame_pinned='three_frame', three_frame_pinned_scale='three_frame_pinned',
+               three_frame_pinned_novelty='three_frame_pinned')
 ORDERS = (('native', 'reanchor', 'no_retirement'),
           ('reanchor', 'no_retirement', 'native'),
           ('no_retirement', 'native', 'reanchor'))
@@ -70,8 +74,9 @@ def main(args):
         ['git', '-C', str(tools.parent), 'rev-parse', 'HEAD:kv_tracker'], text=True).strip()
     assert tracker_commit == expected_tracker, 'Tracker must match the published parent gitlink'
     orders = (('native', 'no_retirement', 'three_frame'),) if args.stage == 'three-frame' else (
-        (PINNED,) if args.stage == 'pinned' else ORDERS[:1] if args.stage == 'pilot' else ORDERS)
-    profiled = args.stage in ('three-frame', 'pinned')
+        (PINNED,) if args.stage == 'pinned' else (NOVELTY,) if args.stage == 'novelty' else
+        ORDERS[:1] if args.stage == 'pilot' else ORDERS)
+    profiled = args.stage in ('three-frame', 'pinned', 'novelty')
     source_archives = dict(SOURCES)
     if args.stage == 'three-frame':
         source_archives['tum_26471_object_history_r0_no_retirement.tar'] = (
@@ -79,6 +84,9 @@ def main(args):
     if args.stage == 'pinned':
         source_archives['tum_26472_object_history_r0_three_frame.tar'] = (
             '881e503ace949234ea7843d2dbd5cde6f7e097acc95147dd98615d53180975f4')
+    if args.stage == 'novelty':
+        source_archives['tum_26488_object_history_r0_three_frame_pinned.tar'] = (
+            'abfa9ebbc2973b41111c73872657046b9e9b59ea9a43f81acfdd7e979f47e0d5')
     report = dict(stage=args.stage, scene=SCENE, sources=source_archives, complete=False,
                   orders=orders, runs=[],
                   implementation=implementation, tracker_commit=tracker_commit,
@@ -186,6 +194,8 @@ def main(args):
                     command.append('--pin-rebuilds')
                 if arm.endswith('_scale'):
                     command.append('--pin-scale')
+                if arm.endswith('_novelty'):
+                    command.append('--novelty-refresh')
                 if profiled:
                     command.append('--profile-forward')
             report['active_run'] = dict(name=name, command=command)
@@ -212,6 +222,9 @@ def main(args):
             if args.stage == 'pinned' and arm == 'three_frame':
                 control = sources / 'tum_26472_object_history_r0_three_frame' / 'object_history_r0_three_frame'
                 np.testing.assert_allclose(trajectory, np.load(control / 'traj.npy'), rtol=1e-4, atol=1e-4)
+            if args.stage == 'novelty' and arm == 'three_frame_pinned':
+                control = sources / 'tum_26488_object_history_r0_three_frame_pinned' / 'object_history_r0_three_frame_pinned'
+                np.testing.assert_allclose(trajectory, np.load(control / 'traj.npy'), rtol=1e-4, atol=1e-4)
             compared = [r for r in report['runs'] if r['arm'] == COMPARE.get(arm)]
             if compared:
                 control = compared[0]['summary']['metrics']
@@ -220,10 +233,13 @@ def main(args):
                 row['improves_compared'] = all(value < 1 for value in row['compared_ratios'].values())
             if 'pinned' in arm:
                 row['pins'] = [{k: v for k, v in json.loads(line).items()
-                                if k in ('frame', 'pin_rotation_deg', 'pin_position_step', 'rebuild_scale')}
+                                if k in ('frame', 'pin_rotation_deg', 'pin_position_step', 'rebuild_scale',
+                                         'trigger')}
                                for line in (result / 'inference.jsonl').read_text().splitlines()
                                if json.loads(line)['kind'] == 'update_total']
-                assert len(row['pins']) == (manifest['frames'] - 1) // 50
+                scheduled = (manifest['frames'] - 1) // 50
+                assert len(row['pins']) >= scheduled if arm.endswith('_novelty') else len(row['pins']) == scheduled
+                row['novelty_refreshes'] = sum(x.get('trigger') == 'novelty' for x in row['pins'])
                 assert all('pin_rotation_deg' in x for x in row['pins'])
             if arm == 'three_frame' and args.stage == 'three-frame':
                 control = next(r for r in report['runs'] if r['arm'] == 'no_retirement')
@@ -242,6 +258,7 @@ def main(args):
                 actual_config = json.loads((result / 'config.json').read_text())
                 assert bool(actual_config['pin_rebuilds']) == ('pinned' in arm)
                 assert bool(actual_config['pin_scale']) == arm.endswith('_scale')
+                assert bool(actual_config['novelty_refresh']) == arm.endswith('_novelty')
                 row['error_groups'] = error_groups(result, reference, actual)
             archive_directory(result, args.out / f'{args.tag}_{name}.tar')
             row['archive_sha256'] = sha256(args.out / f'{args.tag}_{name}.tar')
@@ -262,7 +279,8 @@ if __name__ == '__main__':
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--tag', required=True)
-    parser.add_argument('--stage', choices=('pilot', 'overnight', 'three-frame', 'pinned'), required=True)
+    parser.add_argument('--stage', choices=('pilot', 'overnight', 'three-frame', 'pinned', 'novelty'),
+                        required=True)
     parser.add_argument('--deadline', type=float, required=True)
     parser.add_argument('--reviewed-pilot', type=Path)
     parser.add_argument('--reviewed-sha256')
