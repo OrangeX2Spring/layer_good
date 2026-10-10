@@ -133,7 +133,8 @@ def main(args):
     write_json(summary / 'comparison.json', report)
     archive_directory(summary, args.out / f'{args.tag}_object_history_comparison.tar')
     policy = summary / 'policy.json'
-    write_json(policy, config['segmentation_policy'])
+    # The fixed 26458 ORB control saved thresholds without the CLI detector tag.
+    write_json(policy, dict(config['segmentation_policy'], detector='orb'))
     native_metrics = summary / 'native_metrics.json'
     write_json(native_metrics, json.loads((reference / 'summary.json').read_text())['metrics'])
     durations = []

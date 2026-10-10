@@ -99,6 +99,15 @@ is computed. Foreground bridge support counts do not test a foreground-only poli
 
 ## Execution readiness and next command
 
+Job26460 stopped after the native arm with `KeyError: 'detector'` before
+reanchor tracking. The saved26458 segmentation policy contains thresholds but
+omits the CLI detector identifier. The history runner now explicitly restores
+`detector='orb'` for this fixed ORB control, preserving all saved policy values.
+The corrected pilot still requires CAMP verification; do not advance overnight.
+User sacct confirms FAILED1:0; ls confirms final context (38M) and all_runs
+(105M) archives. Contents/integrity remain unaudited. Preserve both; a fresh
+pilot must use the published fix before any overnight review gate can pass.
+
 Local checks: Python3.10 AST, Bash syntax, git diff --check. New runtime tests have
 not run on the Mac, per execution boundaries. Publication and pilot status are
 recorded in docs/STATUS.md; no model changes or gitlink update. Task files:
