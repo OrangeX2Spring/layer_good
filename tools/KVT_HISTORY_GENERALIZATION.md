@@ -287,3 +287,36 @@ rebuilds on ketchup, 15 pins exceeded 90 degrees, and the Sim(3) alignment scale
 collapsed (0.066 vs 0.328). Object translation RPE is measured after that alignment,
 so its drop is not evidence of better tracking. Numbers are in FINDINGS (gate and
 audit 26499/26500).
+
+## Retrieval-bank gate after reviewed 26499/26500
+
+Method review (user: stop the continuity-tuning loop). Every gate since 26476 changed
+only how one re-solve's gauge is carried to the next through one or two shared
+images; native's frozen prefix banks (26183: first 750 frames, 16 keyframes, ATE
+0.0596 over all 2585 frames) show that spatial coverage with fixed keyframe poses
+is what tracks the loop. User approved the redesign with a four-image bank.
+
+`kv_tracker.retrieval_bank.RetrievalBank` (runner `--retrieval-bank 4`, requires
+`--disable-retirement`): every admitted keyframe keeps image, global pose and
+pointmap on the CPU, never re-solved. Admission is native's rule: every 50 frames
+for the camera (uncapped), and for objects main.py check_if_keyframe against all
+stored keyframes. The GPU bank is the newest keyframe plus the three stored
+keyframes with the best coverage: the fraction of their confident points inside
+the current frustum (scene), or the closest viewing direction about the object
+centre (object). Each rebuild is registered to the global frame by one robust
+Sim(3) over all shared members' same-pixel pointmaps (bridge() on stacked maps);
+its validation checks are logged, not used to reject. No frame-0 anchor, no pin,
+no rebuild_scale.
+
+Entries, each from layer_good:
+`bash tools/kvt_tum.sbatch camera-history retrieval`: native, three_frame_pinned
+(control; reproduce 26481 within 1e-4), retrieval_bank. Markers: CAMERA HISTORY
+COMPLETE retrieval 3 2585, CAMERA HISTORY JOB OK.
+`bash tools/kvt_tum.sbatch object-history retrieval`: native, three_frame_pinned
+(control; reproduce 26488 within 1e-4), retrieval_bank. Markers: OBJECT HISTORY
+COMPLETE retrieval 3, OBJECT HISTORY JOB OK.
+comparison.json records per-admission bank ids, coverage scores, fit scale and
+validation. Success: retrieval improves ATE over the pinned control on both
+sequences with RPE/p99 not worse; the target remains native within 5%. Report
+speed and peak memory with accuracy. Object RPE is measured after Sim(3) alignment,
+so read it together with alignment_scale (26500 audit).

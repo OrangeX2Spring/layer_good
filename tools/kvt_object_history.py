@@ -28,8 +28,11 @@ PINNED = ('native', 'three_frame', 'three_frame_pinned', 'three_frame_pinned_sca
 # Stage 'novelty': pinned control (must reproduce 26488) and pinned rebuilds that also
 # refresh when native's object keyframe rule fires.
 NOVELTY = ('native', 'three_frame_pinned', 'three_frame_pinned_novelty')
+# Stage 'retrieval': the same pinned control and a four-image GPU bank retrieved from a
+# CPU memory of all keyframes (native's object rule over the whole memory, fixed poses).
+RETRIEVAL = ('native', 'three_frame_pinned', 'retrieval_bank')
 COMPARE = dict(three_frame_pinned='three_frame', three_frame_pinned_scale='three_frame_pinned',
-               three_frame_pinned_novelty='three_frame_pinned')
+               three_frame_pinned_novelty='three_frame_pinned', retrieval_bank='three_frame_pinned')
 ORDERS = (('native', 'reanchor', 'no_retirement'),
           ('reanchor', 'no_retirement', 'native'),
           ('no_retirement', 'native', 'reanchor'))
@@ -75,8 +78,9 @@ def main(args):
     assert tracker_commit == expected_tracker, 'Tracker must match the published parent gitlink'
     orders = (('native', 'no_retirement', 'three_frame'),) if args.stage == 'three-frame' else (
         (PINNED,) if args.stage == 'pinned' else (NOVELTY,) if args.stage == 'novelty' else
+        (RETRIEVAL,) if args.stage == 'retrieval' else
         ORDERS[:1] if args.stage == 'pilot' else ORDERS)
-    profiled = args.stage in ('three-frame', 'pinned', 'novelty')
+    profiled = args.stage in ('three-frame', 'pinned', 'novelty', 'retrieval')
     source_archives = dict(SOURCES)
     if args.stage == 'three-frame':
         source_archives['tum_26471_object_history_r0_no_retirement.tar'] = (
@@ -84,7 +88,7 @@ def main(args):
     if args.stage == 'pinned':
         source_archives['tum_26472_object_history_r0_three_frame.tar'] = (
             '881e503ace949234ea7843d2dbd5cde6f7e097acc95147dd98615d53180975f4')
-    if args.stage == 'novelty':
+    if args.stage in ('novelty', 'retrieval'):
         source_archives['tum_26488_object_history_r0_three_frame_pinned.tar'] = (
             'abfa9ebbc2973b41111c73872657046b9e9b59ea9a43f81acfdd7e979f47e0d5')
     report = dict(stage=args.stage, scene=SCENE, sources=source_archives, complete=False,
@@ -196,6 +200,8 @@ def main(args):
                     command.append('--pin-scale')
                 if arm.endswith('_novelty'):
                     command.append('--novelty-refresh')
+                if arm == 'retrieval_bank':
+                    command.extend(['--retrieval-bank', '4'])
                 if profiled:
                     command.append('--profile-forward')
             report['active_run'] = dict(name=name, command=command)
@@ -222,7 +228,7 @@ def main(args):
             if args.stage == 'pinned' and arm == 'three_frame':
                 control = sources / 'tum_26472_object_history_r0_three_frame' / 'object_history_r0_three_frame'
                 np.testing.assert_allclose(trajectory, np.load(control / 'traj.npy'), rtol=1e-4, atol=1e-4)
-            if args.stage == 'novelty' and arm == 'three_frame_pinned':
+            if args.stage in ('novelty', 'retrieval') and arm == 'three_frame_pinned':
                 control = sources / 'tum_26488_object_history_r0_three_frame_pinned' / 'object_history_r0_three_frame_pinned'
                 np.testing.assert_allclose(trajectory, np.load(control / 'traj.npy'), rtol=1e-4, atol=1e-4)
             compared = [r for r in report['runs'] if r['arm'] == COMPARE.get(arm)]
@@ -241,6 +247,12 @@ def main(args):
                 assert len(row['pins']) >= scheduled if arm.endswith('_novelty') else len(row['pins']) == scheduled
                 row['novelty_refreshes'] = sum(x.get('trigger') == 'novelty' for x in row['pins'])
                 assert all('pin_rotation_deg' in x for x in row['pins'])
+            if arm == 'retrieval_bank':
+                row['admissions'] = [{k: v for k, v in json.loads(line).items()
+                                      if k in ('frame', 'bank_ids', 'scores', 'fit_scale', 'fit_accepted',
+                                               'validation_median', 'camera_rotation_deg')}
+                                     for line in (result / 'inference.jsonl').read_text().splitlines()
+                                     if json.loads(line)['kind'] == 'update_total']
             if arm == 'three_frame' and args.stage == 'three-frame':
                 control = next(r for r in report['runs'] if r['arm'] == 'no_retirement')
                 row['two_image_ratios'] = {key: metrics['metrics'][key] / control['summary']['metrics'][key]
@@ -259,6 +271,7 @@ def main(args):
                 assert bool(actual_config['pin_rebuilds']) == ('pinned' in arm)
                 assert bool(actual_config['pin_scale']) == arm.endswith('_scale')
                 assert bool(actual_config['novelty_refresh']) == arm.endswith('_novelty')
+                assert actual_config['retrieval_bank'] == (4 if arm == 'retrieval_bank' else None)
                 row['error_groups'] = error_groups(result, reference, actual)
             archive_directory(result, args.out / f'{args.tag}_{name}.tar')
             row['archive_sha256'] = sha256(args.out / f'{args.tag}_{name}.tar')
@@ -279,7 +292,8 @@ if __name__ == '__main__':
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--tag', required=True)
-    parser.add_argument('--stage', choices=('pilot', 'overnight', 'three-frame', 'pinned', 'novelty'),
+    parser.add_argument('--stage', choices=('pilot', 'overnight', 'three-frame', 'pinned', 'novelty',
+                                            'retrieval'),
                         required=True)
     parser.add_argument('--deadline', type=float, required=True)
     parser.add_argument('--reviewed-pilot', type=Path)

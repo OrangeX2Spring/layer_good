@@ -7,6 +7,8 @@ three-image with pinned rebuilds and scale, and two-image with pinned rebuilds.
 Stage 'shared' runs native, the same pinned control and three-image with pinned
 rebuilds and scale from the shared previous keyframe. Stage 'fused' replaces that
 arm with the geometric mean of the shared-keyframe chain and the anchor scale.
+Stage 'retrieval' runs native, the same pinned control and a four-image GPU bank
+retrieved from a CPU memory of all keyframes with fixed poses (no anchor, no pin).
 """
 import argparse
 import io
@@ -35,15 +37,19 @@ CONTROLS = dict(
     shared=('tum_26481_camera_history_three_frame_pinned.tar',
             'f7b6ffe7f54cc7bdef8c25037138715f38f24edbb14093fdb2f1148f726330f8', 'three_frame_pinned'),
     fused=('tum_26481_camera_history_three_frame_pinned.tar',
-           'f7b6ffe7f54cc7bdef8c25037138715f38f24edbb14093fdb2f1148f726330f8', 'three_frame_pinned'))
+           'f7b6ffe7f54cc7bdef8c25037138715f38f24edbb14093fdb2f1148f726330f8', 'three_frame_pinned'),
+    retrieval=('tum_26481_camera_history_three_frame_pinned.tar',
+               'f7b6ffe7f54cc7bdef8c25037138715f38f24edbb14093fdb2f1148f726330f8', 'three_frame_pinned'))
 ARMS = dict(gate=('native', 'no_retirement', 'three_frame'),
             pinned=('native', 'three_frame', 'three_frame_pinned'),
             scale=('native', 'three_frame_pinned', 'three_frame_pinned_scale', 'no_retirement_pinned'),
             shared=('native', 'three_frame_pinned', 'three_frame_pinned_shared'),
-            fused=('native', 'three_frame_pinned', 'three_frame_pinned_fused'))
+            fused=('native', 'three_frame_pinned', 'three_frame_pinned_fused'),
+            retrieval=('native', 'three_frame_pinned', 'retrieval_bank'))
 # Within-job comparison arm for each pinned variant.
 COMPARE = dict(three_frame_pinned='three_frame', three_frame_pinned_scale='three_frame_pinned',
-               three_frame_pinned_shared='three_frame_pinned', three_frame_pinned_fused='three_frame_pinned')
+               three_frame_pinned_shared='three_frame_pinned', three_frame_pinned_fused='three_frame_pinned',
+               retrieval_bank='three_frame_pinned')
 
 
 def refresh_pairs(result):
@@ -129,8 +135,11 @@ def main(args):
                 '--work', str(args.work), '--out', str(args.out), '--tag', args.tag,
                 '--inputs', str(inputs), '--native-metrics', str(native_metrics),
                 '--detector-config', str(policy), '--name', name, '--disable-retirement',
-                '--local-keyframe-cap', '2' if arm.startswith('no_retirement') else '3',
                 '--profile-forward']
+            if arm == 'retrieval_bank':
+                command.extend(['--retrieval-bank', '4'])
+            else:
+                command.extend(['--local-keyframe-cap', '2' if arm.startswith('no_retirement') else '3'])
             if 'pinned' in arm:
                 command.append('--pin-rebuilds')
             if arm.endswith('_scale'):
@@ -169,6 +178,7 @@ def main(args):
             assert bool(config['pin_scale']) == arm.endswith('_scale')
             assert bool(config['shared_scale']) == arm.endswith(('_shared', '_fused'))
             assert bool(config['fuse_scale']) == arm.endswith('_fused')
+            assert config['retrieval_bank'] == (4 if arm == 'retrieval_bank' else None)
             current_decisions = [{k: v for k, v in json.loads(line).items() if k != 'seconds'}
                 for line in (result / 'segmentation_live.jsonl').read_text().splitlines()]
             assert len(current_decisions) == frames
@@ -198,6 +208,13 @@ def main(args):
                            for line in (result / 'inference.jsonl').read_text().splitlines()
                            if json.loads(line)['kind'] == 'update_total']
             assert len(row['pins']) == (frames - 1) // 50 and all('pin_rotation_deg' in x for x in row['pins'])
+        if arm == 'retrieval_bank':
+            row['admissions'] = [{k: v for k, v in json.loads(line).items()
+                                  if k in ('frame', 'bank_ids', 'scores', 'fit_scale', 'fit_accepted',
+                                           'validation_median', 'camera_rotation_deg')}
+                                 for line in (result / 'inference.jsonl').read_text().splitlines()
+                                 if json.loads(line)['kind'] == 'update_total']
+            assert len(row['admissions']) == (frames - 1) // 50
         archive = args.out / f'{args.tag}_{name}.tar'
         archive_directory(result, archive)
         row['archive_sha256'] = sha256(archive)

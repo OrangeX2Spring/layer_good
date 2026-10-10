@@ -35,6 +35,7 @@ def main(args):
     from kv_tracker.map_handoff import transform_pose
     from kv_tracker.pi3_utilts import load_pi3_from_pretrained, move_pi3_mlps_to_bfloat32
     from kv_tracker.reanchor_maps import ReanchorMaps
+    from kv_tracker.retrieval_bank import RetrievalBank
 
     for name, expected in SOURCES.items():
         assert sha256(args.out / name) == expected, f'{name} differs from the reviewed archive'
@@ -62,6 +63,9 @@ def main(args):
     assert not args.shared_scale or (args.pin_rebuilds and not args.pin_scale and args.local_keyframe_cap == 3)
     assert args.shared_scale or not args.fuse_scale
     assert not args.novelty_refresh or (args.object_scene and args.disable_retirement)
+    assert args.retrieval_bank is None or (args.disable_retirement and args.local_keyframe_cap == 2 and not (
+        args.pin_rebuilds or args.shared_scale or args.novelty_refresh))
+    cap = args.retrieval_bank or args.local_keyframe_cap
     if args.native_metrics:
         assert args.detector_config is not None, 'Non-office runs require a live detector policy'
 
@@ -97,9 +101,12 @@ def main(args):
     result.mkdir(parents=True)
     write_json(result / 'config.json', dict(boundaries=boundaries, sources=sources,
         checkpoint=checkpoint, local_keyframe_cap=args.local_keyframe_cap,
-        keyframes=('segment first frame + previous + latest' if args.local_keyframe_cap == 3
-                   else 'segment first frame + latest') + ', rebuilt every 50; '
-        'later rebuilds rescaled to the first via the anchor pointmap',
+        keyframes=(f'CPU memory of all admitted keyframes (fixed poses); GPU bank of the newest plus '
+                   f'the {args.retrieval_bank - 1} best-covering stored keyframes; one Sim(3) over the '
+                   'shared members per rebuild' if args.retrieval_bank else
+                   ('segment first frame + previous + latest' if args.local_keyframe_cap == 3
+                    else 'segment first frame + latest') + ', rebuilt every 50; '
+                   'later rebuilds rescaled to the first via the anchor pointmap'),
         connection='none' if args.disable_retirement else
                    'pose-anchored at b, point-fit scale, always committed, 49-frame delay',
         history=f'first anchor with bounded {args.local_keyframe_cap}-image bank; no map retirement' if args.disable_retirement else
@@ -111,6 +118,9 @@ def main(args):
         shared_scale=args.shared_scale and 'rebuild scale from the previous keyframe shared by both rebuilds',
         fuse_scale=args.fuse_scale and 'geometric mean of the shared-keyframe chain and the anchor scale',
         novelty_refresh=args.novelty_refresh and 'extra rebuild after frame 49 when native check_if_keyframe fires',
+        retrieval_bank=args.retrieval_bank,
+        admission=args.retrieval_bank and ('native check_if_keyframe against all stored keyframes'
+                                           if args.object_scene else 'every 50 frames, uncapped'),
         segmentation_policy=detector_policy if detector is not None else None,
         gt_used_by_tracker=False, seed=0))
     torch.manual_seed(0)
@@ -136,14 +146,18 @@ def main(args):
             stream.write(json.dumps(row, allow_nan=False) + '\n')
             stream.flush()
         novelty = None
-        if args.novelty_refresh:
+        if args.novelty_refresh or (args.retrieval_bank and args.object_scene):
             from main import check_if_keyframe  # native object keyframe rule, unchanged thresholds
             novelty = check_if_keyframe
-        tracker = ReanchorMaps(model, boundaries, log, save_bridge,
-                               local_keyframe_cap=args.local_keyframe_cap,
-                               pin_rebuilds=args.pin_rebuilds, pin_scale=args.pin_scale,
-                               shared_scale=args.shared_scale, fuse_scale=args.fuse_scale,
-                               novelty_refresh=novelty)
+        if args.retrieval_bank:
+            tracker = RetrievalBank(model, lambda row: log(dict(row, segment_start=0, global_frame=row['frame'])),
+                                    capacity=args.retrieval_bank, novelty=novelty)
+        else:
+            tracker = ReanchorMaps(model, boundaries, log, save_bridge,
+                                   local_keyframe_cap=args.local_keyframe_cap,
+                                   pin_rebuilds=args.pin_rebuilds, pin_scale=args.pin_scale,
+                                   shared_scale=args.shared_scale, fuse_scale=args.fuse_scale,
+                                   novelty_refresh=novelty)
         torch.cuda.reset_peak_memory_stats()
         torch.cuda.synchronize()
         started = time.perf_counter()
@@ -164,7 +178,7 @@ def main(args):
                 if decision['boundary'] and not args.disable_retirement:
                     boundaries.insert(-1, frame)
             mask = None
-            if args.novelty_refresh:
+            if novelty is not None:
                 mask = cv2.imread(str(inputs / 'model_masks' / Path(row['file']).name), cv2.IMREAD_GRAYSCALE) > 127
                 assert hashlib.sha256(mask.tobytes()).hexdigest() == row['model_mask_sha256'], frame
                 mask = torch.from_numpy(mask)
@@ -191,8 +205,8 @@ def main(args):
     assert tracker.pending is None and len(tracker.transforms) == len(boundaries) - 1
     assert [e['boundary'] for e in tracker.events] == boundaries[1:-1]
     rows = [json.loads(x) for x in (result / 'inference.jsonl').read_text().splitlines()]
-    assert all(r['input_images'] <= args.local_keyframe_cap for r in rows if 'input_images' in r)
-    assert all(len(r['bank_ids']) <= args.local_keyframe_cap for r in rows if r['kind'] == 'query')
+    assert all(r['input_images'] <= cap for r in rows if 'input_images' in r)
+    assert all(len(r['bank_ids']) <= cap for r in rows if r['kind'] == 'query')
     np.save(result / 'local_traj.npy', local_poses)
     global_poses = np.concatenate([np.stack([
         transform_pose(torch.from_numpy(pose), transform).numpy()
@@ -271,4 +285,6 @@ if __name__ == '__main__':
                         help='Geometric mean of the shared-keyframe and anchor scales; requires --shared-scale')
     parser.add_argument('--novelty-refresh', action='store_true',
                         help='Object scenes: also rebuild when native check_if_keyframe fires after frame 49')
+    parser.add_argument('--retrieval-bank', type=int, choices=(3, 4, 5),
+                        help='GPU bank size retrieved from a CPU keyframe memory; requires --disable-retirement')
     main(parser.parse_args())

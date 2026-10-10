@@ -9,6 +9,7 @@ import torch
 
 from kv_tracker.map_handoff import MapHandoff, transform_pose
 from kv_tracker.reanchor_maps import ReanchorMaps
+from kv_tracker.retrieval_bank import RetrievalBank
 
 
 def pose(angle, position):
@@ -19,7 +20,97 @@ def pose(angle, position):
     return result
 
 
+def grid(sign=1.):
+    """80x80 non-planar pointmap in front of (sign 1) or behind (sign -1) an identity camera."""
+    y, x = torch.meshgrid(torch.arange(80.), torch.arange(80.), indexing='ij')
+    z = sign * (2 + .3 * torch.sin(x / 7) + .2 * torch.cos(y / 5))
+    return torch.stack(((x - 40) / 40 * z, (y - 40) / 40 * z, z), -1)
+
+
 class ReanchorTests(unittest.TestCase):
+    def test_retrieval_bank_keeps_covering_keyframes_with_fixed_poses(self):
+        model = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]), cache={})
+        rows, calls, stored = [], [], {}
+        tracker = RetrievalBank(model, rows.append, capacity=3)
+
+        def reconstruct(images, ids, frame, kind):
+            calls.append(list(ids))
+            # Members reproduce their stored points; frame 99 looks away from every later query.
+            stored[frame] = grid(-1. if frame == 99 else 1.)
+            points = torch.stack([stored[i] for i in ids[:-1]] + [stored[frame]])
+            return points, torch.eye(4).repeat(len(ids), 1, 1), torch.ones(len(ids), 80, 80), torch.eye(4)
+
+        tracker.reconstruct = reconstruct
+        image = np.zeros((80, 80, 3), dtype=np.uint8)
+        with patch('torch.cuda.synchronize'), patch('kv_tracker.retrieval_bank.pi3_inference',
+                return_value=torch.eye(4)[None, None]):
+            for frame in range(200):
+                tracker.step(image, frame)
+        self.assertEqual(calls, [[0, 0], [0, 49], [49, 0, 99], [49, 0, 149], [149, 49, 199]])
+        self.assertEqual([m['frame'] for m in tracker.memory], [0, 49, 99, 149, 199])
+        for m in tracker.memory:
+            torch.testing.assert_close(m['pose'], torch.eye(4, dtype=torch.float64))
+        updates = [r for r in rows if r['kind'] == 'update_total']
+        self.assertTrue(all(r['fit_accepted'] and abs(r['fit_scale'] - 1) < 1e-6 for r in updates))
+        self.assertTrue(all(len(r['bank_ids']) <= 3 for r in rows if r['kind'] == 'query'))
+
+    def test_retrieval_bank_registers_rebuild_by_shared_pointmaps(self):
+        model = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]), cache={})
+        tracker = RetrievalBank(model, lambda row: None, capacity=2)
+        scale, rotation = 2., torch.from_numpy(pose(.3, [0., 0., 0.])[:3, :3]).double()
+        translation = torch.tensor([1., -2., .5], dtype=torch.float64)
+        local = torch.from_numpy(pose(-.4, [.3, .1, .2])).double()
+
+        def reconstruct(images, ids, frame, kind):
+            if frame == 0:
+                return grid()[None].repeat(2, 1, 1, 1), torch.eye(4).repeat(2, 1, 1), torch.ones(2, 80, 80), torch.eye(4)
+            # The rebuild's own gauge is the global frame under the inverse of (scale, rotation, translation).
+            member = ((grid().double() - translation) @ rotation / scale).float()
+            member_pose = torch.eye(4, dtype=torch.float64)
+            member_pose[:3, :3], member_pose[:3, 3] = rotation.T, -rotation.T @ translation / scale
+            return (torch.stack((member, grid(.5))), torch.stack((member_pose, local)).float(),
+                    torch.ones(2, 80, 80), torch.eye(4))
+
+        tracker.reconstruct = reconstruct
+        image = np.zeros((80, 80, 3), dtype=np.uint8)
+        with patch('torch.cuda.synchronize'), patch('kv_tracker.retrieval_bank.pi3_inference',
+                return_value=torch.eye(4)[None, None]):
+            for frame in range(51):
+                last = tracker.step(image, frame)
+        expected = (torch.tensor(scale, dtype=torch.float64), rotation, translation)
+        for actual, wanted in zip(tracker.transform, expected):
+            torch.testing.assert_close(actual, wanted, atol=1e-4, rtol=1e-4)
+        torch.testing.assert_close(tracker.memory[1]['pose'], transform_pose(local, expected), atol=1e-4, rtol=1e-4)
+        torch.testing.assert_close(torch.from_numpy(last).double(),
+                                   transform_pose(torch.eye(4), expected), atol=1e-4, rtol=1e-4)
+
+    def test_retrieval_bank_admits_objects_against_whole_memory(self):
+        model = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]), cache={})
+        calls, seen, state = [], [], {}
+
+        def novelty(center, pose, members):
+            self.assertEqual(tuple(center.shape), (3,))
+            seen.append(len(members))
+            return state['frame'] in (10, 20, 30, 40)
+
+        tracker = RetrievalBank(model, lambda row: None, capacity=3, novelty=novelty)
+
+        def reconstruct(images, ids, frame, kind):
+            calls.append(list(ids))
+            return (grid()[None].repeat(len(ids), 1, 1, 1), torch.eye(4).repeat(len(ids), 1, 1),
+                    torch.ones(len(ids), 80, 80), torch.eye(4))
+
+        tracker.reconstruct = reconstruct
+        image, mask = np.zeros((80, 80, 3), dtype=np.uint8), torch.ones(80, 80, dtype=torch.bool)
+        with patch('torch.cuda.synchronize'), patch('kv_tracker.retrieval_bank.pi3_inference',
+                return_value=torch.eye(4)[None, None]):
+            for frame in range(60):
+                state['frame'] = frame
+                tracker.step(image, frame, mask)
+        self.assertEqual(calls, [[0, 0], [0, 10], [10, 0, 20], [20, 10, 30], [30, 20, 40]])
+        self.assertEqual(max(seen), 5)
+        self.assertEqual(seen[:11], [1] * 10 + [2])
+
     def test_three_image_map_keeps_previous_view_and_restores_scale(self):
         model = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]), cache={})
         tracker = MapHandoff(model, 'reanchor', lambda row: None, None, local_keyframe_cap=3)
