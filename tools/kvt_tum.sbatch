@@ -12,6 +12,9 @@
 set -euo pipefail
 MODE=${1:-sweep}
 TASK_DEADLINE=
+if [ "$MODE" = camera-history ]; then
+    TASK_DEADLINE=$(( $(date +%s) + 7200 ))
+fi
 if [ "$MODE" = object-history ]; then
     case "${2:-pilot}" in
         pilot|three-frame) HISTORY_SECONDS=7200 ;;
@@ -24,13 +27,13 @@ if [ "$MODE" = adaptive-tokens ] && [ "${2:-gate}" = task-policy ]; then
     # Four-hour allocation: leave ten minutes for the EXIT archives.
     TASK_DEADLINE=$(( $(date +%s) + 13800 ))
 fi
-case "$MODE" in sweep|object-history|segment-detector|oracle-maps|bridge-cameras|reanchor-maps|handoff-pilot|office-segments|bank-pilot|combined|correspondence|correspondence-gates|llm-packet|replay-fidelity|llm-compare|append|sensitivity|active-keyframes|patch-select|adaptive-tokens) ;;
+case "$MODE" in sweep|camera-history|object-history|segment-detector|oracle-maps|bridge-cameras|reanchor-maps|handoff-pilot|office-segments|bank-pilot|combined|correspondence|correspondence-gates|llm-packet|replay-fidelity|llm-compare|append|sensitivity|active-keyframes|patch-select|adaptive-tokens) ;;
     *) echo "Unknown mode: $MODE" >&2; exit 2 ;; esac
 test "$(uname -s)" = Linux
 test "$(hostname)" != head
 ROOT=/mnt/projects/gr/3DRecon
 if [ "$MODE" = bank-pilot ] || [ "$MODE" = office-segments ] || [ "$MODE" = handoff-pilot ] || [ "$MODE" = oracle-maps ] || \
-   [ "$MODE" = bridge-cameras ] || [ "$MODE" = reanchor-maps ] || [ "$MODE" = segment-detector ] || [ "$MODE" = object-history ]; then
+   [ "$MODE" = bridge-cameras ] || [ "$MODE" = reanchor-maps ] || [ "$MODE" = segment-detector ] || [ "$MODE" = object-history ] || [ "$MODE" = camera-history ]; then
     # sbatch executes a spool copy, not the script in the checkout.
     REPO="$ROOT/layer_good"
 else
@@ -89,7 +92,7 @@ ulimit -m
 nvidia-smi
 sinfo -N -o '%.10N %.6P %.9T %.15G' > "$WORK/context/sinfo.txt"
 scontrol show job "$SLURM_JOB_ID" > "$WORK/context/slurm_job.txt"
-if [ "$MODE" = object-history ]; then
+if [ "$MODE" = object-history ] || [ "$MODE" = camera-history ]; then
     HISTORY_END=$(sed -n 's/.*EndTime=\([^ ]*\).*/\1/p' "$WORK/context/slurm_job.txt")
     HISTORY_END=$(date -d "$HISTORY_END" +%s)
     if [ "$HISTORY_END" -lt "$TASK_DEADLINE" ]; then TASK_DEADLINE=$HISTORY_END; fi
@@ -121,10 +124,10 @@ git -C "$REPO/kv_tracker" rev-parse HEAD > "$WORK/context/tracker_commit.txt"
 git -C "$REPO/kv_tracker" submodule status > "$WORK/context/nested_submodules.txt"
 git -C "$REPO" diff > "$WORK/context/parent.diff"
 git -C "$REPO/kv_tracker" diff > "$WORK/context/tracker.diff"
-if [ "$MODE" = object-history ]; then
+if [ "$MODE" = object-history ] || [ "$MODE" = camera-history ]; then
     test ! -s "$WORK/context/parent.diff"
     test ! -s "$WORK/context/tracker.diff"
-    cp "$REPO/tools/kvt_object_history.py" "$REPO/tools/KVT_OBJECT_OVERNIGHT.md" \
+    cp "$REPO/tools/kvt_camera_history.py" "$REPO/tools/kvt_object_history.py" "$REPO/tools/KVT_OBJECT_OVERNIGHT.md" \
        "$REPO/tools/kvt_inference_timing.py" "$REPO/tools/KVT_HISTORY_GENERALIZATION.md" \
        "$REPO/tools/kvt_segment_arctic.py" "$REPO/tools/kvt_segment_detector.py" \
        "$REPO/tools/kvt_reanchor_maps.py" "$REPO/tools/kvt_handoff_pilot.py" \
@@ -352,11 +355,22 @@ if [ "$MODE" = correspondence-gates ]; then
 fi
 "${CONTAINER[@]}" python -m pip list --format=json > "$WORK/context/packages.json"
 "${CONTAINER[@]}" python "$REPO/tools/test_kvt_tum.py" 2>&1 | tee "$WORK/context/tests.log"
-if [ "$MODE" = object-history ]; then
+if [ "$MODE" = object-history ] || [ "$MODE" = camera-history ]; then
     for SUITE in segment_detector handoff reanchor object_history; do
         "${CONTAINER[@]}" python "$REPO/tools/test_kvt_${SUITE}.py" \
             2>&1 | tee "$WORK/context/${SUITE}_contracts.log"
     done
+    if [ "$MODE" = camera-history ]; then
+        HISTORY_REMAINING=$(( TASK_DEADLINE - $(date +%s) - 1800 ))
+        test "$HISTORY_REMAINING" -gt 0
+        timeout --signal=TERM --kill-after=60s "${HISTORY_REMAINING}s" \
+            "${CONTAINER[@]}" python "$REPO/tools/kvt_camera_history.py" \
+            --work "$WORK" --out "$OUT" --tag "$TAG" --deadline "$TASK_DEADLINE" \
+            2>&1 | tee "$WORK/context/camera_history.log"
+        test -f "$WORK/JOB_OK"
+        echo 'CAMERA HISTORY JOB OK'
+        exit 0
+    fi
     HISTORY_ARGS=()
     if [ "${2:-pilot}" = overnight ]; then
         HISTORY_PILOT=${3:?Supply reviewed pilot tag tum_JOB}

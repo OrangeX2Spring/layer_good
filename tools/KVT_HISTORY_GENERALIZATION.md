@@ -12,7 +12,8 @@ existing 50-frame refresh interval. Maximum three images/KV frame slots after
 the second refresh; bootstrap remains two duplicate slots. Compare against the
 existing two-image no-retirement map. No new thresholds, smoothing, training,
 semantic masks, resolution change or threshold sweep. The additional view may
-improve geometry when the anchor becomes dissimilar; accuracy is untested.
+improve geometry when the anchor becomes dissimilar; the reviewed ketchup result
+is mixed (FINDINGS Artifact audit26472).
 Memory can rise with the extra frame; this is an explicit capacity tradeoff.
 
 Entry: `bash tools/kvt_tum.sbatch object-history three-frame`, two-hour ceiling,
@@ -30,7 +31,7 @@ native5% is the separate existing quality gate. Poor quality is recorded, not
 converted to an execution error. Runtime/fidelity failure blocks expansion.
 
 The pilot is necessary before the full sweep. It is not the requested full
-evaluation. Camera integration and dataset adapters are separate pending work;
+evaluation. The camera gate below is prepared; dataset adapters remain pending work;
 do not claim all-dataset readiness from a ketchup marker.
 
 ## Timing audit and measurement
@@ -111,3 +112,50 @@ from the three-frame hypothesis. Explain anchor age, refresh scale and object
 confidence differences. Ask whether broader viewpoint coverage or a better
 geometric connection is the more useful next direction. Do not send the report
 to the tutor without explicit instruction.
+
+## Camera gate after reviewed26472
+
+26472 execution/fidelity and timing artifacts pass review; its accuracy does not
+meet the all-three-metrics improvement criterion. Retain all three arms; do not
+promote three-image as an overall accuracy winner. See FINDINGS Artifact audit26472.
+
+Entry: `bash tools/kvt_tum.sbatch camera-history`, two-hour allocation. Fixed full
+freiburg3_long_office_household,2585 chronological frames, resize308; no sampling,
+new policy thresholds or dataset expansion. kvt_camera_history.py reuses the
+hash-pinned26127 office inputs/context and25680 original trajectory/evaluation
+archive from kvt_tum_out. All three source archives and Pi3 checkpoint are checked
+before inference. No fresh staging/download, SAM tracking or environment change.
+Native saved-pixel replay uses stock camera admission and must match25680 within
+rtol/atol1e-4. The original object replay remains the default for existing callers.
+
+Fresh processes run native, two-image no retirement, three-image no retirement.
+The fixed ORB25/max200 detector is logged in bounded arms; its decisions cannot
+retire maps. Both retain boundaries[0,N], no events, capped banks, equal detector
+records. All arms must have finite full trajectories and identical historical
+RGB/GT indices, timestamps, reference poses and adjacent RPE pairs. Benchmark
+input shape, GPU, software and precision must match. Each arm saves separated
+forward/head timings; native camera queries already use pose-only heads.
+
+Existing TUM, detector, handoff, reanchor and history contract suites run first.
+Deadline clips to Slurm EndTime; subprocess/outer timeouts reserve30 minutes for
+packaging. Comparison records an active arm before launching, completed archive
+hashes and quality ratios. Runtime/fidelity failure exits nonzero; quality failure
+is recorded without changing the three-arm matrix. Expected markers: three
+CAMERA HISTORY ARM lines, CAMERA HISTORY COMPLETE 3 2585, CAMERA HISTORY JOB OK.
+Then verify Slurm terminal status and six archives before transfer/review:
+`tum_JOB_camera_history_{native,no_retirement,three_frame}.tar`,
+`tum_JOB_camera_history_comparison.tar`, `tum_JOB_context.tar`, `tum_JOB_all_runs.tar`.
+The wrapper preserves partial runs/context on ordinary failure; sources remain
+immutable and need not be duplicated. A scheduler hard kill can prevent packaging.
+
+Local preparation checks: Python3.10 AST, Bash syntax, diff whitespace. No local
+project imports/runtime tests. CAMP contract/fidelity/runtime checks are pending.
+Publish only kvt_camera_history.py, kvt_segment_arctic.py, kvt_reanchor_maps.py,
+kvt_tum.sbatch and this protocol. FINDINGS and docs remain local canonical
+records (gitignored). Model remains269a943.
+
+User submits from CAMP head in /mnt/projects/gr/3DRecon/layer_good using the
+allocation-wrapped pull/run procedure, selected24g/muenchen/GPU1, two hours.
+Do not pull on head. Review camera artifacts before all-sequence evaluation;
+manifest/adapters for the remaining table entries and the tutor report remain
+pending. No full-dataset job or automatic successor is prepared by this gate.

@@ -21,7 +21,7 @@ SCENES = ('box_grab_01', 'ketchup_grab_01', 'espressomachine_grab_01')
 
 
 def replay_native(config_path):
-    """Original object admission with saved model pixels/masks, without SAM."""
+    """Original admission with saved model pixels; object masks exclude live SAM."""
     import cv2
     import torch
     import main as tracker
@@ -32,6 +32,10 @@ def replay_native(config_path):
     config = json.loads(config_path.read_text())
     inputs, result = Path(config['inputs']), config_path.parent
     manifest = json.loads((inputs / 'manifest.json').read_text())
+    camera = config.get('task') == 'camera'
+    resize = 308 if camera else 518
+    if camera:
+        assert manifest['resize_dim'] == resize
     os.chdir(CHECKOUT)
     random.seed(0)
     np.random.seed(0)
@@ -49,13 +53,19 @@ def replay_native(config_path):
         torch.cuda.synchronize()
         started = time.perf_counter()
         for index, row in enumerate(manifest['inputs']):
-            bgr = cv2.imread(str(inputs / 'model_rgb' / row['file']))
-            mask = cv2.imread(str(inputs / 'model_masks' / row['file']), cv2.IMREAD_GRAYSCALE)
-            assert bgr is not None and mask is not None
-            rgb, mask = bgr[:, :, ::-1].copy(), mask > 127
+            bgr = cv2.imread(str(inputs / 'model_rgb' / Path(row['file']).name))
+            assert bgr is not None
+            rgb = bgr[:, :, ::-1].copy()
+            if camera:
+                mask = np.ones(rgb.shape[:2], dtype=bool)
+            else:
+                mask = cv2.imread(str(inputs / 'model_masks' / row['file']), cv2.IMREAD_GRAYSCALE)
+                assert mask is not None
+                mask = mask > 127
             assert mask.shape == rgb.shape[:2] and mask.any()
             assert hashlib.sha256(rgb.tobytes()).hexdigest() == row['model_rgb_sha256']
-            assert hashlib.sha256(mask.tobytes()).hexdigest() == row['model_mask_sha256']
+            if not camera:
+                assert hashlib.sha256(mask.tobytes()).hexdigest() == row['model_mask_sha256']
             yield dict(idx=index, rgb_np=rgb, resized_rgb_masked_np=rgb,
                        resized_mask_np=mask, resized_mask=torch.tensor(mask, device='cuda:0'),
                        resized_rgb_masked=torch.tensor(rgb, device='cuda:0', dtype=torch.float32)[None, None] / 255.)
@@ -65,18 +75,25 @@ def replay_native(config_path):
                       peak_reserved_bytes=torch.cuda.max_memory_reserved())
 
     tracker.run_track3r(cfg=dict(results_path=str(result), que_size=1),
-        args=['--obj_mode', '--resize_dim', '518'], frame_source=frames(), pi3_model=model)
+        args=['--cam_only' if camera else '--obj_mode', '--resize_dim', str(resize)],
+        frame_source=frames(), pi3_model=model)
     trajectory = np.load(result / 'traj.npy')
     assert trajectory.shape == (manifest['frames'], 4, 4) and np.isfinite(trajectory).all()
-    # Same masks/pixels must reproduce the native live-SAM reference before a comparison.
+    # Saved pixels must reproduce the historical native trajectory before comparison.
     np.testing.assert_allclose(trajectory, np.load(config['reference_trajectory']), rtol=1e-4, atol=1e-4)
     timing['includes'] = 'saved pixels/masks, hashing, upload and tracking; excludes SAM/model load/final serialization'
-    metrics = evaluate_object(config['scene'], result, manifest['frames'])
+    if camera:
+        from kvt_tum_run import evaluate
+        metrics = evaluate(inputs, result, .02)
+        with np.load(result / 'evaluation.npz') as pairs:
+            metrics['translation_p99_m'] = float(np.quantile(pairs['rpe_translation_per_pair_m'], .99))
+    else:
+        metrics = evaluate_object(config['scene'], result, manifest['frames'])
     write_json(result / 'summary.json', dict(metrics=metrics, timing=timing, native_fidelity=True))
     if config.get('profile_forward', False):
         write_json(result / 'forward_timing.json', forward_timing.finish())
         from kvt_inference_timing import benchmark_cached_heads
-        last = cv2.imread(str(inputs / 'model_rgb' / manifest['inputs'][-1]['file']))
+        last = cv2.imread(str(inputs / 'model_rgb' / Path(manifest['inputs'][-1]['file']).name))
         write_json(result / 'cached_head_benchmark.json', benchmark_cached_heads(model, last[:, :, ::-1]))
 
 

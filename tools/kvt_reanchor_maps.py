@@ -56,7 +56,7 @@ def main(args):
     if args.object_scene:
         assert args.inputs is not None and args.native_metrics is not None
     if args.disable_retirement:
-        assert args.object_scene and args.detector_config is not None and args.segmentation is None
+        assert args.detector_config is not None and args.segmentation is None
     if args.native_metrics:
         assert args.detector_config is not None, 'Non-office runs require a live detector policy'
 
