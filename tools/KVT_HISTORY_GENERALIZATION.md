@@ -320,3 +320,11 @@ validation. Success: retrieval improves ATE over the pinned control on both
 sequences with RPE/p99 not worse; the target remains native within 5%. Report
 speed and peak memory with accuracy. Object RPE is measured after Sim(3) alignment,
 so read it together with alignment_scale (26500 audit).
+
+Outcome, 2026-10-10: 26503 (camera) and 26504 (ketchup) ran at parent 86044ce/fork
+be99bfb with both controls reproduced byte-for-byte. The retrieval bank is worse
+than the pinned control on camera (ATE 1.0389) and gains no rotation accuracy on
+ketchup (rotation RPE 29.1 degrees, alignment scale 0.191). Registrations of
+independent re-solves fail at low-overlap transitions (office 749 onwards), and
+fixed stored poses keep those errors. Rejected; numbers in FINDINGS (gates and
+audit 26503/26504).
