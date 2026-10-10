@@ -116,6 +116,45 @@ class ReanchorTests(unittest.TestCase):
         self.assertEqual(reads, [49, 99])
         self.assertAlmostEqual(tracker.rebuild_scale, 4.)
 
+    def test_shared_keyframe_scale_compounds_rebuild_depths(self):
+        model = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]), cache={})
+        tracker = MapHandoff(model, 'reanchor', lambda row: None, None, local_keyframe_cap=3,
+                             pin_rebuilds=True, shared_scale=True)
+        tracker.query_geometry = Mock(side_effect=AssertionError('no extra dense query'))
+        scales = {}
+
+        def reconstruct(images, ids, frame, kind):
+            # Each rebuild sees its newest frame at depth 2 and the shared keyframe
+            # (middle member) at depth 1, so every refresh doubles the scale.
+            poses = torch.eye(4).repeat(len(ids), 1, 1)
+            points = torch.full((len(ids), 28, 28, 3), 7.)
+            points[..., :2] = 0.
+            points[-1, ..., 2] = 2.
+            if len(ids) == 3:
+                points[1, ..., 2] = 1.
+            if frame == 49:
+                tracker.anchor_points, tracker.anchor_conf = points[0].clone(), torch.ones(28, 28)
+            return points, poses, torch.ones(len(ids), 28, 28), torch.eye(4)
+
+        tracker.reconstruct = reconstruct
+        image = np.zeros((28, 28, 3), dtype=np.uint8)
+        with patch('torch.cuda.synchronize'), patch('kv_tracker.map_handoff.pi3_inference',
+                return_value=torch.eye(4)[None, None]):
+            tracker.bootstrap(image)
+            for frame in range(1, 150):
+                tracker.step(image, frame)
+                if frame in (49, 99, 149):
+                    scales[frame] = tracker.rebuild_scale
+        self.assertEqual(scales, {49: 1., 99: 2., 149: 4.})
+        tracker.query_geometry.assert_not_called()
+
+    def test_shared_scale_requires_three_image_rigid_pin(self):
+        model = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]), cache={})
+        for options in (dict(pin_rebuilds=True), dict(local_keyframe_cap=3),
+                        dict(pin_rebuilds=True, local_keyframe_cap=3, pin_scale=True)):
+            with self.assertRaises(AssertionError):
+                MapHandoff(model, 'reanchor', lambda row: None, None, shared_scale=True, **options)
+
     def test_scale_pin_requires_rigid_pin(self):
         model = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]), cache={})
         with self.assertRaises(AssertionError):
@@ -128,7 +167,7 @@ class ReanchorTests(unittest.TestCase):
     def test_short_final_segment_connects_at_eof(self):
         class LocalMap:
             def __init__(self, model, mode, log, save, query_executor=None, local_keyframe_cap=2,
-                         pin_rebuilds=False, pin_scale=False):
+                         pin_rebuilds=False, pin_scale=False, shared_scale=False):
                 self.model = model
                 self.transform = (torch.tensor(1., dtype=torch.float64),
                                   torch.eye(3, dtype=torch.float64), torch.zeros(3, dtype=torch.float64))
@@ -244,7 +283,7 @@ class ReanchorTests(unittest.TestCase):
 
         class LocalMap:
             def __init__(self, model, mode, log, save, query_executor=None, local_keyframe_cap=2,
-                         pin_rebuilds=False, pin_scale=False):
+                         pin_rebuilds=False, pin_scale=False, shared_scale=False):
                 self.model = model
                 self.transform = (torch.tensor(1., dtype=torch.float64),
                                   torch.eye(3, dtype=torch.float64), torch.zeros(3, dtype=torch.float64))

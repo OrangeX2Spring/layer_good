@@ -234,3 +234,23 @@ rebuild_scale in comparison.json; compared_ratios against the arm each variant
 modifies (pinned vs unpinned, scale vs rigid pin). Same contracts, detector,
 pair and no-retirement checks. Quality uses native5% and the compared arm on all
 three translation metrics. Review both before any further dataset expansion.
+
+## Shared-keyframe scale camera gate after reviewed26487/26488
+
+26487 showed refresh-frame scale (pin_scale) reaches native RPE/p99 but rises about
+2.5% per refresh relative to the anchor scale (39 of 50 steps), inflating ATE.
+Hypothesis: a single-image query's depths and a rebuild member's depths are not
+like-for-like. Test: `shared_scale` (three-image, requires the rigid pin, excludes
+pin_scale) takes each rebuild's scale from the previous keyframe, which is a
+rebuild member of both the outgoing and the new bank; depths in its own camera,
+both maps' confidences at or above median, scale compounded from the outgoing
+bank's. The first rebuild has no shared keyframe and keeps the anchor scale. No
+extra forward, no thresholds.
+
+Entry: `bash tools/kvt_tum.sbatch camera-history shared`, two hours. Arms native,
+three_frame_pinned (control; must reproduce the reviewed
+tum_26481_camera_history_three_frame_pinned.tar within 1e-4),
+three_frame_pinned_shared. Markers: three CAMERA HISTORY ARM lines, CAMERA HISTORY
+COMPLETE shared 3 2585, CAMERA HISTORY JOB OK. Review per-refresh rebuild_scale
+against the anchor scale (bias), windowed Sim(3) scales and the native5% gate.
+Object is not rerun: its deficit is between refreshes (FINDINGS audit26487/26488).

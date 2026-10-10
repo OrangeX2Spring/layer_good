@@ -4,6 +4,8 @@ Stage 'gate' is the reviewed 26476 matrix. Stage 'pinned' runs native, the unpin
 three-image control (must reproduce 26476) and three-image with pinned rebuilds.
 Stage 'scale' runs native, the pinned three-image control (must reproduce 26481),
 three-image with pinned rebuilds and scale, and two-image with pinned rebuilds.
+Stage 'shared' runs native, the same pinned control and three-image with pinned
+rebuilds and scale from the shared previous keyframe.
 """
 import argparse
 import io
@@ -28,12 +30,16 @@ CONTROLS = dict(
     pinned=('tum_26476_camera_history_three_frame.tar',
             '79256c7f09ff56a2e694d1cbce02ffcf5f4f11afab70532076f1985c120d0590', 'three_frame'),
     scale=('tum_26481_camera_history_three_frame_pinned.tar',
-           'f7b6ffe7f54cc7bdef8c25037138715f38f24edbb14093fdb2f1148f726330f8', 'three_frame_pinned'))
+           'f7b6ffe7f54cc7bdef8c25037138715f38f24edbb14093fdb2f1148f726330f8', 'three_frame_pinned'),
+    shared=('tum_26481_camera_history_three_frame_pinned.tar',
+            'f7b6ffe7f54cc7bdef8c25037138715f38f24edbb14093fdb2f1148f726330f8', 'three_frame_pinned'))
 ARMS = dict(gate=('native', 'no_retirement', 'three_frame'),
             pinned=('native', 'three_frame', 'three_frame_pinned'),
-            scale=('native', 'three_frame_pinned', 'three_frame_pinned_scale', 'no_retirement_pinned'))
+            scale=('native', 'three_frame_pinned', 'three_frame_pinned_scale', 'no_retirement_pinned'),
+            shared=('native', 'three_frame_pinned', 'three_frame_pinned_shared'))
 # Within-job comparison arm for each pinned variant.
-COMPARE = dict(three_frame_pinned='three_frame', three_frame_pinned_scale='three_frame_pinned')
+COMPARE = dict(three_frame_pinned='three_frame', three_frame_pinned_scale='three_frame_pinned',
+               three_frame_pinned_shared='three_frame_pinned')
 
 
 def refresh_pairs(result):
@@ -125,6 +131,8 @@ def main(args):
                 command.append('--pin-rebuilds')
             if arm.endswith('_scale'):
                 command.append('--pin-scale')
+            if arm.endswith('_shared'):
+                command.append('--shared-scale')
         report['active_run'] = dict(name=name, command=command)
         write_json(comparison / 'comparison.json', report)
         print('CAMERA HISTORY ARM', arm, frames, flush=True)
@@ -153,6 +161,7 @@ def main(args):
             assert config['boundaries'] == [0, frames] and not summary['events']
             assert bool(config['pin_rebuilds']) == ('pinned' in arm)
             assert bool(config['pin_scale']) == arm.endswith('_scale')
+            assert bool(config['shared_scale']) == arm.endswith('_shared')
             current_decisions = [{k: v for k, v in json.loads(line).items() if k != 'seconds'}
                 for line in (result / 'segmentation_live.jsonl').read_text().splitlines()]
             assert len(current_decisions) == frames

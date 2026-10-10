@@ -14,8 +14,8 @@ MODE=${1:-sweep}
 TASK_DEADLINE=
 if [ "$MODE" = camera-history ]; then
     case "${2:-gate}" in
-        gate|pinned|scale) ;;
-        *) echo 'Choose camera-history gate, pinned or scale' >&2; exit 2 ;;
+        gate|pinned|scale|shared) ;;
+        *) echo 'Choose camera-history gate, pinned, scale or shared' >&2; exit 2 ;;
     esac
     TASK_DEADLINE=$(( $(date +%s) + 7200 ))
 fi

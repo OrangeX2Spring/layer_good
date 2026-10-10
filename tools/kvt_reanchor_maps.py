@@ -59,6 +59,7 @@ def main(args):
         assert args.detector_config is not None and args.segmentation is None
     assert args.disable_retirement or not args.pin_rebuilds
     assert args.pin_rebuilds or not args.pin_scale
+    assert not args.shared_scale or (args.pin_rebuilds and not args.pin_scale and args.local_keyframe_cap == 3)
     if args.native_metrics:
         assert args.detector_config is not None, 'Non-office runs require a live detector policy'
 
@@ -105,6 +106,7 @@ def main(args):
         disable_retirement=args.disable_retirement,
         pin_rebuilds=args.pin_rebuilds and 'each rebuild rigidly pinned to the outgoing pose of its frame',
         pin_scale=args.pin_scale and 'rebuild scale from the outgoing bank depths of the refresh frame',
+        shared_scale=args.shared_scale and 'rebuild scale from the previous keyframe shared by both rebuilds',
         segmentation_policy=detector_policy if detector is not None else None,
         gt_used_by_tracker=False, seed=0))
     torch.manual_seed(0)
@@ -131,7 +133,8 @@ def main(args):
             stream.flush()
         tracker = ReanchorMaps(model, boundaries, log, save_bridge,
                                local_keyframe_cap=args.local_keyframe_cap,
-                               pin_rebuilds=args.pin_rebuilds, pin_scale=args.pin_scale)
+                               pin_rebuilds=args.pin_rebuilds, pin_scale=args.pin_scale,
+                               shared_scale=args.shared_scale)
         torch.cuda.reset_peak_memory_stats()
         torch.cuda.synchronize()
         started = time.perf_counter()
@@ -248,4 +251,6 @@ if __name__ == '__main__':
                         help='Keep each refresh frame at its outgoing pose; requires --disable-retirement')
     parser.add_argument('--pin-scale', action='store_true',
                         help='Take rebuild scale from the refresh frame, not the anchor; requires --pin-rebuilds')
+    parser.add_argument('--shared-scale', action='store_true',
+                        help='Take rebuild scale from the shared previous keyframe; cap 3 with --pin-rebuilds')
     main(parser.parse_args())
