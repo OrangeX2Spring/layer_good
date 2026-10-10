@@ -277,3 +277,13 @@ tum_26488_object_history_r0_three_frame_pinned.tar within1e-4),
 three_frame_pinned_novelty. Markers: OBJECT HISTORY COMPLETE novelty 3, OBJECT HISTORY
 JOB OK. comparison.json records novelty_refreshes and per-rebuild triggers; extra
 rebuilds cost time, so report speed with accuracy.
+
+Outcome, 2026-10-10: 26497 failed the fused contract (log dict reassigned; fixed in
+fork fd90576), 26498 cancelled. 26499 (camera fused) and 26500 (object novelty) ran
+at parent 9ba9929/fork fd90576 with both controls reproduced byte-for-byte. Fused
+scale stays within a few percent of the anchor scale and matches the anchor-scale pin
+(ATE 0.5293 vs 0.5250), so continuity scale is closed. Novelty refresh fired 112 extra
+rebuilds on ketchup, 15 pins exceeded 90 degrees, and the Sim(3) alignment scale
+collapsed (0.066 vs 0.328). Object translation RPE is measured after that alignment,
+so its drop is not evidence of better tracking. Numbers are in FINDINGS (gate and
+audit 26499/26500).
