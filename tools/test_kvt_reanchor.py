@@ -128,7 +128,7 @@ class ReanchorTests(unittest.TestCase):
     def test_short_final_segment_connects_at_eof(self):
         class LocalMap:
             def __init__(self, model, mode, log, save, query_executor=None, local_keyframe_cap=2,
-                         pin_rebuilds=False):
+                         pin_rebuilds=False, pin_scale=False):
                 self.model = model
                 self.transform = (torch.tensor(1., dtype=torch.float64),
                                   torch.eye(3, dtype=torch.float64), torch.zeros(3, dtype=torch.float64))
@@ -244,7 +244,7 @@ class ReanchorTests(unittest.TestCase):
 
         class LocalMap:
             def __init__(self, model, mode, log, save, query_executor=None, local_keyframe_cap=2,
-                         pin_rebuilds=False):
+                         pin_rebuilds=False, pin_scale=False):
                 self.model = model
                 self.transform = (torch.tensor(1., dtype=torch.float64),
                                   torch.eye(3, dtype=torch.float64), torch.zeros(3, dtype=torch.float64))
