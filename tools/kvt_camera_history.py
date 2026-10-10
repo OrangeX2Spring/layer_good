@@ -4,6 +4,7 @@ Stage 'gate' is the reviewed 26476 matrix. Stage 'pinned' runs native, the unpin
 three-image control (must reproduce 26476) and three-image with pinned rebuilds.
 """
 import argparse
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -67,7 +68,8 @@ def main(args):
     release_page_cache(args.out / REFERENCE, inputs)
     if args.stage == 'pinned':
         with tarfile.open(args.out / CONTROL) as packed:
-            control_trajectory = np.load(packed.extractfile('camera_history_three_frame/traj.npy'))
+            control_trajectory = np.load(io.BytesIO(
+                packed.extractfile('camera_history_three_frame/traj.npy').read()))
     manifest = json.loads((inputs / 'manifest.json').read_text())
     frames = manifest['frames']
     assert frames == len(manifest['inputs']) == 2585 and manifest['resize_dim'] == 308
