@@ -38,15 +38,17 @@ control), then the two anchor-only arms.
 
 ## Running
 
-Three independent jobs, each from layer_good: `bash tools/kvt_tum.sbatch segment-eval
-tum-short`, `... tum-long`, `... arctic`. The driver's deadline is the job's own Slurm
+Each group is one job from layer_good: `bash tools/kvt_tum.sbatch segment-eval <group>`
+with group tum-short, tum-long, arctic or tum-long-arctic (both in one job). CAMP allows
+one running and two submitted jobs per user, so splitting gives no parallelism: run
+tum-short and tum-long-arctic. The driver's deadline is the job's own Slurm
 EndTime; choose `-t` per job. It stops before starting a run that would not finish
 (15 minutes kept for archiving) and records `stop_reason`. Contract suites
 (segment_detector, handoff, reanchor 24 tests) run first.
 
 Markers: `SEGMENT EVAL <scene> <arm> ATE/RPE/p99 ... fps ... peak GiB ... cuts ...` per
 run, then `SEGMENT EVAL COMPLETE <group> <runs>` and `SEGMENT EVAL <group> JOB OK`
-(tum-short 24 runs, tum-long 8, arctic 12). Outputs in kvt_tum_out: per-run archives,
+(tum-short 24 runs, tum-long 8, arctic 12, tum-long-arctic 20). Outputs in kvt_tum_out: per-run archives,
 `<tag>_segment_eval_<group>_comparison.tar` (all metrics, timing, FPS, peak memory,
 cut counts, ratios to native and to the segmented control), TUM input archives
 (model_rgb and manifests), context and all_runs.

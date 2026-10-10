@@ -29,8 +29,8 @@ if [ "$MODE" = object-history ]; then
 fi
 if [ "$MODE" = segment-eval ]; then
     case "${2:-}" in
-        tum-short|tum-long|arctic) ;;
-        *) echo 'Choose segment-eval tum-short, tum-long or arctic' >&2; exit 2 ;;
+        tum-short|tum-long|arctic|tum-long-arctic) ;;
+        *) echo 'Choose segment-eval tum-short, tum-long, arctic or tum-long-arctic' >&2; exit 2 ;;
     esac
 fi
 if [ "$MODE" = adaptive-tokens ] && [ "${2:-gate}" = task-policy ]; then
@@ -156,7 +156,7 @@ if [ "$MODE" = segment-eval ]; then
        "$REPO/tools/kvt_patch_select.py" "$REPO/tools/kvt_bridge_cameras.py" \
        "$REPO/tools/kvt_office_segments.py" "$REPO/tools/test_kvt_segment_detector.py" \
        "$REPO/tools/test_kvt_handoff.py" "$REPO/tools/test_kvt_reanchor.py" "$WORK/context/"
-    if [ "$2" = arctic ]; then
+    if [ "$2" = arctic ] || [ "$2" = tum-long-arctic ]; then
         sha256sum "$ROOT/kvt_arctic_out/prepared.tar" > "$WORK/context/arctic_inputs.sha256"
     fi
 fi

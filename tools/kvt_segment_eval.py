@@ -1,7 +1,8 @@
 """CAMP-only evaluation of the user's segmentation + reanchor design on every tracked sequence.
 
 Groups: 'tum-short' (five fr1 sequences and fr3 office), 'tum-long' (fr2 large with/no
-loop), 'arctic' (box, ketchup, espressomachine). Arms per sequence:
+loop), 'arctic' (box, ketchup, espressomachine), and 'tum-long-arctic' (both of the
+latter in one job, since one running job per user is allowed). Arms per sequence:
 - native: KV-Tracker unchanged, fresh in-job run on the same saved pixels;
 - segmented: the current design (live ORB cuts at 25 inliers, two-image segment banks,
   pose-pinned point-fit connection; objects use the 26458 anchor-support policy);
@@ -29,6 +30,7 @@ GROUPS = {'tum-short': ('freiburg1_xyz', 'freiburg1_rpy', 'freiburg1_desk2', 'fr
                         'freiburg1_room', 'freiburg3_long_office_household'),
           'tum-long': ('freiburg2_large_with_loop', 'freiburg2_large_no_loop'),
           'arctic': ('box_grab_01', 'ketchup_grab_01', 'espressomachine_grab_01')}
+GROUPS['tum-long-arctic'] = GROUPS['tum-long'] + GROUPS['arctic']
 FRAMES = dict(freiburg1_xyz=798, freiburg1_rpy=723, freiburg1_desk2=640, freiburg1_desk=613,
               freiburg1_room=1362, freiburg3_long_office_household=2585,
               freiburg2_large_with_loop=5182, freiburg2_large_no_loop=3359)
@@ -45,7 +47,6 @@ RESERVE_SECONDS = 900  # left for archiving after the last run
 
 def main(args):
     tools = Path(__file__).resolve().parent
-    objects = args.group == 'arctic'
     comparison = args.work / 'runs' / f'segment_eval_{args.group}'
     comparison.mkdir(parents=True)
     report = dict(group=args.group, sequences=GROUPS[args.group], arms=ARMS, complete=False, runs=[],
@@ -73,10 +74,11 @@ def main(args):
         command = [sys.executable, str(tools / 'kvt_reanchor_maps.py'), '--work', str(args.work),
                    '--out', str(args.out), '--tag', args.tag, '--inputs', str(inputs),
                    '--native-metrics', str(native_metrics), '--name', name, *extra]
-        run(command + (['--object-scene', scene] if objects else []))
+        run(command + (['--object-scene', scene] if scene in GROUPS['arctic'] else []))
         return args.work / 'runs' / name
 
     def record(scene, arm, result, native_dir, frames):
+        objects = scene in GROUPS['arctic']
         summary = json.loads((result / 'summary.json').read_text())
         if arm != 'native':
             with np.load(result / 'evaluation.npz') as current, np.load(native_dir / 'evaluation.npz') as base:
@@ -102,13 +104,14 @@ def main(args):
               'fps', round(row['fps'], 2), 'peak GiB', round(row['peak_allocated_gib'], 2),
               'cuts', row['cuts'], flush=True)
 
-    if objects:
-        # Live native with SAM masks, saved masked inputs, matched native replay and the
-        # current design's anchor-support control, exactly as job 26458 for ketchup.
-        run([sys.executable, str(tools / 'kvt_segment_arctic.py'), '--work', str(args.work),
-             '--out', str(args.out), '--tag', args.tag, '--object-coverage',
-             '--coverages', 'anchor_support', '--scenes', *GROUPS['arctic']])
     for scene in GROUPS[args.group]:
+        objects = scene in GROUPS['arctic']
+        if scene == GROUPS['arctic'][0]:
+            # Live native with SAM masks, saved masked inputs, matched native replay and the
+            # current design's anchor-support control, exactly as job 26458 for ketchup.
+            run([sys.executable, str(tools / 'kvt_segment_arctic.py'), '--work', str(args.work),
+                 '--out', str(args.out), '--tag', args.tag, '--object-coverage',
+                 '--coverages', 'anchor_support', '--scenes', *GROUPS['arctic']])
         if objects:
             inputs = args.work / 'inputs' / scene
             native_dir = args.work / 'runs' / f'arctic_native_replay_{scene}'
