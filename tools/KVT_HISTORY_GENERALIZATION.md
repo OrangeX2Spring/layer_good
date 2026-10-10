@@ -354,3 +354,20 @@ in kvt_tum_out. Markers: SEGMENTED CONTROL max abs difference from 26159, CAMERA
 HISTORY COMPLETE overlap 3 2585, CAMERA HISTORY JOB OK. Success: segmented_overlap
 lowers ATE versus the in-job segmented control without worse RPE/p99; native within
 5% remains the target. Report extra query time and peak memory.
+
+Outcome, 2026-10-10: 26514 ran at 4296010/2175d38; the segmented control reproduced
+26159 bit-for-bit (difference 0.0). The overlap connection is rejected: its scale is
+larger than the point fit at 24 of 34 connections (+6.6% mean log), compounding to
+ATE 1.0869 m versus 0.0838 m (FINDINGS gate 26514).
+
+## Three-image segment banks on the user's design
+
+Same live cuts (ORB 25 inliers, no maximum) and point-fit connections as 26159; only
+the segment bank changes from [segment anchor, latest] to [segment anchor, previous,
+latest] (runner --local-keyframe-cap 3 with retirement on). Targets the within-segment
+noise behind the RPE/p99 gap (26159 non-seam RMS 1.31-1.46 cm versus native ~1.1).
+Entry from layer_good: `bash tools/kvt_tum.sbatch camera-history segment-three`:
+native, segmented (control; cuts asserted equal to 26159, trajectory difference
+printed), segmented_three. Markers: SEGMENTED CONTROL max abs difference from 26159,
+CAMERA HISTORY COMPLETE segment-three 3 2585, CAMERA HISTORY JOB OK. Success:
+segmented_three lowers RPE and p99 versus the in-job control without worse ATE.

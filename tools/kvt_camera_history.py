@@ -12,7 +12,9 @@ retrieved from a CPU memory of all keyframes with fixed poses (no anchor, no pin
 Stage 'overlap' returns to the user's segmentation + reanchor design (live ORB cuts at
 25 inliers, old map retired): native, the segmented control (same cuts as 26159) and
 the same with the overlap connection (old map kept to b+49; scale from shared
-camera displacements on every fifth frame).
+camera displacements on every fifth frame). Stage 'segment-three' keeps the same cuts
+and point-fit connections and changes only the segment bank to three images
+(segment anchor + previous + latest keyframe).
 """
 import argparse
 import io
@@ -50,14 +52,16 @@ ARMS = dict(gate=('native', 'no_retirement', 'three_frame'),
             shared=('native', 'three_frame_pinned', 'three_frame_pinned_shared'),
             fused=('native', 'three_frame_pinned', 'three_frame_pinned_fused'),
             retrieval=('native', 'three_frame_pinned', 'retrieval_bank'),
-            overlap=('native', 'segmented', 'segmented_overlap'))
+            overlap=('native', 'segmented', 'segmented_overlap'),
+            **{'segment-three': ('native', 'segmented', 'segmented_three')})
 # Reviewed 26159 segmented reanchor at 25 inliers (Mac audit): archive and SHA256.
 SEGMENTED = ('tum_26159_segment_reanchor_inliers25.tar',
              'c6617206f6f8bd18da0276c9606c5c9ac5575f80fd0d10a37a6d087c0b15af32')
 # Within-job comparison arm for each pinned variant.
 COMPARE = dict(three_frame_pinned='three_frame', three_frame_pinned_scale='three_frame_pinned',
                three_frame_pinned_shared='three_frame_pinned', three_frame_pinned_fused='three_frame_pinned',
-               retrieval_bank='three_frame_pinned', segmented_overlap='segmented')
+               retrieval_bank='three_frame_pinned', segmented_overlap='segmented',
+               segmented_three='segmented')
 
 
 def refresh_pairs(result):
@@ -83,7 +87,7 @@ def main(args):
     if args.stage in CONTROLS:
         control_archive, control_sha256, control_arm = CONTROLS[args.stage]
         sources[control_archive] = control_sha256
-    if args.stage == 'overlap':
+    if args.stage in ('overlap', 'segment-three'):
         sources[SEGMENTED[0]] = SEGMENTED[1]
     for name, digest in sources.items():
         assert sha256(args.out / name) == digest, name
@@ -105,7 +109,7 @@ def main(args):
         with tarfile.open(args.out / control_archive) as packed:
             control_trajectory = np.load(io.BytesIO(
                 packed.extractfile(f'camera_history_{control_arm}/traj.npy').read()))
-    if args.stage == 'overlap':
+    if args.stage in ('overlap', 'segment-three'):
         with tarfile.open(args.out / SEGMENTED[0]) as packed:
             segmented_trajectory = np.load(io.BytesIO(
                 packed.extractfile('segment_reanchor_inliers25/traj.npy').read()))
@@ -159,6 +163,8 @@ def main(args):
                 command.extend(['--detector-config', str(segment_policy)])
                 if arm == 'segmented_overlap':
                     command.append('--overlap-bridge')
+                if arm == 'segmented_three':
+                    command.extend(['--local-keyframe-cap', '3'])
             elif arm == 'retrieval_bank':
                 command.extend(['--detector-config', str(policy), '--disable-retirement',
                                 '--retrieval-bank', '4'])
@@ -202,6 +208,8 @@ def main(args):
             assert config['boundaries'] == expected_boundaries
             assert len(summary['events']) == len(expected_boundaries) - 2
             assert bool(config['overlap_bridge']) == (arm == 'segmented_overlap')
+            if arm.startswith('segmented'):
+                assert config['local_keyframe_cap'] == (3 if arm == 'segmented_three' else 2)
             assert bool(config['pin_rebuilds']) == ('pinned' in arm)
             assert bool(config['pin_scale']) == arm.endswith('_scale')
             assert bool(config['shared_scale']) == arm.endswith(('_shared', '_fused'))
