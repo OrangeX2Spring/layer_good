@@ -10,6 +10,7 @@ import torch
 from kv_tracker.map_handoff import MapHandoff, transform_pose
 from kv_tracker.reanchor_maps import ReanchorMaps
 from kv_tracker.retrieval_bank import RetrievalBank
+from kv_tracker.anchor_segments import AnchorSegments
 
 
 def pose(angle, position):
@@ -27,7 +28,81 @@ def grid(sign=1.):
     return torch.stack(((x - 40) / 40 * z, (y - 40) / 40 * z, z), -1)
 
 
+def fake_anchor_pi3(pose_for):
+    """Pi3 stand-in: the frame number is the first pixel; one grid pointmap everywhere."""
+    def pi3(model, images, device, cam_only=False, store_cache=False, use_cache=False):
+        batch = images[0]
+        n, frame = batch.shape[0], int(batch[0, 0, 0, 0])
+        if store_cache:
+            model.cache = {1: {'k': torch.ones(4)}}
+            return (grid()[None, None].repeat(1, n, 1, 1, 1), torch.eye(4).repeat(1, n, 1, 1),
+                    torch.ones(1, n, 80, 80, 1), None, None, torch.eye(4))
+        if cam_only:
+            return pose_for(frame)[None, None]
+        return grid()[None, None], pose_for(frame)[None, None], torch.ones(1, 1, 80, 80, 1), None, None, None
+    return pi3
+
+
+def yaw(degrees, position=(0., 0., 0.)):
+    c, s = np.cos(np.radians(degrees)), np.sin(np.radians(degrees))
+    result = torch.eye(4)
+    result[:3, :3] = torch.tensor([[c, 0, s], [0, 1, 0], [-s, 0, c]])
+    result[:3, 3] = torch.tensor(position)
+    return result
+
+
 class ReanchorTests(unittest.TestCase):
+    def test_anchor_segments_cut_on_schedule_and_release_old_kv(self):
+        model = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]), cache={})
+        rows = []
+        tracker = AnchorSegments(model, rows.append, 'schedule')
+        refs = []
+        with patch('torch.cuda.synchronize'), patch('kv_tracker.anchor_segments.pi3_inference',
+                fake_anchor_pi3(lambda frame: torch.eye(4))):
+            for frame in range(150):
+                if frame in (48, 96):
+                    refs += [weakref.ref(t) for layer in model.cache.values() for t in layer.values()]
+                pose = tracker.step(np.full((80, 80, 3), frame, dtype=np.uint8), frame)
+                np.testing.assert_allclose(pose, np.eye(4), atol=1e-5)
+        self.assertEqual([c['frame'] for c in tracker.cuts], [48, 96, 144])
+        self.assertTrue(all(ref() is None for ref in refs))
+        self.assertTrue(all(abs(c['scale'] - 1) < 1e-6 for c in tracker.cuts))
+        # A cut frame is still answered by the old anchor before the new map starts.
+        self.assertTrue(all(r['bank_ids'] == [(r['frame'] - 1) // 48 * 48] for r in rows if r['kind'] == 'query'))
+
+    def test_anchor_segments_cut_when_anchor_points_leave_view(self):
+        model = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]), cache={})
+        rows = []
+        tracker = AnchorSegments(model, rows.append, 'covisibility')
+        with patch('torch.cuda.synchronize'), patch('kv_tracker.anchor_segments.pi3_inference',
+                fake_anchor_pi3(lambda frame: yaw(2. * frame))):
+            frame = 0
+            while not tracker.cuts:
+                tracker.step(np.full((80, 80, 3), frame, dtype=np.uint8), frame)
+                frame += 1
+        signals = {r['frame']: r['signal'] for r in rows if r['kind'] == 'query'}
+        cut = tracker.cuts[0]['frame']
+        self.assertGreater(cut, 1)
+        self.assertLess(signals[cut], .7)
+        self.assertGreaterEqual(signals[cut - 1], .7)
+
+    def test_anchor_segments_cut_when_object_view_turns(self):
+        model = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]), cache={})
+        tracker = AnchorSegments(model, lambda row: None, 'object_view')
+        center = grid().double().reshape(-1, 3).mean(0).float()
+
+        def orbit(frame):
+            # Camera circles the object centre: its viewing direction turns one degree per frame.
+            return yaw(0., (center + yaw(float(frame))[:3, :3] @ (-center)).tolist())
+
+        mask = torch.ones(80, 80, dtype=torch.bool)
+        with patch('torch.cuda.synchronize'), patch('kv_tracker.anchor_segments.pi3_inference',
+                fake_anchor_pi3(orbit)):
+            for frame in range(22):
+                tracker.step(np.full((80, 80, 3), frame, dtype=np.uint8), frame, mask)
+        self.assertEqual([c['frame'] for c in tracker.cuts], [21])
+        self.assertAlmostEqual(tracker.cuts[0]['signal'], 21., places=2)
+
     def test_retrieval_bank_keeps_covering_keyframes_with_fixed_poses(self):
         model = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]), cache={})
         rows, calls, stored = [], [], {}

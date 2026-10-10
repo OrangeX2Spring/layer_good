@@ -79,8 +79,10 @@ def replay_native(config_path):
         frame_source=frames(), pi3_model=model)
     trajectory = np.load(result / 'traj.npy')
     assert trajectory.shape == (manifest['frames'], 4, 4) and np.isfinite(trajectory).all()
-    # Saved pixels must reproduce the historical native trajectory before comparison.
-    np.testing.assert_allclose(trajectory, np.load(config['reference_trajectory']), rtol=1e-4, atol=1e-4)
+    # Saved pixels must reproduce the historical native trajectory before comparison;
+    # a fresh native without a stored reference is the matched in-job control instead.
+    if 'reference_trajectory' in config:
+        np.testing.assert_allclose(trajectory, np.load(config['reference_trajectory']), rtol=1e-4, atol=1e-4)
     timing['includes'] = 'saved pixels/masks, hashing, upload and tracking; excludes SAM/model load/final serialization'
     if camera:
         from kvt_tum_run import evaluate
@@ -89,7 +91,8 @@ def replay_native(config_path):
             metrics['translation_p99_m'] = float(np.quantile(pairs['rpe_translation_per_pair_m'], .99))
     else:
         metrics = evaluate_object(config['scene'], result, manifest['frames'])
-    write_json(result / 'summary.json', dict(metrics=metrics, timing=timing, native_fidelity=True))
+    write_json(result / 'summary.json', dict(metrics=metrics, timing=timing,
+                                             native_fidelity='reference_trajectory' in config))
     if config.get('profile_forward', False):
         write_json(result / 'forward_timing.json', forward_timing.finish())
         from kvt_inference_timing import benchmark_cached_heads
@@ -175,7 +178,7 @@ def main(args):
             with np.load(native / 'evaluation.npz') as n, np.load(replay / 'evaluation.npz') as r:
                 np.testing.assert_array_equal(n['pair_end_frames'], r['pair_end_frames'])
             object_runs = {}
-            for coverage in ('image', 'anchor_support'):
+            for coverage in args.coverages:
                 selected_policy = dict(policy, coverage_mode=coverage, minimum_anchor_coverage=.5)
                 policy_path = evidence / f'policy_{coverage}.json'
                 write_json(policy_path, selected_policy)
@@ -258,6 +261,8 @@ if __name__ == '__main__':
     parser.add_argument('--tag')
     parser.add_argument('--scenes', nargs='+', choices=SCENES, default=SCENES)
     parser.add_argument('--object-coverage', action='store_true')
+    parser.add_argument('--coverages', nargs='+', choices=('image', 'anchor_support'),
+                        default=('image', 'anchor_support'))
     parser.add_argument('--native-replay', type=Path)
     args = parser.parse_args()
     if args.native_replay:

@@ -27,17 +27,24 @@ if [ "$MODE" = object-history ]; then
     esac
     TASK_DEADLINE=$(( $(date +%s) + HISTORY_SECONDS ))
 fi
+if [ "$MODE" = segment-eval ]; then
+    case "${2:-}" in
+        tum-short|tum-long|arctic) ;;
+        *) echo 'Choose segment-eval tum-short, tum-long or arctic' >&2; exit 2 ;;
+    esac
+fi
 if [ "$MODE" = adaptive-tokens ] && [ "${2:-gate}" = task-policy ]; then
     # Four-hour allocation: leave ten minutes for the EXIT archives.
     TASK_DEADLINE=$(( $(date +%s) + 13800 ))
 fi
-case "$MODE" in sweep|camera-history|object-history|segment-detector|oracle-maps|bridge-cameras|reanchor-maps|handoff-pilot|office-segments|bank-pilot|combined|correspondence|correspondence-gates|llm-packet|replay-fidelity|llm-compare|append|sensitivity|active-keyframes|patch-select|adaptive-tokens) ;;
+case "$MODE" in sweep|camera-history|object-history|segment-eval|segment-detector|oracle-maps|bridge-cameras|reanchor-maps|handoff-pilot|office-segments|bank-pilot|combined|correspondence|correspondence-gates|llm-packet|replay-fidelity|llm-compare|append|sensitivity|active-keyframes|patch-select|adaptive-tokens) ;;
     *) echo "Unknown mode: $MODE" >&2; exit 2 ;; esac
 test "$(uname -s)" = Linux
 test "$(hostname)" != head
 ROOT=/mnt/projects/gr/3DRecon
 if [ "$MODE" = bank-pilot ] || [ "$MODE" = office-segments ] || [ "$MODE" = handoff-pilot ] || [ "$MODE" = oracle-maps ] || \
-   [ "$MODE" = bridge-cameras ] || [ "$MODE" = reanchor-maps ] || [ "$MODE" = segment-detector ] || [ "$MODE" = object-history ] || [ "$MODE" = camera-history ]; then
+   [ "$MODE" = bridge-cameras ] || [ "$MODE" = reanchor-maps ] || [ "$MODE" = segment-detector ] || [ "$MODE" = object-history ] || \
+   [ "$MODE" = camera-history ] || [ "$MODE" = segment-eval ]; then
     # sbatch executes a spool copy, not the script in the checkout.
     REPO="$ROOT/layer_good"
 else
@@ -139,6 +146,19 @@ if [ "$MODE" = object-history ] || [ "$MODE" = camera-history ]; then
        "$REPO/tools/kvt_patch_select.py" "$REPO/tools/kvt_arctic_run.py" \
        "$REPO/tools/test_kvt_segment_detector.py" "$REPO/tools/test_kvt_handoff.py" \
        "$REPO/tools/test_kvt_reanchor.py" "$REPO/tools/test_kvt_object_history.py" "$WORK/context/"
+fi
+if [ "$MODE" = segment-eval ]; then
+    test ! -s "$WORK/context/parent.diff"
+    test ! -s "$WORK/context/tracker.diff"
+    cp "$REPO/tools/kvt_segment_eval.py" "$REPO/tools/KVT_SEGMENT_EVAL.md" \
+       "$REPO/tools/kvt_segment_arctic.py" "$REPO/tools/kvt_reanchor_maps.py" \
+       "$REPO/tools/kvt_segment_detector.py" "$REPO/tools/kvt_arctic_run.py" \
+       "$REPO/tools/kvt_patch_select.py" "$REPO/tools/kvt_bridge_cameras.py" \
+       "$REPO/tools/kvt_office_segments.py" "$REPO/tools/test_kvt_segment_detector.py" \
+       "$REPO/tools/test_kvt_handoff.py" "$REPO/tools/test_kvt_reanchor.py" "$WORK/context/"
+    if [ "$2" = arctic ]; then
+        sha256sum "$ROOT/kvt_arctic_out/prepared.tar" > "$WORK/context/arctic_inputs.sha256"
+    fi
 fi
 cp "$REPO/tools/kvt_tum.sbatch" "$REPO/tools/kvt_tum_run.py" \
    "$REPO/tools/kvt_tum_selector.py" "$REPO/tools/kvt_tum_sweep.py" \
@@ -359,6 +379,24 @@ if [ "$MODE" = correspondence-gates ]; then
 fi
 "${CONTAINER[@]}" python -m pip list --format=json > "$WORK/context/packages.json"
 "${CONTAINER[@]}" python "$REPO/tools/test_kvt_tum.py" 2>&1 | tee "$WORK/context/tests.log"
+if [ "$MODE" = segment-eval ]; then
+    for SUITE in segment_detector handoff reanchor; do
+        "${CONTAINER[@]}" python "$REPO/tools/test_kvt_${SUITE}.py" \
+            2>&1 | tee "$WORK/context/${SUITE}_contracts.log"
+    done
+    # The driver's deadline is this job's own Slurm end time, whatever -t was requested.
+    EVAL_END=$(sed -n 's/.*EndTime=\([^ ]*\).*/\1/p' "$WORK/context/slurm_job.txt")
+    EVAL_END=$(date -d "$EVAL_END" +%s)
+    EVAL_REMAINING=$(( EVAL_END - $(date +%s) - 300 ))
+    test "$EVAL_REMAINING" -gt 0
+    timeout --signal=TERM --kill-after=60s "${EVAL_REMAINING}s" \
+        "${CONTAINER[@]}" python "$REPO/tools/kvt_segment_eval.py" \
+        --work "$WORK" --out "$OUT" --tag "$TAG" --group "$2" --deadline "$EVAL_END" \
+        2>&1 | tee "$WORK/context/segment_eval.log"
+    test -f "$WORK/JOB_OK"
+    echo "SEGMENT EVAL $2 JOB OK"
+    exit 0
+fi
 if [ "$MODE" = object-history ] || [ "$MODE" = camera-history ]; then
     for SUITE in segment_detector handoff reanchor object_history; do
         "${CONTAINER[@]}" python "$REPO/tools/test_kvt_${SUITE}.py" \

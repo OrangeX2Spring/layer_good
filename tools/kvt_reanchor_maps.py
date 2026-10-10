@@ -36,6 +36,7 @@ def main(args):
     from kv_tracker.pi3_utilts import load_pi3_from_pretrained, move_pi3_mlps_to_bfloat32
     from kv_tracker.reanchor_maps import ReanchorMaps
     from kv_tracker.retrieval_bank import RetrievalBank
+    from kv_tracker.anchor_segments import AnchorSegments
 
     for name, expected in SOURCES.items():
         assert sha256(args.out / name) == expected, f'{name} differs from the reviewed archive'
@@ -69,11 +70,18 @@ def main(args):
     assert not args.two_way_bridge or not (args.disable_retirement or args.retrieval_bank or args.overlap_bridge)
     assert not args.latest_anchor or not (args.disable_retirement or args.retrieval_bank or args.overlap_bridge
                                           or args.two_way_bridge)
+    # Anchor-only segments choose their own cuts: no detector, no other connection option.
+    assert args.anchor_segments is None or not (
+        args.disable_retirement or args.retrieval_bank or args.overlap_bridge or args.two_way_bridge
+        or args.latest_anchor or args.pin_rebuilds or args.novelty_refresh
+        or args.segmentation or args.detector_config or args.local_keyframe_cap != 2)
+    assert args.anchor_segments != 'object_view' or args.object_scene
     cap = args.retrieval_bank or args.local_keyframe_cap
     if args.native_metrics:
-        assert args.detector_config is not None, 'Non-office runs require a live detector policy'
+        assert args.detector_config is not None or args.anchor_segments, \
+            'Non-office runs require a live detector policy or anchor-only segments'
 
-    boundaries = list(BOUNDARIES)
+    boundaries = [0, frames] if args.anchor_segments else list(BOUNDARIES)
     detector = None
     if args.segmentation is not None or args.detector_config is not None:
         from kvt_segment_detector import SegmentDetector, FlowSegmentDetector, POLICY, FLOW_POLICY
@@ -130,6 +138,9 @@ def main(args):
         fuse_scale=args.fuse_scale and 'geometric mean of the shared-keyframe chain and the anchor scale',
         novelty_refresh=args.novelty_refresh and 'extra rebuild after frame 49 when native check_if_keyframe fires',
         retrieval_bank=args.retrieval_bank,
+        anchor_segments=args.anchor_segments and dict(cut=args.anchor_segments, length=48, covisibility=.7,
+                                                      view_degrees=20., bank='segment anchor only, never rebuilt',
+                                                      connection='immediate at the cut: pose-pinned, point-fit scale'),
         admission=args.retrieval_bank and ('native check_if_keyframe against all stored keyframes'
                                            if args.object_scene else 'every 50 frames, uncapped'),
         segmentation_policy=detector_policy if detector is not None else None,
@@ -165,7 +176,10 @@ def main(args):
         if args.novelty_refresh or (args.retrieval_bank and args.object_scene):
             from main import check_if_keyframe  # native object keyframe rule, unchanged thresholds
             novelty = check_if_keyframe
-        if args.retrieval_bank:
+        if args.anchor_segments:
+            tracker = AnchorSegments(model, lambda row: log(dict(row, segment_start=0, global_frame=row['frame'])),
+                                     args.anchor_segments)
+        elif args.retrieval_bank:
             tracker = RetrievalBank(model, lambda row: log(dict(row, segment_start=0, global_frame=row['frame'])),
                                     capacity=args.retrieval_bank, novelty=novelty)
         else:
@@ -195,7 +209,7 @@ def main(args):
                 if decision['boundary'] and not args.disable_retirement:
                     boundaries.insert(-1, frame)
             mask = None
-            if novelty is not None:
+            if novelty is not None or args.anchor_segments == 'object_view':
                 mask = cv2.imread(str(inputs / 'model_masks' / Path(row['file']).name), cv2.IMREAD_GRAYSCALE) > 127
                 assert hashlib.sha256(mask.tobytes()).hexdigest() == row['model_mask_sha256'], frame
                 mask = torch.from_numpy(mask)
@@ -231,6 +245,9 @@ def main(args):
         for start, end, transform in zip(boundaries[:-1], boundaries[1:], tracker.transforms, strict=True)])
     np.save(result / 'traj.npy', global_poses)
     write_json(result / 'events.json', tracker.events)
+    if args.anchor_segments:
+        write_json(result / 'anchor_cuts.json', tracker.cuts)
+    cut_frames = [c['frame'] for c in tracker.cuts] if args.anchor_segments else boundaries[1:-1]
     write_json(result / 'transforms.json', [dict(start=start, scale=float(s),
         rotation=r.tolist(), translation=t.tolist())
         for start, (s, r, t) in zip(boundaries[:-1], tracker.transforms, strict=True)])
@@ -244,7 +261,7 @@ def main(args):
         rpe = q['translation_m'] if args.object_scene else q['rpe_translation_per_pair_m']
         pair_starts = q['pair_end_frames'] - 1 if args.object_scene else q['rpe_pair_start_indices']
         metrics['translation_p99_m'] = float(np.quantile(rpe, .99))
-        seams = np.isin(pair_starts, np.array(boundaries[1:-1]) - 1)
+        seams = np.isin(pair_starts, np.array(cut_frames, dtype=int) - 1)
         metrics['seams'] = dict(starts=pair_starts[seams].tolist(),
                                 translation_m=rpe[seams].tolist())
     assert (metrics['evaluated_frames'], metrics['rpe_pairs']) == (
@@ -262,7 +279,7 @@ def main(args):
         write_json(result / 'cached_head_benchmark.json', benchmark_cached_heads(model, image))
     write_json(result / 'summary.json', dict(metrics=metrics, native=native, margin=MARGIN,
         native_checks=checks, objective_achieved=all(checks.values()), timing=timing,
-        events=tracker.events))
+        events=tracker.events, cut_frames=cut_frames))
     archive_directory(result, args.out / f'{args.tag}_{args.name}.tar')
     write_json(args.work / f'{args.name}_archive.json',
                {f'{args.tag}_{args.name}.tar': sha256(args.out / f'{args.tag}_{args.name}.tar')})
@@ -304,6 +321,8 @@ if __name__ == '__main__':
                         help='Object scenes: also rebuild when native check_if_keyframe fires after frame 49')
     parser.add_argument('--overlap-bridge', action='store_true',
                         help='Keep the old map until b+49 and take connection scale from shared displacements')
+    parser.add_argument('--anchor-segments', choices=('schedule', 'covisibility', 'object_view'),
+                        help='Anchor-only segments cut every 48 frames or by a tracker-side signal; no detector')
     parser.add_argument('--latest-anchor', action='store_true',
                         help='Pin connection rotation/position on the old latest keyframe instead of b')
     parser.add_argument('--two-way-bridge', action='store_true',
