@@ -31,8 +31,12 @@ NOVELTY = ('native', 'three_frame_pinned', 'three_frame_pinned_novelty')
 # Stage 'retrieval': the same pinned control and a four-image GPU bank retrieved from a
 # CPU memory of all keyframes (native's object rule over the whole memory, fixed poses).
 RETRIEVAL = ('native', 'three_frame_pinned', 'retrieval_bank')
+# Stage 'two-way': the user's segmented reanchor (26458 policy; must reproduce it) and the
+# same cuts with the two-frame confidence-weighted connection scale.
+TWO_WAY = ('native', 'reanchor', 'reanchor_twoway')
 COMPARE = dict(three_frame_pinned='three_frame', three_frame_pinned_scale='three_frame_pinned',
-               three_frame_pinned_novelty='three_frame_pinned', retrieval_bank='three_frame_pinned')
+               three_frame_pinned_novelty='three_frame_pinned', retrieval_bank='three_frame_pinned',
+               reanchor_twoway='reanchor')
 ORDERS = (('native', 'reanchor', 'no_retirement'),
           ('reanchor', 'no_retirement', 'native'),
           ('no_retirement', 'native', 'reanchor'))
@@ -78,9 +82,9 @@ def main(args):
     assert tracker_commit == expected_tracker, 'Tracker must match the published parent gitlink'
     orders = (('native', 'no_retirement', 'three_frame'),) if args.stage == 'three-frame' else (
         (PINNED,) if args.stage == 'pinned' else (NOVELTY,) if args.stage == 'novelty' else
-        (RETRIEVAL,) if args.stage == 'retrieval' else
+        (RETRIEVAL,) if args.stage == 'retrieval' else (TWO_WAY,) if args.stage == 'two-way' else
         ORDERS[:1] if args.stage == 'pilot' else ORDERS)
-    profiled = args.stage in ('three-frame', 'pinned', 'novelty', 'retrieval')
+    profiled = args.stage in ('three-frame', 'pinned', 'novelty', 'retrieval', 'two-way')
     source_archives = dict(SOURCES)
     if args.stage == 'three-frame':
         source_archives['tum_26471_object_history_r0_no_retirement.tar'] = (
@@ -190,8 +194,10 @@ def main(args):
                     '--work', str(args.work), '--out', str(args.out), '--tag', args.tag,
                     '--inputs', str(inputs), '--native-metrics', str(native_metrics),
                     '--detector-config', str(policy), '--object-scene', SCENE, '--name', name]
-                if arm != 'reanchor':
+                if not arm.startswith('reanchor'):
                     command.append('--disable-retirement')
+                if arm == 'reanchor_twoway':
+                    command.append('--two-way-bridge')
                 if arm.startswith('three_frame'):
                     command.extend(['--local-keyframe-cap', '3'])
                 if 'pinned' in arm:
@@ -260,18 +266,24 @@ def main(args):
                 row['improves_two_image'] = all(value < 1 for value in row['two_image_ratios'].values())
             if arm != 'native':
                 actual = json.loads((result / 'config.json').read_text())['boundaries']
-                assert actual == (config['boundaries'] if arm == 'reanchor' else [0, manifest['frames']])
+                assert actual == (config['boundaries'] if arm.startswith('reanchor') else [0, manifest['frames']])
                 decisions = [json.loads(s) for s in (result / 'segmentation_live.jsonl').read_text().splitlines()]
                 expected = [json.loads(s) for s in (reanchor / 'segmentation_live.jsonl').read_text().splitlines()]
                 assert [{k: v for k, v in r.items() if k != 'seconds'} for r in decisions] == [
                     {k: v for k, v in r.items() if k != 'seconds'} for r in expected]
-                if arm != 'reanchor':
+                if not arm.startswith('reanchor'):
                     assert not metrics['events']
                 actual_config = json.loads((result / 'config.json').read_text())
                 assert bool(actual_config['pin_rebuilds']) == ('pinned' in arm)
                 assert bool(actual_config['pin_scale']) == arm.endswith('_scale')
                 assert bool(actual_config['novelty_refresh']) == arm.endswith('_novelty')
                 assert actual_config['retrieval_bank'] == (4 if arm == 'retrieval_bank' else None)
+                assert bool(actual_config['two_way_bridge']) == (arm == 'reanchor_twoway')
+                if arm == 'reanchor_twoway':
+                    row['connections'] = [{k: e.get(k) for k in (
+                        'boundary', 'point_fit_scale', 'two_way_scale', 'frame_b_scale', 'latest_frame',
+                        'latest_frame_scale', 'two_way_inliers', 'validation_median')} for e in metrics['events']]
+                    assert all(c['two_way_scale'] is not None for c in row['connections'])
                 row['error_groups'] = error_groups(result, reference, actual)
             archive_directory(result, args.out / f'{args.tag}_{name}.tar')
             row['archive_sha256'] = sha256(args.out / f'{args.tag}_{name}.tar')
@@ -293,7 +305,7 @@ if __name__ == '__main__':
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--tag', required=True)
     parser.add_argument('--stage', choices=('pilot', 'overnight', 'three-frame', 'pinned', 'novelty',
-                                            'retrieval'),
+                                            'retrieval', 'two-way'),
                         required=True)
     parser.add_argument('--deadline', type=float, required=True)
     parser.add_argument('--reviewed-pilot', type=Path)

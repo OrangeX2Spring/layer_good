@@ -14,7 +14,10 @@ Stage 'overlap' returns to the user's segmentation + reanchor design (live ORB c
 the same with the overlap connection (old map kept to b+49; scale from shared
 camera displacements on every fifth frame). Stage 'segment-three' keeps the same cuts
 and point-fit connections and changes only the segment bank to three images
-(segment anchor + previous + latest keyframe).
+(segment anchor + previous + latest keyframe). Stage 'two-way' keeps the same cuts and
+replaces each connection's scale by one confidence-weighted Sim(3) over two frames
+each map covers (b and the old map's latest keyframe), with two- and three-image
+segment banks.
 """
 import argparse
 import io
@@ -53,7 +56,8 @@ ARMS = dict(gate=('native', 'no_retirement', 'three_frame'),
             fused=('native', 'three_frame_pinned', 'three_frame_pinned_fused'),
             retrieval=('native', 'three_frame_pinned', 'retrieval_bank'),
             overlap=('native', 'segmented', 'segmented_overlap'),
-            **{'segment-three': ('native', 'segmented', 'segmented_three')})
+            **{'segment-three': ('native', 'segmented', 'segmented_three'),
+               'two-way': ('native', 'segmented', 'segmented_twoway', 'segmented_three_twoway')})
 # Reviewed 26159 segmented reanchor at 25 inliers (Mac audit): archive and SHA256.
 SEGMENTED = ('tum_26159_segment_reanchor_inliers25.tar',
              'c6617206f6f8bd18da0276c9606c5c9ac5575f80fd0d10a37a6d087c0b15af32')
@@ -61,7 +65,8 @@ SEGMENTED = ('tum_26159_segment_reanchor_inliers25.tar',
 COMPARE = dict(three_frame_pinned='three_frame', three_frame_pinned_scale='three_frame_pinned',
                three_frame_pinned_shared='three_frame_pinned', three_frame_pinned_fused='three_frame_pinned',
                retrieval_bank='three_frame_pinned', segmented_overlap='segmented',
-               segmented_three='segmented')
+               segmented_three='segmented', segmented_twoway='segmented',
+               segmented_three_twoway='segmented')
 
 
 def refresh_pairs(result):
@@ -87,7 +92,7 @@ def main(args):
     if args.stage in CONTROLS:
         control_archive, control_sha256, control_arm = CONTROLS[args.stage]
         sources[control_archive] = control_sha256
-    if args.stage in ('overlap', 'segment-three'):
+    if args.stage in ('overlap', 'segment-three', 'two-way'):
         sources[SEGMENTED[0]] = SEGMENTED[1]
     for name, digest in sources.items():
         assert sha256(args.out / name) == digest, name
@@ -109,7 +114,7 @@ def main(args):
         with tarfile.open(args.out / control_archive) as packed:
             control_trajectory = np.load(io.BytesIO(
                 packed.extractfile(f'camera_history_{control_arm}/traj.npy').read()))
-    if args.stage in ('overlap', 'segment-three'):
+    if args.stage in ('overlap', 'segment-three', 'two-way'):
         with tarfile.open(args.out / SEGMENTED[0]) as packed:
             segmented_trajectory = np.load(io.BytesIO(
                 packed.extractfile('segment_reanchor_inliers25/traj.npy').read()))
@@ -163,8 +168,10 @@ def main(args):
                 command.extend(['--detector-config', str(segment_policy)])
                 if arm == 'segmented_overlap':
                     command.append('--overlap-bridge')
-                if arm == 'segmented_three':
+                if '_three' in arm:
                     command.extend(['--local-keyframe-cap', '3'])
+                if arm.endswith('_twoway'):
+                    command.append('--two-way-bridge')
             elif arm == 'retrieval_bank':
                 command.extend(['--detector-config', str(policy), '--disable-retirement',
                                 '--retrieval-bank', '4'])
@@ -208,8 +215,9 @@ def main(args):
             assert config['boundaries'] == expected_boundaries
             assert len(summary['events']) == len(expected_boundaries) - 2
             assert bool(config['overlap_bridge']) == (arm == 'segmented_overlap')
+            assert bool(config['two_way_bridge']) == arm.endswith('_twoway')
             if arm.startswith('segmented'):
-                assert config['local_keyframe_cap'] == (3 if arm == 'segmented_three' else 2)
+                assert config['local_keyframe_cap'] == (3 if '_three' in arm else 2)
             assert bool(config['pin_rebuilds']) == ('pinned' in arm)
             assert bool(config['pin_scale']) == arm.endswith('_scale')
             assert bool(config['shared_scale']) == arm.endswith(('_shared', '_fused'))
@@ -248,12 +256,13 @@ def main(args):
             # Same cuts as 26159 are asserted above; trajectory identity is recorded, not required.
             row['difference_from_26159'] = float(np.abs(trajectory - segmented_trajectory).max())
             print('SEGMENTED CONTROL max abs difference from 26159', row['difference_from_26159'], flush=True)
-        if arm == 'segmented_overlap':
-            row['connections'] = [{k: e.get(k) for k in ('boundary', 'point_fit_scale', 'overlap_scale',
-                                                          'overlap_pairs', 'overlap_old_displacement',
-                                                          'validation_median', 'camera_rotation_deg')}
-                                  for e in summary['events']]
-            assert all(c['overlap_scale'] is not None for c in row['connections'])
+        if arm == 'segmented_overlap' or arm.endswith('_twoway'):
+            row['connections'] = [{k: e.get(k) for k in (
+                'boundary', 'point_fit_scale', 'overlap_scale', 'overlap_pairs', 'overlap_old_displacement',
+                'two_way_scale', 'frame_b_scale', 'latest_frame', 'latest_frame_scale', 'two_way_inliers',
+                'validation_median', 'camera_rotation_deg')} for e in summary['events']]
+            key = 'overlap_scale' if arm == 'segmented_overlap' else 'two_way_scale'
+            assert all(c[key] is not None for c in row['connections'])
         if arm == 'retrieval_bank':
             row['admissions'] = [{k: v for k, v in json.loads(line).items()
                                   if k in ('frame', 'bank_ids', 'scores', 'fit_scale', 'fit_accepted',

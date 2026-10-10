@@ -14,14 +14,14 @@ MODE=${1:-sweep}
 TASK_DEADLINE=
 if [ "$MODE" = camera-history ]; then
     case "${2:-gate}" in
-        gate|pinned|scale|shared|fused|retrieval|overlap|segment-three) ;;
-        *) echo 'Choose camera-history gate, pinned, scale, shared, fused, retrieval, overlap or segment-three' >&2; exit 2 ;;
+        gate|pinned|scale|shared|fused|retrieval|overlap|segment-three|two-way) ;;
+        *) echo 'Choose camera-history gate, pinned, scale, shared, fused, retrieval, overlap, segment-three or two-way' >&2; exit 2 ;;
     esac
     TASK_DEADLINE=$(( $(date +%s) + 7200 ))
 fi
 if [ "$MODE" = object-history ]; then
     case "${2:-pilot}" in
-        pilot|three-frame|pinned|novelty|retrieval) HISTORY_SECONDS=7200 ;;
+        pilot|three-frame|pinned|novelty|retrieval|two-way) HISTORY_SECONDS=7200 ;;
         overnight) HISTORY_SECONDS=28800 ;;
         *) echo 'Choose object-history pilot, three-frame, pinned, novelty, retrieval or overnight' >&2; exit 2 ;;
     esac

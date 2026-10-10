@@ -550,6 +550,51 @@ class ReanchorTests(unittest.TestCase):
         torch.testing.assert_close(transform_pose(torch.from_numpy(moved), tracker.transforms[1]),
                                    torch.from_numpy(expected).double(), atol=1e-5, rtol=1e-5)
 
+    def test_two_way_connection_fits_scale_on_both_shared_frames(self):
+        old_b = pose(.4, [1., 2., 3.])
+        test = self
+
+        class LocalMap:
+            def __init__(self, model, mode, log, save, query_executor=None, local_keyframe_cap=2,
+                         pin_rebuilds=False, pin_scale=False, shared_scale=False, fuse_scale=False,
+                         novelty_refresh=None):
+                self.model, self.rebuild_scale = model, 1.
+                self.transform = (torch.tensor(1., dtype=torch.float64),
+                                  torch.eye(3, dtype=torch.float64), torch.zeros(3, dtype=torch.float64))
+
+            def bootstrap(self, image, mask=None):
+                self.origin, self.images, self.ids = int(image[0, 0, 0]), [image], [0]
+                self.model.cache = {1: {'k': torch.ones(4)}}
+                return np.eye(4, dtype=np.float32)
+
+            def step(self, image, frame, update=True, dense_query=False, mask=None):
+                if frame == 49:
+                    self.images, self.ids = [self.images[0], image], [0, 49]
+                    self.model.cache = {1: {'k': torch.ones(8)}}
+                    # Old map: L = 49 in its own units; new map: b at half that scale.
+                    self.latest_points, self.latest_conf = 1.5 * grid(), torch.ones(80, 80)
+                    self.anchor_points, self.anchor_conf = grid() / 2, torch.ones(80, 80)
+                return old_b if self.origin == 0 and frame == 125 else np.eye(4, dtype=np.float32)
+
+            def query_geometry(self, image, frame):
+                if self.origin == 0:
+                    return grid().double(), torch.from_numpy(old_b).double(), torch.ones(80, 80)
+                test.assertEqual(int(image[0, 0, 0]), 49)  # the new map reads a copy of L
+                return (.75 * grid()).double(), torch.eye(4, dtype=torch.float64), torch.ones(80, 80)
+
+        model = SimpleNamespace(cache={})
+        with patch('kv_tracker.reanchor_maps.MapHandoff', LocalMap), patch(
+                'kv_tracker.reanchor_maps.bridge',
+                return_value=(None, dict(accepted=False, scale=3.), {})):
+            tracker = ReanchorMaps(model, (0, 125, 250), lambda row: None, lambda e, d: None, two_way=True)
+            for frame in range(250):
+                tracker.step(np.full((80, 80, 3), frame, dtype=np.uint8), frame)
+        event = tracker.events[0]
+        self.assertEqual((event['latest_frame'], event['point_fit_scale']), (49, 3.))
+        for key in ('two_way_scale', 'frame_b_scale', 'latest_frame_scale'):
+            self.assertAlmostEqual(event[key], 2., places=5)
+        self.assertAlmostEqual(float(tracker.transforms[1][0]), 2., places=5)
+
     def test_overlap_connection_requires_retirement_without_pin(self):
         with self.assertRaises(AssertionError):
             ReanchorMaps(SimpleNamespace(cache={}), (0, 60), Mock(), Mock(), pin_rebuilds=True,

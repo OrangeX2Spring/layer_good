@@ -66,6 +66,7 @@ def main(args):
     assert args.retrieval_bank is None or (args.disable_retirement and args.local_keyframe_cap == 2 and not (
         args.pin_rebuilds or args.shared_scale or args.novelty_refresh))
     assert not args.overlap_bridge or not (args.disable_retirement or args.retrieval_bank)
+    assert not args.two_way_bridge or not (args.disable_retirement or args.retrieval_bank or args.overlap_bridge)
     cap = args.retrieval_bank or args.local_keyframe_cap
     if args.native_metrics:
         assert args.detector_config is not None, 'Non-office runs require a live detector policy'
@@ -110,9 +111,11 @@ def main(args):
                    'later rebuilds rescaled to the first via the anchor pointmap'),
         connection='none' if args.disable_retirement else
                    'pose-anchored at b, ' + ('scale from old/new camera displacements on every 5th frame of '
-                   'b..b+48 (old map kept until b+49)' if args.overlap_bridge else 'point-fit scale') +
+                   'b..b+48 (old map kept until b+49)' if args.overlap_bridge else
+                   'confidence-weighted Sim(3) scale over b and the old latest keyframe (two-way)'
+                   if args.two_way_bridge else 'point-fit scale') +
                    ', always committed, 49-frame delay',
-        overlap_bridge=args.overlap_bridge,
+        overlap_bridge=args.overlap_bridge, two_way_bridge=args.two_way_bridge,
         history=f'first anchor with bounded {args.local_keyframe_cap}-image bank; no map retirement' if args.disable_retirement else
                 'old KV and images deleted at b', native=native, margin=MARGIN,
         short_tail='at EOF rebuild [anchor,last] and commit pending connection',
@@ -144,6 +147,8 @@ def main(args):
         np.savez(result / f'{name}.npz', **evidence)
         print('REANCHOR', event['boundary'], 'scale', round(event['scale'], 4),
               *(['overlap scale', round(event['overlap_scale'], 4)] if 'overlap_scale' in event else []),
+              *(['two-way scale', round(event['two_way_scale'], 4), 'b/L', round(event['frame_b_scale'], 4),
+                 round(event['latest_frame_scale'], 4)] if 'two_way_scale' in event else []),
               'point-fit checks', event['checks'], flush=True)
 
     with (result / 'inference.jsonl').open('w') as stream, torch.inference_mode():
@@ -162,7 +167,8 @@ def main(args):
                                    local_keyframe_cap=args.local_keyframe_cap,
                                    pin_rebuilds=args.pin_rebuilds, pin_scale=args.pin_scale,
                                    shared_scale=args.shared_scale, fuse_scale=args.fuse_scale,
-                                   novelty_refresh=novelty, overlap_stride=5 if args.overlap_bridge else None)
+                                   novelty_refresh=novelty, overlap_stride=5 if args.overlap_bridge else None,
+                                   two_way=args.two_way_bridge)
         torch.cuda.reset_peak_memory_stats()
         torch.cuda.synchronize()
         started = time.perf_counter()
@@ -292,6 +298,8 @@ if __name__ == '__main__':
                         help='Object scenes: also rebuild when native check_if_keyframe fires after frame 49')
     parser.add_argument('--overlap-bridge', action='store_true',
                         help='Keep the old map until b+49 and take connection scale from shared displacements')
+    parser.add_argument('--two-way-bridge', action='store_true',
+                        help='Connection scale from b and the old latest keyframe, each seen by both maps')
     parser.add_argument('--retrieval-bank', type=int, choices=(3, 4, 5),
                         help='GPU bank size retrieved from a CPU keyframe memory; requires --disable-retirement')
     main(parser.parse_args())

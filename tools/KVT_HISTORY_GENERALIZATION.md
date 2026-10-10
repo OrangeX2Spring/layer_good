@@ -371,3 +371,29 @@ native, segmented (control; cuts asserted equal to 26159, trajectory difference
 printed), segmented_three. Markers: SEGMENTED CONTROL max abs difference from 26159,
 CAMERA HISTORY COMPLETE segment-three 3 2585, CAMERA HISTORY JOB OK. Success:
 segmented_three lowers RPE and p99 versus the in-job control without worse ATE.
+
+## Two-way connection batch on the user's design (VGGT-Diff-inspired)
+
+VGGT-Diff (https://chenkangjie1123.github.io/VGGT-Diff) routes geometry by confidence
+and visibility and requires the same 3D point to agree across views along reliable
+tracks (Point-Track Residual Consistency). Applied to the user's connection, which
+carries about 90% of the ATE gap (FINDINGS 26159 analysis): ReanchorMaps two_way
+(runner --two-way-bridge) keeps rotation and position pinned at b and takes the scale
+from one robust confidence-weighted Sim(3) over two frames that each map covers:
+b (old map query, new map first rebuild) and the old map's latest keyframe L (old map
+rebuild geometry kept on the CPU with a copy of L's image; new map dense query of L at
+b+49). Query-versus-rebuild runs in opposite directions on the two frames. Weights are
+the product of both maps' confidences; three rejection rounds at 3x median residual
+(floor 1% of extent), then a final fit. Per-frame scales are logged as a consistency
+diagnostic. No extra GPU memory; one extra dense query per cut. Unlike 26514, no map
+is asked about frames outside its coverage.
+
+Entries, each from layer_good (one batch, two jobs):
+`bash tools/kvt_tum.sbatch camera-history two-way`: native, segmented (control; 26159
+cuts asserted, difference printed), segmented_twoway, segmented_three_twoway (adds
+three-image segment banks). Markers: CAMERA HISTORY COMPLETE two-way 4 2585, JOB OK.
+`bash tools/kvt_tum.sbatch object-history two-way`: ketchup native, reanchor (control;
+reproduces 26458 within 1e-4), reanchor_twoway. Markers: OBJECT HISTORY COMPLETE
+two-way 3, OBJECT HISTORY JOB OK.
+Success: two-way lowers ATE versus the in-job segmented control on both sequences
+without worse RPE/p99; for ketchup read alignment_scale and rotation RPE too.
