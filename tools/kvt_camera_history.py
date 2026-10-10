@@ -9,6 +9,10 @@ rebuilds and scale from the shared previous keyframe. Stage 'fused' replaces tha
 arm with the geometric mean of the shared-keyframe chain and the anchor scale.
 Stage 'retrieval' runs native, the same pinned control and a four-image GPU bank
 retrieved from a CPU memory of all keyframes with fixed poses (no anchor, no pin).
+Stage 'overlap' returns to the user's segmentation + reanchor design (live ORB cuts at
+25 inliers, old map retired): native, the segmented control (same cuts as 26159) and
+the same with the overlap connection (old map kept to b+49; scale from shared
+camera displacements on every fifth frame).
 """
 import argparse
 import io
@@ -45,11 +49,15 @@ ARMS = dict(gate=('native', 'no_retirement', 'three_frame'),
             scale=('native', 'three_frame_pinned', 'three_frame_pinned_scale', 'no_retirement_pinned'),
             shared=('native', 'three_frame_pinned', 'three_frame_pinned_shared'),
             fused=('native', 'three_frame_pinned', 'three_frame_pinned_fused'),
-            retrieval=('native', 'three_frame_pinned', 'retrieval_bank'))
+            retrieval=('native', 'three_frame_pinned', 'retrieval_bank'),
+            overlap=('native', 'segmented', 'segmented_overlap'))
+# Reviewed 26159 segmented reanchor at 25 inliers (Mac audit): archive and SHA256.
+SEGMENTED = ('tum_26159_segment_reanchor_inliers25.tar',
+             'c6617206f6f8bd18da0276c9606c5c9ac5575f80fd0d10a37a6d087c0b15af32')
 # Within-job comparison arm for each pinned variant.
 COMPARE = dict(three_frame_pinned='three_frame', three_frame_pinned_scale='three_frame_pinned',
                three_frame_pinned_shared='three_frame_pinned', three_frame_pinned_fused='three_frame_pinned',
-               retrieval_bank='three_frame_pinned')
+               retrieval_bank='three_frame_pinned', segmented_overlap='segmented')
 
 
 def refresh_pairs(result):
@@ -75,6 +83,8 @@ def main(args):
     if args.stage in CONTROLS:
         control_archive, control_sha256, control_arm = CONTROLS[args.stage]
         sources[control_archive] = control_sha256
+    if args.stage == 'overlap':
+        sources[SEGMENTED[0]] = SEGMENTED[1]
     for name, digest in sources.items():
         assert sha256(args.out / name) == digest, name
     with tarfile.open(args.out / 'tum_26127_context.tar') as packed:
@@ -95,6 +105,12 @@ def main(args):
         with tarfile.open(args.out / control_archive) as packed:
             control_trajectory = np.load(io.BytesIO(
                 packed.extractfile(f'camera_history_{control_arm}/traj.npy').read()))
+    if args.stage == 'overlap':
+        with tarfile.open(args.out / SEGMENTED[0]) as packed:
+            segmented_trajectory = np.load(io.BytesIO(
+                packed.extractfile('segment_reanchor_inliers25/traj.npy').read()))
+            segmented_boundaries = json.load(packed.extractfile(
+                'segment_reanchor_inliers25/config.json'))['boundaries']
     manifest = json.loads((inputs / 'manifest.json').read_text())
     frames = manifest['frames']
     assert frames == len(manifest['inputs']) == 2585 and manifest['resize_dim'] == 308
@@ -110,6 +126,9 @@ def main(args):
     write_json(comparison / 'comparison.json', report)
     policy = comparison / 'policy.json'
     write_json(policy, dict(detector='orb', minimum_inliers=25, maximum_segment_frames=200))
+    # 26159's live policy: same detector settings, no maximum segment length.
+    segment_policy = comparison / 'segment_policy.json'
+    write_json(segment_policy, dict(detector='orb', minimum_inliers=25))
     native_metrics = comparison / 'native_metrics.json'
     durations = []
     decisions = None
@@ -133,12 +152,18 @@ def main(args):
         else:
             command = [sys.executable, str(tools / 'kvt_reanchor_maps.py'),
                 '--work', str(args.work), '--out', str(args.out), '--tag', args.tag,
-                '--inputs', str(inputs), '--native-metrics', str(native_metrics),
-                '--detector-config', str(policy), '--name', name, '--disable-retirement',
+                '--inputs', str(inputs), '--native-metrics', str(native_metrics), '--name', name,
                 '--profile-forward']
-            if arm == 'retrieval_bank':
-                command.extend(['--retrieval-bank', '4'])
+            if arm.startswith('segmented'):
+                # The user's design: live cuts retire the old map; two-image segment banks.
+                command.extend(['--detector-config', str(segment_policy)])
+                if arm == 'segmented_overlap':
+                    command.append('--overlap-bridge')
+            elif arm == 'retrieval_bank':
+                command.extend(['--detector-config', str(policy), '--disable-retirement',
+                                '--retrieval-bank', '4'])
             else:
+                command.extend(['--detector-config', str(policy), '--disable-retirement'])
                 command.extend(['--local-keyframe-cap', '2' if arm.startswith('no_retirement') else '3'])
             if 'pinned' in arm:
                 command.append('--pin-rebuilds')
@@ -173,7 +198,10 @@ def main(args):
             write_json(native_metrics, summary['metrics'])
         else:
             config = json.loads((result / 'config.json').read_text())
-            assert config['boundaries'] == [0, frames] and not summary['events']
+            expected_boundaries = segmented_boundaries if arm.startswith('segmented') else [0, frames]
+            assert config['boundaries'] == expected_boundaries
+            assert len(summary['events']) == len(expected_boundaries) - 2
+            assert bool(config['overlap_bridge']) == (arm == 'segmented_overlap')
             assert bool(config['pin_rebuilds']) == ('pinned' in arm)
             assert bool(config['pin_scale']) == arm.endswith('_scale')
             assert bool(config['shared_scale']) == arm.endswith(('_shared', '_fused'))
@@ -208,6 +236,16 @@ def main(args):
                            for line in (result / 'inference.jsonl').read_text().splitlines()
                            if json.loads(line)['kind'] == 'update_total']
             assert len(row['pins']) == (frames - 1) // 50 and all('pin_rotation_deg' in x for x in row['pins'])
+        if arm == 'segmented':
+            # Same cuts as 26159 are asserted above; trajectory identity is recorded, not required.
+            row['difference_from_26159'] = float(np.abs(trajectory - segmented_trajectory).max())
+            print('SEGMENTED CONTROL max abs difference from 26159', row['difference_from_26159'], flush=True)
+        if arm == 'segmented_overlap':
+            row['connections'] = [{k: e.get(k) for k in ('boundary', 'point_fit_scale', 'overlap_scale',
+                                                          'overlap_pairs', 'overlap_old_displacement',
+                                                          'validation_median', 'camera_rotation_deg')}
+                                  for e in summary['events']]
+            assert all(c['overlap_scale'] is not None for c in row['connections'])
         if arm == 'retrieval_bank':
             row['admissions'] = [{k: v for k, v in json.loads(line).items()
                                   if k in ('frame', 'bank_ids', 'scores', 'fit_scale', 'fit_accepted',

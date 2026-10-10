@@ -488,6 +488,73 @@ class ReanchorTests(unittest.TestCase):
         torch.testing.assert_close(transform_pose(torch.from_numpy(new_b), tracker.transforms[1]),
                                    torch.from_numpy(old_b).double())
 
+    def test_overlap_connection_takes_scale_from_shared_displacements(self):
+        old_b = pose(.4, [1., 2., 3.])
+        turn = torch.from_numpy(old_b[:3, :3]).double()
+        test = self
+
+        class LocalMap:
+            def __init__(self, model, mode, log, save, query_executor=None, local_keyframe_cap=2,
+                         pin_rebuilds=False, pin_scale=False, shared_scale=False, fuse_scale=False,
+                         novelty_refresh=None):
+                self.model = model
+                self.transform = (torch.tensor(1., dtype=torch.float64),
+                                  torch.eye(3, dtype=torch.float64), torch.zeros(3, dtype=torch.float64))
+
+            def bootstrap(self, image, mask=None):
+                self.origin, self.images, self.ids = int(image[0, 0, 0]), [image], [0]
+                self.model.cache = self.cache = {1: {'k': torch.ones(4)}}
+                return np.eye(4, dtype=np.float32)
+
+            def step(self, image, frame, update=True, dense_query=False, mask=None):
+                test.assertIs(self.model.cache, self.cache)  # each map queries its own KV
+                if frame == 49:
+                    self.images, self.ids = [self.images[0], image], [0, 49]
+                    self.model.cache = self.cache = {1: {'k': torch.ones(8)}}
+                    self.anchor_points, self.anchor_conf = torch.ones(8, 8, 3), torch.ones(8, 8)
+                result = np.eye(4, dtype=np.float32)
+                if self.origin == 0 and frame >= 125:
+                    # Old map: three times the new map's displacement, in the anchored direction.
+                    test.assertFalse(update)
+                    result = old_b.copy()
+                    result[:3, 3] += (turn @ torch.tensor([.3 * (frame - 125), 0., 0.], dtype=torch.float64)).numpy()
+                elif self.origin == 125:
+                    result[0, 3] = .1 * frame
+                return result
+
+            def query_geometry(self, image, frame):
+                return torch.ones(8, 8, 3), torch.from_numpy(old_b).double(), torch.ones(8, 8)
+
+        model = SimpleNamespace(cache={})
+        with patch('kv_tracker.reanchor_maps.MapHandoff', LocalMap), patch(
+                'kv_tracker.reanchor_maps.bridge',
+                return_value=(None, dict(accepted=False, scale=2.), {})):
+            tracker = ReanchorMaps(model, (0, 125, 250), lambda row: None, lambda e, d: None,
+                                   overlap_stride=5)
+            for frame in range(250):
+                if frame == 125:
+                    refs = [weakref.ref(t) for layer in model.cache.values() for t in layer.values()]
+                    image_refs = [weakref.ref(x) for x in tracker.tracker.images]
+                tracker.step(np.full((8, 8, 3), frame, dtype=np.uint8), frame)
+                if frame == 150:
+                    self.assertTrue(all(ref() is not None for ref in refs + image_refs))
+                if frame == 174:
+                    self.assertTrue(all(ref() is None for ref in refs + image_refs))
+        event = tracker.events[0]
+        self.assertEqual((event['overlap_pairs'], event['point_fit_scale'], event['decision_frame']), (10, 2., 174))
+        self.assertAlmostEqual(float(tracker.transforms[1][0]), 3., places=5)
+        moved = np.eye(4, dtype=np.float32)
+        moved[0, 3] = 4.5
+        expected = old_b.copy()
+        expected[:3, 3] += (turn @ torch.tensor([13.5, 0., 0.], dtype=torch.float64)).numpy()
+        torch.testing.assert_close(transform_pose(torch.from_numpy(moved), tracker.transforms[1]),
+                                   torch.from_numpy(expected).double(), atol=1e-5, rtol=1e-5)
+
+    def test_overlap_connection_requires_retirement_without_pin(self):
+        with self.assertRaises(AssertionError):
+            ReanchorMaps(SimpleNamespace(cache={}), (0, 60), Mock(), Mock(), pin_rebuilds=True,
+                         overlap_stride=5)
+
 
 if __name__ == '__main__':
     unittest.main()

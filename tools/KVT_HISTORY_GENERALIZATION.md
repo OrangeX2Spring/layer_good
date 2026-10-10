@@ -328,3 +328,29 @@ ketchup (rotation RPE 29.1 degrees, alignment scale 0.191). Registrations of
 independent re-solves fail at low-overlap transitions (office 749 onwards), and
 fixed stored poses keep those errors. Rejected; numbers in FINDINGS (gates and
 audit 26503/26504).
+
+## Overlap-connection gate on the user's segmentation design (after the scope correction)
+
+Gates 26471-26504 ran without segmentation (FINDINGS scope correction). This gate
+returns to the user's design: live ORB cuts at 25 inliers (26159 policy, no maximum
+segment length), the old map retired at each cut, two-image segment banks. The
+read-only 26159 analysis puts about 90% of the extra squared ATE in consistency
+between segments; each connection takes its scale from one pointmap comparison.
+
+Change (ReanchorMaps overlap_stride=5, runner --overlap-bridge): the old map and its
+KV are kept, swapped out of the model, until the new map's first rebuild at b+49
+(at most four images), and the old map also locates frames b+5, ..., b+45. The
+connection keeps rotation and position pinned at b and takes scale by least squares
+from the ten shared camera displacements from b in both maps. The point-fit scale is
+still computed and logged (point_fit_scale, overlap_scale). Old KV/images are
+released at b+49. Stride 5 is the single new parameter, chosen for about 10% extra
+queries, not tuned.
+
+Entry from layer_good: `bash tools/kvt_tum.sbatch camera-history overlap`: native,
+segmented (control: cuts must equal 26159's; trajectory difference from 26159 is
+printed and recorded, not asserted, because the tracker changed since 26159), and
+segmented_overlap. Needs tum_26159_segment_reanchor_inliers25.tar (c6617206...)
+in kvt_tum_out. Markers: SEGMENTED CONTROL max abs difference from 26159, CAMERA
+HISTORY COMPLETE overlap 3 2585, CAMERA HISTORY JOB OK. Success: segmented_overlap
+lowers ATE versus the in-job segmented control without worse RPE/p99; native within
+5% remains the target. Report extra query time and peak memory.
