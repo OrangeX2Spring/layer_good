@@ -425,3 +425,8 @@ Markers: CAMERA HISTORY COMPLETE latest-anchor 4 2585, JOB OK.
 COMPLETE latest-anchor 4, OBJECT HISTORY JOB OK.
 Success: *_three_latest lowers ATE versus *_three on both sequences without worse
 RPE/p99.
+
+Outcome, 2026-10-10: 26518 (camera) and 26519 (ketchup) ran at 5bcd09a/c36f399 with
+all controls reproduced. L-anchoring is rejected (office ATE 0.1431 versus 0.0823;
+ketchup ATE +2.9%). Saved-data follow-up: the excess error sits in the frames between
+overlap loss and the cut (FINDINGS 26518/26519).
