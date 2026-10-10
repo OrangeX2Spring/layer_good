@@ -57,6 +57,7 @@ def main(args):
         assert args.inputs is not None and args.native_metrics is not None
     if args.disable_retirement:
         assert args.detector_config is not None and args.segmentation is None
+    assert args.disable_retirement or not args.pin_rebuilds
     if args.native_metrics:
         assert args.detector_config is not None, 'Non-office runs require a live detector policy'
 
@@ -101,6 +102,7 @@ def main(args):
                 'old KV and images deleted at b', native=native, margin=MARGIN,
         short_tail='at EOF rebuild [anchor,last] and commit pending connection',
         disable_retirement=args.disable_retirement,
+        pin_rebuilds=args.pin_rebuilds and 'each rebuild rigidly pinned to the outgoing pose of its frame',
         segmentation_policy=detector_policy if detector is not None else None,
         gt_used_by_tracker=False, seed=0))
     torch.manual_seed(0)
@@ -126,7 +128,8 @@ def main(args):
             stream.write(json.dumps(row, allow_nan=False) + '\n')
             stream.flush()
         tracker = ReanchorMaps(model, boundaries, log, save_bridge,
-                               local_keyframe_cap=args.local_keyframe_cap)
+                               local_keyframe_cap=args.local_keyframe_cap,
+                               pin_rebuilds=args.pin_rebuilds)
         torch.cuda.reset_peak_memory_stats()
         torch.cuda.synchronize()
         started = time.perf_counter()
@@ -239,4 +242,6 @@ if __name__ == '__main__':
     parser.add_argument('--profile-forward', action='store_true')
     parser.add_argument('--disable-retirement', action='store_true',
                         help='Diagnostic: keep the first local map; still log the live detector')
+    parser.add_argument('--pin-rebuilds', action='store_true',
+                        help='Keep each refresh frame at its outgoing pose; requires --disable-retirement')
     main(parser.parse_args())

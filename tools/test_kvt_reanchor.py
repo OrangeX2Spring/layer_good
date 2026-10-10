@@ -43,9 +43,52 @@ class ReanchorTests(unittest.TestCase):
         self.assertEqual(tracker.ids, [0, 149, 199])
         self.assertEqual(tracker.rebuild_scale, .5)
 
+    def test_pinned_rebuild_keeps_refresh_frame_pose(self):
+        # The 99 rebuild re-solves the refresh frame at a different pose; later
+        # queries live in that new solution, as on the far side of the office.
+        agreed = torch.from_numpy(pose(.2, [1., .5, 0.]))
+        moved = torch.from_numpy(pose(-.3, [-2., 1., .4]))
+        image = np.zeros((28, 28, 3), dtype=np.uint8)
+        outputs, rows = {}, {}
+        for pinned in (False, True):
+            model = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]), cache={})
+            logged = []
+            tracker = MapHandoff(model, 'reanchor', logged.append, None, local_keyframe_cap=3,
+                                 pin_rebuilds=pinned)
+            raw = {'pose': agreed}
+
+            def reconstruct(images, ids, frame, kind):
+                if frame == 49:
+                    tracker.anchor_points, tracker.anchor_conf = torch.ones(28, 28, 3), torch.ones(28, 28)
+                if frame == 99:
+                    raw['pose'] = moved
+                poses = torch.eye(4).repeat(len(ids), 1, 1)
+                poses[-1] = moved if frame == 99 else agreed
+                return torch.ones(len(ids), 28, 28, 3), poses, torch.ones(len(ids), 28, 28), torch.eye(4)
+
+            tracker.reconstruct = reconstruct
+            with patch('torch.cuda.synchronize'), patch('kv_tracker.map_handoff.pi3_inference',
+                    side_effect=lambda *a, **k: raw['pose'][None, None]):
+                tracker.bootstrap(image)
+                outputs[pinned] = {frame: tracker.step(image, frame) for frame in range(1, 101)}
+            rows[pinned] = [row for row in logged if row['kind'] == 'update_total']
+        np.testing.assert_allclose(outputs[True][100], outputs[True][99], atol=1e-5)
+        self.assertGreater(np.abs(outputs[False][100] - outputs[False][99]).max(), .5)
+        np.testing.assert_allclose(outputs[True][99], outputs[False][99], atol=1e-6)
+        self.assertNotIn('pin_rotation_deg', rows[False][0])
+        self.assertAlmostEqual(rows[True][0]['pin_rotation_deg'], 0., places=3)
+        self.assertAlmostEqual(rows[True][1]['pin_rotation_deg'], np.degrees(.5), places=3)
+        self.assertAlmostEqual(rows[True][1]['pin_position_step'],
+                               float(np.linalg.norm([3., -.5, -.4])), places=5)
+
+    def test_pinning_requires_a_single_map(self):
+        with self.assertRaises(AssertionError):
+            ReanchorMaps(SimpleNamespace(cache={}), (0, 60, 120), Mock(), Mock(), pin_rebuilds=True)
+
     def test_short_final_segment_connects_at_eof(self):
         class LocalMap:
-            def __init__(self, model, mode, log, save, query_executor=None, local_keyframe_cap=2):
+            def __init__(self, model, mode, log, save, query_executor=None, local_keyframe_cap=2,
+                         pin_rebuilds=False):
                 self.model = model
                 self.transform = (torch.tensor(1., dtype=torch.float64),
                                   torch.eye(3, dtype=torch.float64), torch.zeros(3, dtype=torch.float64))
@@ -160,7 +203,8 @@ class ReanchorTests(unittest.TestCase):
         old_b, new_b = pose(.4, [1., 2., 3.]), pose(-.3, [.2, -.1, .5])
 
         class LocalMap:
-            def __init__(self, model, mode, log, save, query_executor=None, local_keyframe_cap=2):
+            def __init__(self, model, mode, log, save, query_executor=None, local_keyframe_cap=2,
+                         pin_rebuilds=False):
                 self.model = model
                 self.transform = (torch.tensor(1., dtype=torch.float64),
                                   torch.eye(3, dtype=torch.float64), torch.zeros(3, dtype=torch.float64))

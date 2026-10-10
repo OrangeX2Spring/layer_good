@@ -31,8 +31,8 @@ native5% is the separate existing quality gate. Poor quality is recorded, not
 converted to an execution error. Runtime/fidelity failure blocks expansion.
 
 The pilot is necessary before the full sweep. It is not the requested full
-evaluation. The camera gate below is prepared; dataset adapters remain pending work;
-do not claim all-dataset readiness from a ketchup marker.
+evaluation. The camera gate below ran as job26476 and was reviewed; dataset
+adapters remain pending work; do not claim all-dataset readiness from two sequences.
 
 ## Timing audit and measurement
 
@@ -159,3 +159,43 @@ allocation-wrapped pull/run procedure, selected24g/muenchen/GPU1, two hours.
 Do not pull on head. Review camera artifacts before all-sequence evaluation;
 manifest/adapters for the remaining table entries and the tutor report remain
 pending. No full-dataset job or automatic successor is prepared by this gate.
+
+Outcome, 2026-10-10: job26473 failed before inference because the25680 reference
+archive was missing from kvt_tum_out; after it was restored, job26476 at22afc3a/
+269a943 completed. Contracts, native fidelity, pairs, detector and no-retirement
+checks pass, and both bounded arms fail the native quality gate. Results and the
+refresh-step analysis are in FINDINGS (Artifact audit26476, Handoff audit). Before
+any rerun of this gate, confirm the25680 reference is present in kvt_tum_out.
+Next: a read-only diagnosis of the refresh connection, not a rerun.
+
+## Pinned-refresh camera gate after reviewed26476
+
+Diagnosis from saved26476 files (no new run): without retirement every refresh
+rebuilds [0, previous, latest] and Pi3 re-solves the latest camera relative to
+frame0; only scale is restored. When frame0 faces away (office frames749-1449)
+that solution flips: three-image refresh pairs carry99% of squared translation
+RPE, with isolated steps of metres and several degrees. User-selected fix:
+continuity pin. After each rebuild the new solution is rigidly moved so its pose
+of the refresh frame equals the outgoing bank's pose of that frame; anchor-based
+rebuild_scale is kept. No thresholds. Each rebuild logs pin_rotation_deg and
+pin_position_step (the two banks' disagreement), which is the runtime diagnostic.
+Pinning is single-map only (asserted); it removes the anchor's absolute
+correction, so slow drift can accumulate. That is the tradeoff under test.
+
+Entry: `bash tools/kvt_tum.sbatch camera-history pinned`, two-hour allocation,
+same inputs, contracts, deadline and packaging as the camera gate above. Fresh
+processes: native (25680 fidelity), three_frame (unpinned control; must reproduce
+the reviewed tum_26476_camera_history_three_frame.tar trajectory within rtol/atol
+1e-4, hash-pinned in kvt_tum_out), three_frame_pinned. Same pair/detector/no-
+retirement/environment checks. comparison.json adds refresh_pairs for every arm,
+unpinned_ratios/improves_unpinned and the 51 per-rebuild pins for the pinned arm.
+Expected markers: three CAMERA HISTORY ARM lines, CAMERA HISTORY COMPLETE pinned
+3 2585, CAMERA HISTORY JOB OK. Archives: tum_JOB_camera_history_{native,
+three_frame,three_frame_pinned}.tar, _camera_history_comparison.tar, context,
+all_runs. Stage gate (default) keeps the original 26476 matrix unchanged.
+
+Review: the pin works mechanically if refresh_pairs share drops toward native's
+and pins are large exactly where unpinned steps were large. Quality is judged by
+the existing native5% gate and versus unpinned on all three translation metrics;
+report ATE drift plainly. Object ketchup and two-image pinning follow only after
+this review. No full-dataset job is prepared by this gate.

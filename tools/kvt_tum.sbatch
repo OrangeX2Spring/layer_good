@@ -13,6 +13,10 @@ set -euo pipefail
 MODE=${1:-sweep}
 TASK_DEADLINE=
 if [ "$MODE" = camera-history ]; then
+    case "${2:-gate}" in
+        gate|pinned) ;;
+        *) echo 'Choose camera-history gate or pinned' >&2; exit 2 ;;
+    esac
     TASK_DEADLINE=$(( $(date +%s) + 7200 ))
 fi
 if [ "$MODE" = object-history ]; then
@@ -366,7 +370,7 @@ if [ "$MODE" = object-history ] || [ "$MODE" = camera-history ]; then
         timeout --signal=TERM --kill-after=60s "${HISTORY_REMAINING}s" \
             "${CONTAINER[@]}" python "$REPO/tools/kvt_camera_history.py" \
             --work "$WORK" --out "$OUT" --tag "$TAG" --deadline "$TASK_DEADLINE" \
-            2>&1 | tee "$WORK/context/camera_history.log"
+            --stage "${2:-gate}" 2>&1 | tee "$WORK/context/camera_history.log"
         test -f "$WORK/JOB_OK"
         echo 'CAMERA HISTORY JOB OK'
         exit 0
