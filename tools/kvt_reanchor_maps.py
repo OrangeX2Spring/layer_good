@@ -58,6 +58,7 @@ def main(args):
     if args.disable_retirement:
         assert args.detector_config is not None and args.segmentation is None
     assert args.disable_retirement or not args.pin_rebuilds
+    assert args.pin_rebuilds or not args.pin_scale
     if args.native_metrics:
         assert args.detector_config is not None, 'Non-office runs require a live detector policy'
 
@@ -103,6 +104,7 @@ def main(args):
         short_tail='at EOF rebuild [anchor,last] and commit pending connection',
         disable_retirement=args.disable_retirement,
         pin_rebuilds=args.pin_rebuilds and 'each rebuild rigidly pinned to the outgoing pose of its frame',
+        pin_scale=args.pin_scale and 'rebuild scale from the outgoing bank depths of the refresh frame',
         segmentation_policy=detector_policy if detector is not None else None,
         gt_used_by_tracker=False, seed=0))
     torch.manual_seed(0)
@@ -129,7 +131,7 @@ def main(args):
             stream.flush()
         tracker = ReanchorMaps(model, boundaries, log, save_bridge,
                                local_keyframe_cap=args.local_keyframe_cap,
-                               pin_rebuilds=args.pin_rebuilds)
+                               pin_rebuilds=args.pin_rebuilds, pin_scale=args.pin_scale)
         torch.cuda.reset_peak_memory_stats()
         torch.cuda.synchronize()
         started = time.perf_counter()
@@ -244,4 +246,6 @@ if __name__ == '__main__':
                         help='Diagnostic: keep the first local map; still log the live detector')
     parser.add_argument('--pin-rebuilds', action='store_true',
                         help='Keep each refresh frame at its outgoing pose; requires --disable-retirement')
+    parser.add_argument('--pin-scale', action='store_true',
+                        help='Take rebuild scale from the refresh frame, not the anchor; requires --pin-rebuilds')
     main(parser.parse_args())

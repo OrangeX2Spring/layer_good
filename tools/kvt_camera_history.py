@@ -2,6 +2,8 @@
 
 Stage 'gate' is the reviewed 26476 matrix. Stage 'pinned' runs native, the unpinned
 three-image control (must reproduce 26476) and three-image with pinned rebuilds.
+Stage 'scale' runs native, the pinned three-image control (must reproduce 26481),
+three-image with pinned rebuilds and scale, and two-image with pinned rebuilds.
 """
 import argparse
 import io
@@ -21,11 +23,17 @@ from kvt_tum_sweep import archive_directory, release_page_cache
 
 REFERENCE = 'tum_25680_freiburg3_long_office_household_original.tar'
 REFERENCE_SHA256 = 'e3d56f66e411d93621e0d3bbc5b150a5d3c52bfdb09afdea9a564f7cbd95e125'
-# Reviewed 26476 three-image arm (Mac audit, archive_inventory.json).
-CONTROL = 'tum_26476_camera_history_three_frame.tar'
-CONTROL_SHA256 = '79256c7f09ff56a2e694d1cbce02ffcf5f4f11afab70532076f1985c120d0590'
+# Reviewed control arms (Mac audits, archive_inventory.json): archive, SHA256, arm.
+CONTROLS = dict(
+    pinned=('tum_26476_camera_history_three_frame.tar',
+            '79256c7f09ff56a2e694d1cbce02ffcf5f4f11afab70532076f1985c120d0590', 'three_frame'),
+    scale=('tum_26481_camera_history_three_frame_pinned.tar',
+           'f7b6ffe7f54cc7bdef8c25037138715f38f24edbb14093fdb2f1148f726330f8', 'three_frame_pinned'))
 ARMS = dict(gate=('native', 'no_retirement', 'three_frame'),
-            pinned=('native', 'three_frame', 'three_frame_pinned'))
+            pinned=('native', 'three_frame', 'three_frame_pinned'),
+            scale=('native', 'three_frame_pinned', 'three_frame_pinned_scale', 'no_retirement_pinned'))
+# Within-job comparison arm for each pinned variant.
+COMPARE = dict(three_frame_pinned='three_frame', three_frame_pinned_scale='three_frame_pinned')
 
 
 def refresh_pairs(result):
@@ -48,8 +56,9 @@ def main(args):
     assert tracker_commit == subprocess.check_output(
         ['git', '-C', str(tools.parent), 'rev-parse', 'HEAD:kv_tracker'], text=True).strip()
     sources = dict(SOURCES, **{REFERENCE: REFERENCE_SHA256})
-    if args.stage == 'pinned':
-        sources[CONTROL] = CONTROL_SHA256
+    if args.stage in CONTROLS:
+        control_archive, control_sha256, control_arm = CONTROLS[args.stage]
+        sources[control_archive] = control_sha256
     for name, digest in sources.items():
         assert sha256(args.out / name) == digest, name
     with tarfile.open(args.out / 'tum_26127_context.tar') as packed:
@@ -66,10 +75,10 @@ def main(args):
         for name in ('traj.npy', 'evaluation.npz', 'metrics.json'):
             (reference / name).write_bytes(packed.extractfile('original/' + name).read())
     release_page_cache(args.out / REFERENCE, inputs)
-    if args.stage == 'pinned':
-        with tarfile.open(args.out / CONTROL) as packed:
+    if args.stage in CONTROLS:
+        with tarfile.open(args.out / control_archive) as packed:
             control_trajectory = np.load(io.BytesIO(
-                packed.extractfile('camera_history_three_frame/traj.npy').read()))
+                packed.extractfile(f'camera_history_{control_arm}/traj.npy').read()))
     manifest = json.loads((inputs / 'manifest.json').read_text())
     frames = manifest['frames']
     assert frames == len(manifest['inputs']) == 2585 and manifest['resize_dim'] == 308
@@ -110,9 +119,12 @@ def main(args):
                 '--work', str(args.work), '--out', str(args.out), '--tag', args.tag,
                 '--inputs', str(inputs), '--native-metrics', str(native_metrics),
                 '--detector-config', str(policy), '--name', name, '--disable-retirement',
-                '--local-keyframe-cap', '2' if arm == 'no_retirement' else '3', '--profile-forward']
-            if arm == 'three_frame_pinned':
+                '--local-keyframe-cap', '2' if arm.startswith('no_retirement') else '3',
+                '--profile-forward']
+            if 'pinned' in arm:
                 command.append('--pin-rebuilds')
+            if arm.endswith('_scale'):
+                command.append('--pin-scale')
         report['active_run'] = dict(name=name, command=command)
         write_json(comparison / 'comparison.json', report)
         print('CAMERA HISTORY ARM', arm, frames, flush=True)
@@ -121,7 +133,7 @@ def main(args):
         durations.append(time.monotonic() - started)
         trajectory = np.load(result / 'traj.npy')
         assert trajectory.shape == (frames, 4, 4) and np.isfinite(trajectory).all()
-        if args.stage == 'pinned' and arm == 'three_frame':
+        if args.stage in CONTROLS and arm == control_arm:
             np.testing.assert_allclose(trajectory, control_trajectory, rtol=1e-4, atol=1e-4)
         with np.load(result / 'evaluation.npz') as current, np.load(reference / 'evaluation.npz') as saved:
             for key in ('rgb_indices', 'gt_indices', 'timestamps', 'rpe_pair_start_indices', 'reference'):
@@ -139,7 +151,8 @@ def main(args):
         else:
             config = json.loads((result / 'config.json').read_text())
             assert config['boundaries'] == [0, frames] and not summary['events']
-            assert bool(config['pin_rebuilds']) == (arm == 'three_frame_pinned')
+            assert bool(config['pin_rebuilds']) == ('pinned' in arm)
+            assert bool(config['pin_scale']) == arm.endswith('_scale')
             current_decisions = [{k: v for k, v in json.loads(line).items() if k != 'seconds'}
                 for line in (result / 'segmentation_live.jsonl').read_text().splitlines()]
             assert len(current_decisions) == frames
@@ -151,18 +164,21 @@ def main(args):
         row = dict(arm=arm, summary=summary, subprocess_seconds=durations[-1],
                    environment=environment, native_ratios=ratios,
                    quality_pass=all(r <= 1.05 for r in ratios.values()))
-        if args.stage == 'pinned':
+        if args.stage != 'gate':
             row['refresh_pairs'] = refresh_pairs(result)
         if arm == 'three_frame' and args.stage == 'gate':
             control = report['runs'][1]['summary']['metrics']
             row['two_image_ratios'] = {key: summary['metrics'][key] / control[key] for key in keys}
             row['improves_two_image'] = all(r < 1 for r in row['two_image_ratios'].values())
-        if arm == 'three_frame_pinned':
-            control = report['runs'][1]['summary']['metrics']
-            row['unpinned_ratios'] = {key: summary['metrics'][key] / control[key] for key in keys}
-            row['improves_unpinned'] = all(r < 1 for r in row['unpinned_ratios'].values())
+        compared = [r for r in report['runs'] if r['arm'] == COMPARE.get(arm)]
+        if compared:
+            control = compared[0]['summary']['metrics']
+            row['compared_arm'] = compared[0]['arm']
+            row['compared_ratios'] = {key: summary['metrics'][key] / control[key] for key in keys}
+            row['improves_compared'] = all(r < 1 for r in row['compared_ratios'].values())
+        if 'pinned' in arm:
             row['pins'] = [{k: v for k, v in json.loads(line).items()
-                            if k in ('frame', 'pin_rotation_deg', 'pin_position_step')}
+                            if k in ('frame', 'pin_rotation_deg', 'pin_position_step', 'rebuild_scale')}
                            for line in (result / 'inference.jsonl').read_text().splitlines()
                            if json.loads(line)['kind'] == 'update_total']
             assert len(row['pins']) == (frames - 1) // 50 and all('pin_rotation_deg' in x for x in row['pins'])
@@ -177,7 +193,8 @@ def main(args):
     write_json(comparison / 'comparison.json', report)
     archive_directory(comparison, args.out / f'{args.tag}_camera_history_comparison.tar')
     (args.work / 'JOB_OK').write_text('Camera fidelity/execution complete; review quality before expansion\n')
-    print('CAMERA HISTORY COMPLETE', *(['pinned'] if args.stage == 'pinned' else []), 3, frames, flush=True)
+    print('CAMERA HISTORY COMPLETE', *([args.stage] if args.stage != 'gate' else []),
+          len(ARMS[args.stage]), frames, flush=True)
 
 
 if __name__ == '__main__':

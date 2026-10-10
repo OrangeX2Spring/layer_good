@@ -199,3 +199,38 @@ and pins are large exactly where unpinned steps were large. Quality is judged by
 the existing native5% gate and versus unpinned on all three translation metrics;
 report ATE drift plainly. Object ketchup and two-image pinning follow only after
 this review. No full-dataset job is prepared by this gate.
+
+Outcome, 2026-10-10: 26480 failed before inference (tar member passed to np.load;
+fixed in37f362d). 26481 completed: control fidelity and pin contracts pass; the
+pin improves all three translation metrics over unpinned three-image but fails
+the native5% gate. Remaining error is mainly scale drift between rebuilds
+(FINDINGS Artifact audit26481). No follow-up gate is prepared yet.
+
+## Scale-continuity and pin-generality gates after reviewed26481
+
+User asked to try both follow-ups. (a) Scale continuity: `pin_scale` (requires the
+rigid pin) replaces the anchor-pointmap rebuild_scale. Before each rebuild one
+dense read-only query of the refresh frame on the outgoing bank gives its points
+in its own camera; rebuild_scale is the median ratio of those depths to the new
+rebuild's depths of the same frame (both maps' confidences at or above median).
+No new thresholds. (b) Generality: the current pin on two-image banks and on
+the ketchup object sequence. No other policy changes.
+
+Camera: `bash tools/kvt_tum.sbatch camera-history scale`, two hours. Arms native,
+three_frame_pinned (control; must reproduce the reviewed
+tum_26481_camera_history_three_frame_pinned.tar trajectory within 1e-4),
+three_frame_pinned_scale, no_retirement_pinned (two-image). Markers: four CAMERA
+HISTORY ARM lines, CAMERA HISTORY COMPLETE scale 4 2585, CAMERA HISTORY JOB OK.
+The unpinned two-image control is the reviewed26476 arm, compared offline.
+
+Object: `bash tools/kvt_tum.sbatch object-history pinned`, two hours. Full saved
+ketchup; arms native (26458 fidelity), three_frame (control; must reproduce the
+reviewed tum_26472_object_history_r0_three_frame.tar within 1e-4),
+three_frame_pinned, three_frame_pinned_scale. Markers: four OBJECT HISTORY ARM
+lines, OBJECT HISTORY COMPLETE pinned 4, OBJECT HISTORY JOB OK.
+
+Both: forward profiling and head benchmarks as before; per-rebuild pins and
+rebuild_scale in comparison.json; compared_ratios against the arm each variant
+modifies (pinned vs unpinned, scale vs rigid pin). Same contracts, detector,
+pair and no-retirement checks. Quality uses native5% and the compared arm on all
+three translation metrics. Review both before any further dataset expansion.

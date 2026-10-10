@@ -81,6 +81,46 @@ class ReanchorTests(unittest.TestCase):
         self.assertAlmostEqual(rows[True][1]['pin_position_step'],
                                float(np.linalg.norm([3., -.5, -.4])), places=5)
 
+    def test_pinned_scale_matches_refresh_frame_depths(self):
+        model = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]), cache={})
+        tracker = MapHandoff(model, 'reanchor', lambda row: None, None, local_keyframe_cap=3,
+                             pin_rebuilds=True, pin_scale=True)
+        reads = []
+        camera = torch.from_numpy(pose(.3, [1., -2., .5])).double()
+        depth = torch.zeros(28, 28, 3, dtype=torch.float64)
+        depth[..., 2] = 4.
+
+        def query_geometry(image, frame):
+            # Outgoing bank: refresh-frame points 4 units in front of its camera.
+            reads.append(frame)
+            return depth @ camera[:3, :3].T + camera[:3, 3], camera.clone(), torch.ones(28, 28)
+
+        def reconstruct(images, ids, frame, kind):
+            # Each rebuild sees the same frame 1 unit deep; the anchor points disagree.
+            poses = torch.eye(4).repeat(len(ids), 1, 1)
+            points = torch.full((len(ids), 28, 28, 3), 7.)
+            points[-1] = depth.float() / 4
+            if frame == 49:
+                tracker.anchor_points, tracker.anchor_conf = points[0].clone(), torch.ones(28, 28)
+            return points, poses, torch.ones(len(ids), 28, 28), torch.eye(4)
+
+        tracker.query_geometry, tracker.reconstruct = query_geometry, reconstruct
+        image = np.zeros((28, 28, 3), dtype=np.uint8)
+        with patch('torch.cuda.synchronize'), patch('kv_tracker.map_handoff.pi3_inference',
+                return_value=torch.eye(4)[None, None]):
+            tracker.bootstrap(image)
+            for frame in range(1, 100):
+                tracker.step(image, frame)
+                if frame == 49:
+                    self.assertAlmostEqual(tracker.rebuild_scale, 4.)
+        self.assertEqual(reads, [49, 99])
+        self.assertAlmostEqual(tracker.rebuild_scale, 4.)
+
+    def test_scale_pin_requires_rigid_pin(self):
+        model = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]), cache={})
+        with self.assertRaises(AssertionError):
+            MapHandoff(model, 'reanchor', lambda row: None, None, pin_scale=True)
+
     def test_pinning_requires_a_single_map(self):
         with self.assertRaises(AssertionError):
             ReanchorMaps(SimpleNamespace(cache={}), (0, 60, 120), Mock(), Mock(), pin_rebuilds=True)
