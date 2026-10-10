@@ -14,9 +14,9 @@ MODE=${1:-sweep}
 TASK_DEADLINE=
 if [ "$MODE" = object-history ]; then
     case "${2:-pilot}" in
-        pilot) HISTORY_SECONDS=7200 ;;
+        pilot|three-frame) HISTORY_SECONDS=7200 ;;
         overnight) HISTORY_SECONDS=28800 ;;
-        *) echo 'Choose object-history pilot or overnight' >&2; exit 2 ;;
+        *) echo 'Choose object-history pilot, three-frame or overnight' >&2; exit 2 ;;
     esac
     TASK_DEADLINE=$(( $(date +%s) + HISTORY_SECONDS ))
 fi
@@ -125,6 +125,7 @@ if [ "$MODE" = object-history ]; then
     test ! -s "$WORK/context/parent.diff"
     test ! -s "$WORK/context/tracker.diff"
     cp "$REPO/tools/kvt_object_history.py" "$REPO/tools/KVT_OBJECT_OVERNIGHT.md" \
+       "$REPO/tools/kvt_inference_timing.py" "$REPO/tools/KVT_HISTORY_GENERALIZATION.md" \
        "$REPO/tools/kvt_segment_arctic.py" "$REPO/tools/kvt_segment_detector.py" \
        "$REPO/tools/kvt_reanchor_maps.py" "$REPO/tools/kvt_handoff_pilot.py" \
        "$REPO/tools/kvt_bridge_cameras.py" "$REPO/tools/kvt_office_segments.py" \

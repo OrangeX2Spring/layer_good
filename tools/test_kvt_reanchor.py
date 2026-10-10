@@ -20,9 +20,32 @@ def pose(angle, position):
 
 
 class ReanchorTests(unittest.TestCase):
+    def test_three_image_map_keeps_previous_view_and_restores_scale(self):
+        model = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]), cache={})
+        tracker = MapHandoff(model, 'reanchor', lambda row: None, None, local_keyframe_cap=3)
+        calls = []
+
+        def reconstruct(images, ids, frame, kind):
+            calls.append(list(ids))
+            self.assertEqual([int(image[0, 0, 0]) for image in images], ids)
+            points = torch.ones(len(ids), 28, 28, 3) * (2. if frame > 49 else 1.)
+            if frame == 49:
+                tracker.anchor_points, tracker.anchor_conf = points[0].clone(), torch.ones(28, 28)
+            return points, torch.eye(4).repeat(len(ids), 1, 1), torch.ones(len(ids), 28, 28), torch.eye(4)
+
+        tracker.reconstruct = reconstruct
+        with patch('torch.cuda.synchronize'), patch('kv_tracker.map_handoff.pi3_inference',
+                return_value=torch.eye(4)[None, None]):
+            tracker.bootstrap(np.zeros((28, 28, 3), dtype=np.uint8))
+            for frame in range(1, 200):
+                tracker.step(np.full((28, 28, 3), frame, dtype=np.uint8), frame)
+        self.assertEqual(calls, [[0, 0], [0, 49], [0, 49, 99], [0, 99, 149], [0, 149, 199]])
+        self.assertEqual(tracker.ids, [0, 149, 199])
+        self.assertEqual(tracker.rebuild_scale, .5)
+
     def test_short_final_segment_connects_at_eof(self):
         class LocalMap:
-            def __init__(self, model, mode, log, save, query_executor=None):
+            def __init__(self, model, mode, log, save, query_executor=None, local_keyframe_cap=2):
                 self.model = model
                 self.transform = (torch.tensor(1., dtype=torch.float64),
                                   torch.eye(3, dtype=torch.float64), torch.zeros(3, dtype=torch.float64))
@@ -137,7 +160,7 @@ class ReanchorTests(unittest.TestCase):
         old_b, new_b = pose(.4, [1., 2., 3.]), pose(-.3, [.2, -.1, .5])
 
         class LocalMap:
-            def __init__(self, model, mode, log, save, query_executor=None):
+            def __init__(self, model, mode, log, save, query_executor=None, local_keyframe_cap=2):
                 self.model = model
                 self.transform = (torch.tensor(1., dtype=torch.float64),
                                   torch.eye(3, dtype=torch.float64), torch.zeros(3, dtype=torch.float64))

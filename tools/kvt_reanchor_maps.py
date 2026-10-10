@@ -91,11 +91,13 @@ def main(args):
     result = args.work / 'runs' / args.name
     result.mkdir(parents=True)
     write_json(result / 'config.json', dict(boundaries=boundaries, sources=sources,
-        checkpoint=checkpoint, keyframes='segment first frame + latest, rebuilt every 50; '
+        checkpoint=checkpoint, local_keyframe_cap=args.local_keyframe_cap,
+        keyframes=('segment first frame + previous + latest' if args.local_keyframe_cap == 3
+                   else 'segment first frame + latest') + ', rebuilt every 50; '
         'later rebuilds rescaled to the first via the anchor pointmap',
         connection='none' if args.disable_retirement else
                    'pose-anchored at b, point-fit scale, always committed, 49-frame delay',
-        history='first anchor plus latest; no map retirement' if args.disable_retirement else
+        history=f'first anchor with bounded {args.local_keyframe_cap}-image bank; no map retirement' if args.disable_retirement else
                 'old KV and images deleted at b', native=native, margin=MARGIN,
         short_tail='at EOF rebuild [anchor,last] and commit pending connection',
         disable_retirement=args.disable_retirement,
@@ -106,6 +108,9 @@ def main(args):
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     model = move_pi3_mlps_to_bfloat32(load_pi3_from_pretrained().eval())
+    if args.profile_forward:
+        from kvt_inference_timing import InferenceTiming
+        forward_timing = InferenceTiming(model)
     if detector is not None:
         cv2.setRNGSeed(0)
 
@@ -120,7 +125,8 @@ def main(args):
         def log(row):
             stream.write(json.dumps(row, allow_nan=False) + '\n')
             stream.flush()
-        tracker = ReanchorMaps(model, boundaries, log, save_bridge)
+        tracker = ReanchorMaps(model, boundaries, log, save_bridge,
+                               local_keyframe_cap=args.local_keyframe_cap)
         torch.cuda.reset_peak_memory_stats()
         torch.cuda.synchronize()
         started = time.perf_counter()
@@ -163,8 +169,8 @@ def main(args):
     assert tracker.pending is None and len(tracker.transforms) == len(boundaries) - 1
     assert [e['boundary'] for e in tracker.events] == boundaries[1:-1]
     rows = [json.loads(x) for x in (result / 'inference.jsonl').read_text().splitlines()]
-    assert all(r['input_images'] <= 2 for r in rows if 'input_images' in r)
-    assert all(len(r['bank_ids']) <= 2 for r in rows if r['kind'] == 'query')
+    assert all(r['input_images'] <= args.local_keyframe_cap for r in rows if 'input_images' in r)
+    assert all(len(r['bank_ids']) <= args.local_keyframe_cap for r in rows if r['kind'] == 'query')
     np.save(result / 'local_traj.npy', local_poses)
     global_poses = np.concatenate([np.stack([
         transform_pose(torch.from_numpy(pose), transform).numpy()
@@ -197,6 +203,10 @@ def main(args):
         timing[kind + '_seconds'] = sum(row['seconds'] for row in rows if row['kind'] == kind)
     write_json(result / 'environment.json', dict(torch=torch.__version__, cuda=torch.version.cuda,
         gpu=torch.cuda.get_device_name(), seed=0, resize_dim=518 if args.object_scene else 308))
+    if args.profile_forward:
+        write_json(result / 'forward_timing.json', forward_timing.finish())
+        from kvt_inference_timing import benchmark_cached_heads
+        write_json(result / 'cached_head_benchmark.json', benchmark_cached_heads(model, image))
     write_json(result / 'summary.json', dict(metrics=metrics, native=native, margin=MARGIN,
         native_checks=checks, objective_achieved=all(checks.values()), timing=timing,
         events=tracker.events))
@@ -225,6 +235,8 @@ if __name__ == '__main__':
     selection.add_argument('--segmentation', type=Path)
     selection.add_argument('--detector-config', type=Path)
     parser.add_argument('--name', default='reanchor_maps')
+    parser.add_argument('--local-keyframe-cap', type=int, choices=(2, 3), default=2)
+    parser.add_argument('--profile-forward', action='store_true')
     parser.add_argument('--disable-retirement', action='store_true',
                         help='Diagnostic: keep the first local map; still log the live detector')
     main(parser.parse_args())

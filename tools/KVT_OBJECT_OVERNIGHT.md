@@ -1,5 +1,11 @@
 # Object history diagnostics: pilot and overnight repeats
 
+2026-10-10 follow-up: user selected a further accuracy fix and all available
+object/camera sequences. See KVT_HISTORY_GENERALIZATION.md. New `three-frame`
+stage profiles native/two-image/three-image on saved ketchup; old overnight
+repeats are not the current next action. Existing pilot/overnight modes remain
+for reproducibility, with their implementation/revision matching gate.
+
 2026-10-09. User selected object tracking, handoff/history diagnosis and a bounded
 comparison, with **eight hours on one GPU**. Implemented locally; CAMP contracts
 and pilot remain pending. Evidence: FINDINGS "Artifact audit26458" and "Object

@@ -60,11 +60,19 @@ def main(args):
     summary.mkdir(parents=True)
     implementation = {name: sha256(tools / name) for name in (
         'kvt_object_history.py', 'kvt_reanchor_maps.py', 'kvt_segment_arctic.py',
-        'kvt_segment_detector.py', 'kvt_patch_select.py')}
+        'kvt_segment_detector.py', 'kvt_patch_select.py', 'kvt_inference_timing.py')}
     tracker_commit = subprocess.check_output(['git', '-C', str(CHECKOUT), 'rev-parse', 'HEAD'], text=True).strip()
-    assert tracker_commit == 'a6ae705c639081ba94104016ab7d0bd691361c09'
-    report = dict(stage=args.stage, scene=SCENE, sources=SOURCES, complete=False,
-                  orders=ORDERS[:1] if args.stage == 'pilot' else ORDERS, runs=[],
+    expected_tracker = subprocess.check_output(
+        ['git', '-C', str(tools.parent), 'rev-parse', 'HEAD:kv_tracker'], text=True).strip()
+    assert tracker_commit == expected_tracker, 'Tracker must match the published parent gitlink'
+    orders = (('native', 'no_retirement', 'three_frame'),) if args.stage == 'three-frame' else (
+        ORDERS[:1] if args.stage == 'pilot' else ORDERS)
+    source_archives = dict(SOURCES)
+    if args.stage == 'three-frame':
+        source_archives['tum_26471_object_history_r0_no_retirement.tar'] = (
+            '8674e84bf060091188910360ca607f9e2d746b866bc72bc415a2483bf6a68094')
+    report = dict(stage=args.stage, scene=SCENE, sources=source_archives, complete=False,
+                  orders=orders, runs=[],
                   implementation=implementation, tracker_commit=tracker_commit,
                   interpretation='No-retirement changes resets and anchor age; not a pure capacity test.')
     for name, expected in REANCHOR_SOURCES.items():
@@ -81,7 +89,7 @@ def main(args):
         report['reviewed_pilot'] = dict(path=str(args.reviewed_pilot), sha256=args.reviewed_sha256)
     write_json(summary / 'comparison.json', report)
     sources = args.work / 'inputs' / 'history_sources'
-    for name, expected in SOURCES.items():
+    for name, expected in source_archives.items():
         archive = (ARCTIC_OUT if name.startswith('arctic_') else args.out) / name
         assert sha256(archive) == expected, name
         destination = sources / Path(name).stem
@@ -153,7 +161,8 @@ def main(args):
             if arm == 'native':
                 result.mkdir()
                 write_json(result / 'config.json', dict(inputs=str(inputs), scene=SCENE,
-                    reference_trajectory=str(reference / 'traj.npy')))
+                    reference_trajectory=str(reference / 'traj.npy'),
+                    profile_forward=args.stage == 'three-frame'))
                 command = [sys.executable, str(tools / 'kvt_segment_arctic.py'),
                            '--native-replay', str(result / 'config.json')]
             else:
@@ -161,8 +170,12 @@ def main(args):
                     '--work', str(args.work), '--out', str(args.out), '--tag', args.tag,
                     '--inputs', str(inputs), '--native-metrics', str(native_metrics),
                     '--detector-config', str(policy), '--object-scene', SCENE, '--name', name]
-                if arm == 'no_retirement':
+                if arm in ('no_retirement', 'three_frame'):
                     command.append('--disable-retirement')
+                if arm == 'three_frame':
+                    command.extend(['--local-keyframe-cap', '3'])
+                if args.stage == 'three-frame':
+                    command.append('--profile-forward')
             report['active_run'] = dict(name=name, command=command)
             write_json(summary / 'comparison.json', report)
             started = time.monotonic()
@@ -181,14 +194,22 @@ def main(args):
                        quality_pass=all(value <= 1.05 for value in ratios.values()))
             if arm == 'reanchor':
                 np.testing.assert_allclose(trajectory, np.load(reanchor / 'traj.npy'), rtol=1e-4, atol=1e-4)
+            if args.stage == 'three-frame' and arm == 'no_retirement':
+                control = sources / 'tum_26471_object_history_r0_no_retirement' / 'object_history_r0_no_retirement'
+                np.testing.assert_allclose(trajectory, np.load(control / 'traj.npy'), rtol=1e-4, atol=1e-4)
+            if arm == 'three_frame':
+                control = next(r for r in report['runs'] if r['arm'] == 'no_retirement')
+                row['two_image_ratios'] = {key: metrics['metrics'][key] / control['summary']['metrics'][key]
+                                           for key in ratios}
+                row['improves_two_image'] = all(value < 1 for value in row['two_image_ratios'].values())
             if arm != 'native':
                 actual = json.loads((result / 'config.json').read_text())['boundaries']
-                assert actual == ([0, manifest['frames']] if arm == 'no_retirement' else config['boundaries'])
+                assert actual == (config['boundaries'] if arm == 'reanchor' else [0, manifest['frames']])
                 decisions = [json.loads(s) for s in (result / 'segmentation_live.jsonl').read_text().splitlines()]
                 expected = [json.loads(s) for s in (reanchor / 'segmentation_live.jsonl').read_text().splitlines()]
                 assert [{k: v for k, v in r.items() if k != 'seconds'} for r in decisions] == [
                     {k: v for k, v in r.items() if k != 'seconds'} for r in expected]
-                if arm == 'no_retirement':
+                if arm in ('no_retirement', 'three_frame'):
                     assert not metrics['events']
                 row['error_groups'] = error_groups(result, reference, actual)
             archive_directory(result, args.out / f'{args.tag}_{name}.tar')
@@ -210,7 +231,7 @@ if __name__ == '__main__':
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--tag', required=True)
-    parser.add_argument('--stage', choices=('pilot', 'overnight'), required=True)
+    parser.add_argument('--stage', choices=('pilot', 'overnight', 'three-frame'), required=True)
     parser.add_argument('--deadline', type=float, required=True)
     parser.add_argument('--reviewed-pilot', type=Path)
     parser.add_argument('--reviewed-sha256')

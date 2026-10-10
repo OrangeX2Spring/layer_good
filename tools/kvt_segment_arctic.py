@@ -39,6 +39,9 @@ def replay_native(config_path):
     cv2.setNumThreads(1)
     cv2.setRNGSeed(0)
     model = move_pi3_mlps_to_bfloat32(load_pi3_from_pretrained('cuda:0').eval())
+    if config.get('profile_forward', False):
+        from kvt_inference_timing import InferenceTiming
+        forward_timing = InferenceTiming(model)
     timing = {}
 
     def frames():
@@ -70,6 +73,11 @@ def replay_native(config_path):
     timing['includes'] = 'saved pixels/masks, hashing, upload and tracking; excludes SAM/model load/final serialization'
     metrics = evaluate_object(config['scene'], result, manifest['frames'])
     write_json(result / 'summary.json', dict(metrics=metrics, timing=timing, native_fidelity=True))
+    if config.get('profile_forward', False):
+        write_json(result / 'forward_timing.json', forward_timing.finish())
+        from kvt_inference_timing import benchmark_cached_heads
+        last = cv2.imread(str(inputs / 'model_rgb' / manifest['inputs'][-1]['file']))
+        write_json(result / 'cached_head_benchmark.json', benchmark_cached_heads(model, last[:, :, ::-1]))
 
 
 def main(args):
