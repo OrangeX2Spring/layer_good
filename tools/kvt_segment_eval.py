@@ -36,6 +36,9 @@ GROUPS = {'tum-short': ('freiburg1_xyz', 'freiburg1_rpy', 'freiburg1_desk2', 'fr
           'arctic': ('box_grab_01', 'ketchup_grab_01', 'espressomachine_grab_01')}
 GROUPS['tum-long-arctic'] = GROUPS['tum-long'] + GROUPS['arctic']
 GROUPS['cut-control'] = ('freiburg3_long_office_household',) + GROUPS['tum-long']
+# Context-probe diagnostic: does attention to the cached anchor predict where tracking
+# degrades? Native plus anchor-only segments of 150 frames with the probe on.
+GROUPS['probe'] = ('freiburg1_desk', 'freiburg1_room', 'freiburg3_long_office_household') + GROUPS['arctic']
 RANDOM_SEEDS = (0, 1, 2, 3, 4)
 
 
@@ -163,6 +166,11 @@ def main(args):
             control = tracker(inputs, native_metrics, f'eval_{scene}_segmented', scene,
                               ['--detector-config', str(policy)])
         record(scene, 'segmented', control, native_dir, frames)
+        if args.group == 'probe':
+            result = tracker(inputs, native_metrics, f'eval_{scene}_anchor_probe', scene,
+                             ['--anchor-segments', 'schedule', '--segment-length', '150', '--context-probe'])
+            record(scene, 'anchor_probe', result, native_dir, frames)
+            continue
         if args.group == 'cut-control':
             orb_cuts = json.loads((control / 'summary.json').read_text())['cut_frames']
             for arm, seed in [('segmented_uniform', None)] + [(f'segmented_random{s}', s) for s in RANDOM_SEEDS]:

@@ -83,3 +83,32 @@ no_loop, so ATE there scores only the start and end of each route.
 Entry: `bash tools/kvt_tum.sbatch segment-eval cut-control` from layer_good. Markers:
 `SEGMENT EVAL <scene> <arm> ...` per run, `SEGMENT EVAL COMPLETE cut-control 24 runs`,
 `SEGMENT EVAL cut-control JOB OK`.
+
+## Context-probe diagnostic: does the model's own attention say when the anchor stops helping? (group probe)
+
+User direction (2026-10-11): an automatic cut/loop signal from the KV cache's own context,
+replacing ORB. Earlier "semantic/context" signals did not measure what the tracker uses:
+25680 keyframe novelty pooled frame-local decoder[0] features (before any cross-frame
+attention); 25996 K9 measured a keyframe's own register-to-patch attention at admission;
+K7 tracked masked-black background on objects; 25978 context mass was uncorrected for
+attention sinks. This probe measures the query itself.
+
+`kv_tracker.context_probe.ContextProbe` hooks the 18 cross-frame decoder blocks (odd
+indices) and, for each cached query, recomputes the softmax of the query's patch tokens
+(object patches only on ARCTIC) over [cached bank keys, own keys] exactly as
+forward_w_cache does. Per layer: support = cached-patch / (cached-patch + own-patch) mass
+(register sinks excluded), top1 = share of (head, patch) whose strongest key is a cached
+patch, object_support (anchor object patches only), and register (sink) masses. It reads
+only; probe time is logged and included in query time.
+
+Run: fr1_desk, fr1_room, fr3 office and the three ARCTIC objects; arms native, segmented
+(ORB control) and anchor_probe (anchor-only segments cut every 150 frames so support can
+decay, probe on). 18 runs. Entry `bash tools/kvt_tum.sbatch segment-eval probe`.
+
+Analysis fixed before the run (Mac, saved arrays, GT for diagnosis only): per sequence and
+layer, rank correlation of support/top1 with per-pair excess error over native and with
+frames since the anchor; partial correlation controlling for frames since the anchor; and
+whether the signal separates the worst 10% excess pairs (AUC) better than frames since the
+anchor alone. A signal is promising only if it adds information beyond anchor age on most
+sequences, objects included. Then it becomes the cut rule and is tested against random
+placement as in 26524.

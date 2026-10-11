@@ -11,6 +11,7 @@ from kv_tracker.map_handoff import MapHandoff, transform_pose
 from kv_tracker.reanchor_maps import ReanchorMaps
 from kv_tracker.retrieval_bank import RetrievalBank
 from kv_tracker.anchor_segments import AnchorSegments
+from kv_tracker.context_probe import ContextProbe, token_mask
 
 
 def pose(angle, position):
@@ -51,7 +52,54 @@ def yaw(degrees, position=(0., 0., 0.)):
     return result
 
 
+class ProbeBlock(torch.nn.Module):
+    """Pi3 BlockRope stand-in: zero queries give uniform attention over every key."""
+    def __init__(self, dim=8, heads=2):
+        super().__init__()
+        self.norm1 = torch.nn.Identity()
+        self.attn = SimpleNamespace(num_heads=heads, scale=(dim // heads) ** -.5, rope=None,
+                                    q_norm=torch.nn.Identity(), k_norm=torch.nn.Identity(),
+                                    qkv=torch.nn.Linear(dim, 3 * dim))
+        with torch.no_grad():
+            self.attn.qkv.weight[:dim] = 0
+            self.attn.qkv.bias[:dim] = 0
+
+    def forward(self, x, xpos=None, attn_mask=None, kv_cache=None, ret_kv=False):
+        return x
+
+
 class ReanchorTests(unittest.TestCase):
+    def test_context_probe_splits_attention_mass_by_token_group(self):
+        model = SimpleNamespace(decoder=torch.nn.ModuleList([ProbeBlock() for _ in range(36)]),
+                                patch_start_idx=5)
+        probe = ContextProbe(model)
+        probe.attach()
+        x = torch.randn(1, 9, 8)  # 5 register tokens + 4 patches
+        cache = {'k': torch.randn(1, 2, 18, 4)}  # two cached frames of 9 tokens
+        probe.set_anchor(torch.tensor([True, True, False, False]))
+        probe.arm(torch.tensor([True, False, True, True]))
+        for index, block in enumerate(model.decoder):
+            block(x, xpos=None, kv_cache=cache if index % 2 else None)
+        result = probe.result()
+        self.assertEqual(len(result['layers']), 18)
+        layer = result['layers'][0]
+        # Uniform over 27 keys: cached patches 8, cached registers 10, own patches 4, own registers 5.
+        self.assertAlmostEqual(layer['support'], 8 / 12, places=5)
+        self.assertAlmostEqual(layer['cache_register'], 10 / 27, places=5)
+        self.assertAlmostEqual(layer['own_register'], 5 / 27, places=5)
+        self.assertAlmostEqual(layer['object_support'], .5, places=5)
+        self.assertEqual((layer['query_patches'], layer['cached_frames'], layer['top1']), (3, 2, 0.))
+        # Rebuild passes (no kv_cache) are not measured; an unarmed probe records nothing.
+        model.decoder[1](x, xpos=None)
+        self.assertIsNone(probe.rows)
+        probe.detach()
+
+    def test_token_mask_takes_majority_pixels_per_patch(self):
+        mask = torch.zeros(28, 42, dtype=torch.bool)
+        mask[:14, :14] = True
+        mask[14:, 14:22] = True  # 8 of 14 columns: majority of that patch
+        self.assertEqual(token_mask(mask).tolist(), [True, False, False, False, True, False])
+
     def test_anchor_segments_cut_on_schedule_and_release_old_kv(self):
         model = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]), cache={})
         rows = []

@@ -76,6 +76,9 @@ def main(args):
         or args.latest_anchor or args.pin_rebuilds or args.novelty_refresh
         or args.segmentation or args.detector_config or args.local_keyframe_cap != 2)
     assert args.anchor_segments != 'object_view' or args.object_scene
+    # The context probe and custom segment length are diagnostics of anchor-only segments.
+    assert not args.context_probe or args.anchor_segments
+    assert args.segment_length == 48 or args.anchor_segments == 'schedule'
     # Fixed cut frames (placement control): same maps and connections, no detector.
     assert args.cut_frames is None or not (
         args.disable_retirement or args.anchor_segments or args.segmentation or args.detector_config)
@@ -147,7 +150,8 @@ def main(args):
         novelty_refresh=args.novelty_refresh and 'extra rebuild after frame 49 when native check_if_keyframe fires',
         retrieval_bank=args.retrieval_bank,
         cut_frames=args.cut_frames and str(args.cut_frames),
-        anchor_segments=args.anchor_segments and dict(cut=args.anchor_segments, length=48, covisibility=.7,
+        context_probe=args.context_probe,
+        anchor_segments=args.anchor_segments and dict(cut=args.anchor_segments, length=args.segment_length, covisibility=.7,
                                                       view_degrees=20., bank='segment anchor only, never rebuilt',
                                                       connection='immediate at the cut: pose-pinned, point-fit scale'),
         admission=args.retrieval_bank and ('native check_if_keyframe against all stored keyframes'
@@ -185,9 +189,14 @@ def main(args):
         if args.novelty_refresh or (args.retrieval_bank and args.object_scene):
             from main import check_if_keyframe  # native object keyframe rule, unchanged thresholds
             novelty = check_if_keyframe
+        probe = None
+        if args.context_probe:
+            from kv_tracker.context_probe import ContextProbe
+            probe = ContextProbe(model)
+            probe.attach()
         if args.anchor_segments:
             tracker = AnchorSegments(model, lambda row: log(dict(row, segment_start=0, global_frame=row['frame'])),
-                                     args.anchor_segments)
+                                     args.anchor_segments, length=args.segment_length, probe=probe)
         elif args.retrieval_bank:
             tracker = RetrievalBank(model, lambda row: log(dict(row, segment_start=0, global_frame=row['frame'])),
                                     capacity=args.retrieval_bank, novelty=novelty)
@@ -218,7 +227,7 @@ def main(args):
                 if decision['boundary'] and not args.disable_retirement:
                     boundaries.insert(-1, frame)
             mask = None
-            if novelty is not None or args.anchor_segments == 'object_view':
+            if novelty is not None or args.anchor_segments == 'object_view' or (args.context_probe and args.object_scene):
                 mask = cv2.imread(str(inputs / 'model_masks' / Path(row['file']).name), cv2.IMREAD_GRAYSCALE) > 127
                 assert hashlib.sha256(mask.tobytes()).hexdigest() == row['model_mask_sha256'], frame
                 mask = torch.from_numpy(mask)
@@ -332,6 +341,10 @@ if __name__ == '__main__':
                         help='Keep the old map until b+49 and take connection scale from shared displacements')
     parser.add_argument('--cut-frames', type=Path,
                         help='JSON list of fixed cut frames (placement control); no detector')
+    parser.add_argument('--context-probe', action='store_true',
+                        help='Log per-query attention to the cached anchor in every cross-frame layer')
+    parser.add_argument('--segment-length', type=int, default=48,
+                        help='Frames per anchor-only segment for --anchor-segments schedule')
     parser.add_argument('--anchor-segments', choices=('schedule', 'covisibility', 'object_view'),
                         help='Anchor-only segments cut every 48 frames or by a tracker-side signal; no detector')
     parser.add_argument('--latest-anchor', action='store_true',
