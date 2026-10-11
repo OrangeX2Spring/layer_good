@@ -57,3 +57,29 @@ Success, per sequence: an anchor-only arm improves on `segmented` in all three o
 RPE and p99; the overall target remains native within 5%. Report speed and memory with
 accuracy. Object RPE is measured after Sim(3) alignment: read alignment_scale and
 rotation RPE with it.
+
+## Cut-placement control: does ORB's placement matter? (group cut-control)
+
+Question (user, 2026-10-11): does the ORB detector work in the segmented design on
+with_loop/no_loop, or is the result a coincidence? Existing runs cannot answer: the
+anchor-only arms also changed the bank and the connection. This group keeps the
+segmented design exactly (two-image segment banks, pose-pinned point-fit connection at
+b+49) and changes only where the cuts fall.
+
+Sequences: fr3 office, fr2 large_with_loop, fr2 large_no_loop. Arms (8 per sequence,
+24 runs): native; segmented with live ORB cuts (26159 policy); the same number of cuts
+evenly spaced (`segmented_uniform`); and placed uniformly at random with every cut at
+least 50 frames from the previous one and from the end (`segmented_random0..4`, seeds
+0-4). Runner `--cut-frames <json>` gives fixed boundaries without a detector; cut files
+are saved in the comparison archive.
+
+Decision rule, fixed before the run: ORB placement "works" on a sequence if the ORB arm
+is better than the uniform arm and better than all five random placements on ATE, and
+not worse than their median on RPE and p99. If ORB lies inside the random range, its
+result there is consistent with chance placement. Five seeds give a coarse range only.
+Caveat: GT covers 24% of with_loop (none between frames 636 and 4529) and 19% of
+no_loop, so ATE there scores only the start and end of each route.
+
+Entry: `bash tools/kvt_tum.sbatch segment-eval cut-control` from layer_good. Markers:
+`SEGMENT EVAL <scene> <arm> ...` per run, `SEGMENT EVAL COMPLETE cut-control 24 runs`,
+`SEGMENT EVAL cut-control JOB OK`.

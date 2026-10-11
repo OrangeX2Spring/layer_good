@@ -76,12 +76,20 @@ def main(args):
         or args.latest_anchor or args.pin_rebuilds or args.novelty_refresh
         or args.segmentation or args.detector_config or args.local_keyframe_cap != 2)
     assert args.anchor_segments != 'object_view' or args.object_scene
+    # Fixed cut frames (placement control): same maps and connections, no detector.
+    assert args.cut_frames is None or not (
+        args.disable_retirement or args.anchor_segments or args.segmentation or args.detector_config)
     cap = args.retrieval_bank or args.local_keyframe_cap
     if args.native_metrics:
-        assert args.detector_config is not None or args.anchor_segments, \
-            'Non-office runs require a live detector policy or anchor-only segments'
+        assert args.detector_config is not None or args.anchor_segments or args.cut_frames, \
+            'Non-office runs require a live detector policy, anchor-only segments or fixed cut frames'
 
     boundaries = [0, frames] if args.anchor_segments else list(BOUNDARIES)
+    if args.cut_frames:
+        cuts = json.loads(args.cut_frames.read_text())
+        boundaries = [0, *cuts, frames]
+        # Each connection commits at b+49, before the next cut.
+        assert all(b - a >= 50 for a, b in zip(boundaries[:-2], boundaries[1:-1])) and cuts[-1] < frames
     detector = None
     if args.segmentation is not None or args.detector_config is not None:
         from kvt_segment_detector import SegmentDetector, FlowSegmentDetector, POLICY, FLOW_POLICY
@@ -138,6 +146,7 @@ def main(args):
         fuse_scale=args.fuse_scale and 'geometric mean of the shared-keyframe chain and the anchor scale',
         novelty_refresh=args.novelty_refresh and 'extra rebuild after frame 49 when native check_if_keyframe fires',
         retrieval_bank=args.retrieval_bank,
+        cut_frames=args.cut_frames and str(args.cut_frames),
         anchor_segments=args.anchor_segments and dict(cut=args.anchor_segments, length=48, covisibility=.7,
                                                       view_degrees=20., bank='segment anchor only, never rebuilt',
                                                       connection='immediate at the cut: pose-pinned, point-fit scale'),
@@ -321,6 +330,8 @@ if __name__ == '__main__':
                         help='Object scenes: also rebuild when native check_if_keyframe fires after frame 49')
     parser.add_argument('--overlap-bridge', action='store_true',
                         help='Keep the old map until b+49 and take connection scale from shared displacements')
+    parser.add_argument('--cut-frames', type=Path,
+                        help='JSON list of fixed cut frames (placement control); no detector')
     parser.add_argument('--anchor-segments', choices=('schedule', 'covisibility', 'object_view'),
                         help='Anchor-only segments cut every 48 frames or by a tracker-side signal; no detector')
     parser.add_argument('--latest-anchor', action='store_true',

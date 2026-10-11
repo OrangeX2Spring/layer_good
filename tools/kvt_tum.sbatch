@@ -29,8 +29,8 @@ if [ "$MODE" = object-history ]; then
 fi
 if [ "$MODE" = segment-eval ]; then
     case "${2:-}" in
-        tum-short|tum-long|arctic|tum-long-arctic) ;;
-        *) echo 'Choose segment-eval tum-short, tum-long, arctic or tum-long-arctic' >&2; exit 2 ;;
+        tum-short|tum-long|arctic|tum-long-arctic|cut-control) ;;
+        *) echo 'Choose segment-eval tum-short, tum-long, arctic, tum-long-arctic or cut-control' >&2; exit 2 ;;
     esac
 fi
 if [ "$MODE" = adaptive-tokens ] && [ "${2:-gate}" = task-policy ]; then

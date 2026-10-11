@@ -2,7 +2,11 @@
 
 Groups: 'tum-short' (five fr1 sequences and fr3 office), 'tum-long' (fr2 large with/no
 loop), 'arctic' (box, ketchup, espressomachine), and 'tum-long-arctic' (both of the
-latter in one job, since one running job per user is allowed). Arms per sequence:
+latter in one job, since one running job per user is allowed). Group 'cut-control'
+(office, with_loop, no_loop) asks whether ORB's cut placement matters: native, the
+segmented design with live ORB cuts, and the same maps/connections with the same
+number of cuts placed uniformly or at random (five seeds, cuts at least 50 apart).
+Arms per sequence in the other groups:
 - native: KV-Tracker unchanged, fresh in-job run on the same saved pixels;
 - segmented: the current design (live ORB cuts at 25 inliers, two-image segment banks,
   pose-pinned point-fit connection; objects use the 26458 anchor-support policy);
@@ -31,6 +35,21 @@ GROUPS = {'tum-short': ('freiburg1_xyz', 'freiburg1_rpy', 'freiburg1_desk2', 'fr
           'tum-long': ('freiburg2_large_with_loop', 'freiburg2_large_no_loop'),
           'arctic': ('box_grab_01', 'ketchup_grab_01', 'espressomachine_grab_01')}
 GROUPS['tum-long-arctic'] = GROUPS['tum-long'] + GROUPS['arctic']
+GROUPS['cut-control'] = ('freiburg3_long_office_household',) + GROUPS['tum-long']
+RANDOM_SEEDS = (0, 1, 2, 3, 4)
+
+
+def placements(count, frames, seed=None):
+    """`count` cuts at least 50 frames apart: evenly spaced, or uniformly random."""
+    if seed is None:
+        cuts = [round(i * frames / (count + 1)) for i in range(1, count + 1)]
+    else:
+        free = frames - 50 * (count + 1)
+        assert free > 0
+        offsets = np.sort(np.random.default_rng(seed).choice(free, count, replace=False))
+        cuts = [int(o) + 50 * (i + 1) for i, o in enumerate(offsets)]
+    assert all(b - a >= 50 for a, b in zip([0] + cuts, cuts)) and cuts[-1] < frames
+    return cuts
 FRAMES = dict(freiburg1_xyz=798, freiburg1_rpy=723, freiburg1_desk2=640, freiburg1_desk=613,
               freiburg1_room=1362, freiburg3_long_office_household=2585,
               freiburg2_large_with_loop=5182, freiburg2_large_no_loop=3359)
@@ -94,7 +113,7 @@ def main(args):
         if base:
             row['native_ratios'] = {k: metrics[k] / base[0]['metrics'][k] for k in KEYS}
         control = [r for r in report['runs'] if r['scene'] == scene and r['arm'] == 'segmented']
-        if control and arm.startswith('anchor'):
+        if control and arm != 'segmented' and arm != 'native':
             row['segmented_ratios'] = {k: metrics[k] / control[0]['metrics'][k] for k in KEYS}
         if arm == 'native' and not objects:
             row['native_25680_ate_m'] = NATIVE_25680_ATE[scene]
@@ -144,6 +163,14 @@ def main(args):
             control = tracker(inputs, native_metrics, f'eval_{scene}_segmented', scene,
                               ['--detector-config', str(policy)])
         record(scene, 'segmented', control, native_dir, frames)
+        if args.group == 'cut-control':
+            orb_cuts = json.loads((control / 'summary.json').read_text())['cut_frames']
+            for arm, seed in [('segmented_uniform', None)] + [(f'segmented_random{s}', s) for s in RANDOM_SEEDS]:
+                cuts = comparison / f'{scene}_{arm}_cuts.json'
+                write_json(cuts, placements(len(orb_cuts), frames, seed))
+                result = tracker(inputs, native_metrics, f'eval_{scene}_{arm}', scene, ['--cut-frames', str(cuts)])
+                record(scene, arm, result, native_dir, frames)
+            continue
         for arm, cut in (('anchor_schedule', 'schedule'), ('anchor_signal', signal)):
             result = tracker(inputs, native_metrics, f'eval_{scene}_{arm}', scene, ['--anchor-segments', cut])
             record(scene, arm, result, native_dir, frames)
