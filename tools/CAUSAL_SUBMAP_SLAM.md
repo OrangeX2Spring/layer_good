@@ -47,4 +47,26 @@ VGGT-SLAM's protocol, the back-end-optimised trajectory.
 - Sequences: loops matter most on fr3 office, fr1_room, fr2 with_loop; 7-Scenes (used by
   VGGT-SLAM) availability on CAMP unchecked.
 
+## Reconstruction is untested (user, 2026-10-11)
+
+None of our runs has evaluated 3D reconstruction; all comparisons are poses. The
+KV-Tracker paper (arXiv 2512.22581) also reports only pose metrics (TUM, 7-Scenes,
+ARCTIC ATE; OnePose recall) and shows reconstruction (fused keyframe pointmaps,
+low-confidence keyframes pruned, threshold not given) qualitatively. VGGT-SLAM reports
+dense reconstruction on 7-Scenes (accuracy, completion, Chamfer). Earlier we ran one
+GT-assisted ketchup surface diagnostic (cluster_results/kvt_arctic/visualizations_25632/
+ketchup_redundancy, ARCTIC mesh template), not a method comparison.
+
+Needed for a reconstruction evaluation, all on CAMP:
+- Export: native already saves keyframe pointmaps (pcd.npy, final_scene.npz); bounded
+  runs save no geometry yet: save each segment anchor's confident pointmap and its
+  segment transform (the causal map), plus the final fused cloud.
+- GT: TUM depth images with GT poses (prepare() currently extracts RGB only; depth would
+  be extracted for evaluation only, never for tracking); ARCTIC object mesh templates
+  with articulation and object poses; 7-Scenes availability unchecked.
+- Metrics: accuracy, completion, Chamfer, F-score at a fixed threshold, after the
+  trajectory's Sim(3) alignment (no ICP for the primary number). The confidence
+  threshold for fusion must be fixed per method before scoring (see the earlier lesson
+  that apparent hallucination can be an uncalibrated retention threshold).
+
 Pending input: cut-placement control 26524 (does ORB placement matter).
