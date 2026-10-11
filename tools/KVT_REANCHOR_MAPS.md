@@ -1,3 +1,5 @@
+> 2026-10-11: for the current state of this line (results on 11 sequences, what was tried, plan) start at [KVT_SEGMENTATION_OVERVIEW.md](KVT_SEGMENTATION_OVERVIEW.md). This file documents the original design.
+
 # Reanchored local maps: the original idea, reimplemented
 
 User-selected, 2026-10-02. It replaces the oracle-maps connection policy
