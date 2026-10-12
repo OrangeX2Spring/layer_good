@@ -25,6 +25,10 @@ when new evidence (a loop closure) arrives; the correction applies to frames fro
 time on. Report both the immediate trajectory (primary) and, for comparison with
 VGGT-SLAM's protocol, the back-end-optimised trajectory.
 
+Closest published causal method: Anchor3R (CoRL 2026), current-frame anchors with a
+median-fused relative-pose graph and offline loop averaging; paper-level comparison in
+`tools/ANCHOR3R_COMPARISON.md`.
+
 ## Mechanisms to borrow (VGGT-SLAM) and their causal form
 
 1. Submaps: a segment is a submap with its own Pi3 gauge (already the user's design).
@@ -42,8 +46,8 @@ VGGT-SLAM's protocol, the back-end-optimised trajectory.
 
 - Retrieval descriptor: Pi3's own encoder features (no new model, no download) or SALAD
   as in VGGT-SLAM (needs a model download through the HF job and a dependency).
-- Baseline: run VGGT-SLAM ourselves on our inputs and evaluator (needs its dependencies in
-  a container) to get a matched comparison including speed, latency and memory.
+- Baseline: decided 2026-10-12, VGGT-SLAM 1.0/2.0 and MASt3R-SLAM run by us in the
+  borrowed kvt image: `tools/SLAM_BASELINES.md`.
 - Sequences: loops matter most on fr3 office, fr1_room, fr2 with_loop; 7-Scenes (used by
   VGGT-SLAM) availability on CAMP unchecked.
 
