@@ -112,3 +112,45 @@ whether the signal separates the worst 10% excess pairs (AUC) better than frames
 anchor alone. A signal is promising only if it adds information beyond anchor age on most
 sequences, objects included. Then it becomes the cut rule and is tested against random
 placement as in 26524.
+
+## Carry-over pilot: does keeping part of the old map help the connection? (group carry)
+
+User direction (2026-10-12): segment reset plus selective carry-over of old-segment tokens,
+pilot on fr2 and office. Prior work (docs/streaming-model-landscape.md §8b, gitignored):
+OVGGT keeps the top 5% confident tokens of overlap-triggered anchors but never resets the
+coordinate frame; LongStream resets but is trained; the training-free combination was not
+found. Arms chosen by the user (four-arm option).
+
+Why the connection matters (FINDINGS 26159): segment starts track at native level and
+seams carry < 1% of squared RPE; about 90% of the excess squared ATE is between segments,
+the chain of connections pinned on the old map's pose of b, its least-covered frame.
+
+Design. Same segmented design and live ORB cuts (every arm must cut where the control
+did; asserted). At each cut the old map's latest rebuild keyframe L is copied to the CPU and
+a quarter of its patches (ceil(P/4); 25% is Claude's choice, the 25996 budget) joins the new
+map's bootstrap and every rebuild (`MapHandoff(carry=...)`, Pi3 forward over kept patches;
+the cache holds them) until the next cut replaces it. Old KV and images are still deleted.
+
+| Arm | Patches of L | Connection |
+|---|---|---|
+| segmented | none | pinned at b, point-fit scale (control) |
+| carry_confidence | top quarter by the old rebuild's confidence of L (patch mean) | unchanged |
+| carry_confidence_pin | same | rotation/position pinned on L: old map's rebuild pose vs the new map's first joint rebuild containing L; point-fit scale at b |
+| carry_random0/1/2 | uniformly random quarter (seeded per cut) | unchanged |
+
+Plus native. 21 runs on office, with_loop, no_loop. carry_confidence is the plan as
+proposed; carry_random is its selector control (25996: selectors did not beat random);
+carry_confidence_pin targets the measured cause. 26518 pinned on L via one query and was
+worse; here L is a member of the new map's joint rebuild.
+
+Primary readout: `segment_split` in the driver, per run and native on the same GT-valid
+frames: squared ATE under the one global Sim(3) minus squared ATE with one Sim(3) per
+segment (segments with < 3 GT frames skipped) = between-segment part; reported as excess
+over native (cm^2), with the within-segment excess. Also ATE/RPE/p99, FPS, peak memory.
+Proposed reading (Claude's, before the run): an arm is promising if on office its excess
+between-segment error is at least 25% below the control's and below all three random
+seeds, without worse fr2 ATE. fr2: GT covers 24%/19% of frames, so its readout is coarse.
+
+Entry: `bash tools/kvt_tum.sbatch segment-eval carry` from layer_good. Markers: contract
+suites OK, `SEGMENT EVAL <scene> <arm> ...` and `SEGMENT SPLIT <scene> <arm> ...` per run
+(native has no split line), `SEGMENT EVAL COMPLETE carry 21 runs`, `SEGMENT EVAL carry JOB OK`.

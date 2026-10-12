@@ -14,6 +14,11 @@ Arms per sequence in the other groups:
 - anchor_signal: anchor-only segments cut by a tracker-side signal (anchor covisibility
   below 0.7 for TUM; viewing direction about the object centre beyond 20 degrees for
   ARCTIC), no detector.
+Group 'carry' (office, with_loop, no_loop; 2026-10-12 pilot): native, segmented, and the
+same design with live ORB cuts plus a carried quarter of the old map's latest keyframe L:
+by confidence (connection unchanged), by confidence with the connection pinned on L, and
+at random (three seeds). Each segmented-family run also records the between-segment split
+of squared ATE (segment_split), the pilot's primary readout.
 The thresholds are fixed, uncalibrated choices (FINDINGS 2026-10-10 detector analysis).
 No GT in tracking. The deadline is the job's own Slurm end time.
 """
@@ -40,6 +45,11 @@ GROUPS['cut-control'] = ('freiburg3_long_office_household',) + GROUPS['tum-long'
 # degrades? Native plus anchor-only segments of 150 frames with the probe on.
 GROUPS['probe'] = ('freiburg1_desk', 'freiburg1_room', 'freiburg3_long_office_household') + GROUPS['arctic']
 RANDOM_SEEDS = (0, 1, 2, 3, 4)
+GROUPS['carry'] = GROUPS['cut-control']
+# Priority order: the deadline stops before a run that would not finish.
+CARRY_ARMS = (('carry_confidence', ['--carry', 'confidence']),
+              ('carry_confidence_pin', ['--carry', 'confidence', '--carry-pin']),
+              *((f'carry_random{s}', ['--carry', 'random', '--carry-seed', str(s)]) for s in (0, 1, 2)))
 
 
 def placements(count, frames, seed=None):
@@ -65,6 +75,33 @@ TUM_POLICY = dict(detector='orb', minimum_inliers=25)  # 26159 live office polic
 ARMS = ('native', 'segmented', 'anchor_schedule', 'anchor_signal')
 KEYS = ('ate_m', 'rpe_translation_m', 'translation_p99_m')
 RESERVE_SECONDS = 900  # left for archiving after the last run
+
+
+def segment_split(result, native_dir, cuts, frames):
+    """Squared ATE (m^2) under the one global Sim(3) versus one Sim(3) per segment, for the
+    run and native on the same GT-valid frames; between = global - within (FINDINGS 26159
+    decomposition). Segments with fewer than 3 GT-valid frames (fr2 gaps) are skipped."""
+    from kv_tracker.geometry import umeyama_alignment
+    bounds = [0, *cuts, frames]
+    split = {}
+    for name, run in (('run', result), ('native', native_dir)):
+        with np.load(run / 'evaluation.npz') as q:
+            index, gt, global_error = q['rgb_indices'], q['reference'][:, :3, 3], q['ate_per_frame_m']
+        estimate = np.load(run / 'traj.npy')[index, :3, 3]
+        within, used = [], np.zeros(len(index), dtype=bool)
+        for start, end in zip(bounds[:-1], bounds[1:]):
+            inside = (index >= start) & (index < end)
+            if inside.sum() < 3:
+                continue
+            rotation, translation, scale = umeyama_alignment(estimate[inside].T, gt[inside].T, with_scale=True)
+            within.append(np.linalg.norm(scale * estimate[inside] @ rotation.T + translation - gt[inside], axis=1))
+            used |= inside
+        total, local = float(np.mean(global_error[used] ** 2)), float(np.mean(np.concatenate(within) ** 2))
+        split[name] = dict(global_sq_m2=total, within_sq_m2=local, between_sq_m2=total - local,
+                           segments_scored=len(within), frames_scored=int(used.sum()))
+    split['excess_between_sq_m2'] = split['run']['between_sq_m2'] - split['native']['between_sq_m2']
+    split['excess_within_sq_m2'] = split['run']['within_sq_m2'] - split['native']['within_sq_m2']
+    return split
 
 
 def main(args):
@@ -120,6 +157,11 @@ def main(args):
             row['segmented_ratios'] = {k: metrics[k] / control[0]['metrics'][k] for k in KEYS}
         if arm == 'native' and not objects:
             row['native_25680_ate_m'] = NATIVE_25680_ATE[scene]
+        if args.group == 'carry' and arm != 'native':
+            row['split'] = segment_split(result, native_dir, summary['cut_frames'], frames)
+            print('SEGMENT SPLIT', scene, arm, 'excess between/within cm^2',
+                  round(1e4 * row['split']['excess_between_sq_m2'], 2),
+                  round(1e4 * row['split']['excess_within_sq_m2'], 2), flush=True)
         report['runs'].append(row)
         save()
         print('SEGMENT EVAL', scene, arm, 'ATE/RPE/p99 m', [round(metrics[k], 4) for k in KEYS],
@@ -170,6 +212,15 @@ def main(args):
             result = tracker(inputs, native_metrics, f'eval_{scene}_anchor_probe', scene,
                              ['--anchor-segments', 'schedule', '--segment-length', '150', '--context-probe'])
             record(scene, 'anchor_probe', result, native_dir, frames)
+            continue
+        if args.group == 'carry':
+            orb_cuts = json.loads((control / 'summary.json').read_text())['cut_frames']
+            for arm, extra in CARRY_ARMS:
+                result = tracker(inputs, native_metrics, f'eval_{scene}_{arm}', scene,
+                                 ['--detector-config', str(policy), *extra])
+                # Live ORB sees only pixels, so every arm must cut where the control did.
+                assert json.loads((result / 'summary.json').read_text())['cut_frames'] == orb_cuts, arm
+                record(scene, arm, result, native_dir, frames)
             continue
         if args.group == 'cut-control':
             orb_cuts = json.loads((control / 'summary.json').read_text())['cut_frames']

@@ -769,6 +769,109 @@ class ReanchorTests(unittest.TestCase):
         torch.testing.assert_close(transform_pose(new_latest, tracker.transforms[1]), expected,
                                    atol=1e-5, rtol=1e-5)
 
+    def test_carried_keyframe_joins_every_bank_with_its_patches(self):
+        model = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]), cache={})
+        keep = torch.tensor([True, False, False, True])  # 28x28 input: 2x2 patches
+        tracker = MapHandoff(model, 'reanchor', lambda row: None, None,
+                             carry=dict(image=np.full((28, 28, 3), 7, dtype=np.uint8), id=-30, keep=keep))
+        carried_pose = torch.from_numpy(pose(.3, [1., 2., 3.]))
+        calls = []
+
+        def pi3(model, images, device, cam_only=False, store_cache=False, use_cache=False, keep=None):
+            if cam_only:
+                return torch.eye(4)[None, None]
+            n = images[0].shape[0]
+            calls.append(([int(x[0, 0, 0]) for x in images[0]], keep.tolist()))
+            model.cache = {1: {'k': torch.ones(1, 1, 5 * n + int(keep.sum()))}}
+            poses = torch.eye(4).repeat(1, n, 1, 1)
+            poses[0, 1] = carried_pose
+            return (torch.ones(1, n, 28, 28, 3), poses, torch.ones(1, n, 28, 28, 1), None, None, torch.eye(4))
+
+        with patch('torch.cuda.synchronize'), patch('kv_tracker.map_handoff.pi3_inference', pi3):
+            tracker.bootstrap(np.zeros((28, 28, 3), dtype=np.uint8))
+            for frame in range(1, 100):
+                tracker.step(np.full((28, 28, 3), frame, dtype=np.uint8), frame)
+        mask = [[True] * 4, keep.tolist()]
+        self.assertEqual(calls, [([0, 7], mask), ([0, 7, 49], mask + [[True] * 4]),
+                                 ([0, 7, 99], mask + [[True] * 4])])
+        self.assertEqual(tracker.ids, [0, 99])  # the carried frame is not a bank member
+        self.assertEqual(int(tracker.images[-1][0, 0, 0]), 99)
+        torch.testing.assert_close(tracker.carry_pose, carried_pose)
+
+    def test_carry_selects_old_latest_keyframe_patches_and_keeps_connection(self):
+        conf = torch.zeros(84, 84)  # 6x6 patches
+        conf[:14, 14:28], conf[28:42, :14], conf[70:, 70:] = 3., 2., 1.  # patches 1, 12, 35
+        raw_latest, carried_pose = pose(.3, [1., -.5, .25]), pose(-.2, [.4, .1, -.3])
+        carries = []  # what each new map received; keeping the maps would block their release
+
+        class LocalMap:
+            def __init__(self, model, mode, log, save, query_executor=None, local_keyframe_cap=2,
+                         pin_rebuilds=False, pin_scale=False, shared_scale=False, fuse_scale=False,
+                         novelty_refresh=None, carry=None):
+                self.model, self.rebuild_scale = model, 1.
+                self.transform = (torch.tensor(1., dtype=torch.float64),
+                                  torch.eye(3, dtype=torch.float64), torch.zeros(3, dtype=torch.float64))
+                carries.append(carry)
+
+            def bootstrap(self, image, mask=None):
+                self.images, self.ids = [image], [0]
+                self.model.cache = {1: {'k': torch.ones(4)}}
+                return np.eye(4, dtype=np.float32)
+
+            def step(self, image, frame, update=True, dense_query=False, mask=None):
+                if frame == 49:
+                    self.images, self.ids = [self.images[0], image], [0, 49]
+                    self.model.cache = {1: {'k': torch.ones(8)}}
+                    self.rebuild_scale, self.latest_pose = 2., torch.from_numpy(raw_latest)
+                    self.latest_points, self.latest_conf = grid(), conf
+                    self.anchor_points, self.anchor_conf = grid(), torch.ones(80, 80)
+                    self.carry_pose = torch.from_numpy(carried_pose)
+                return np.eye(4, dtype=np.float32)
+
+            def query_geometry(self, image, frame):
+                return grid().double(), torch.eye(4, dtype=torch.float64), torch.ones(80, 80)
+
+        def run(**options):
+            carries.clear()
+            model = SimpleNamespace(cache={})
+            with patch('kv_tracker.reanchor_maps.MapHandoff', LocalMap), patch(
+                    'kv_tracker.reanchor_maps.bridge',
+                    return_value=(None, dict(accepted=False, scale=3.), {})):
+                tracker = ReanchorMaps(model, (0, 125, 250), lambda row: None, lambda e, d: None,
+                                       carry_fraction=.08, **options)  # ceil(.08 * 36) = 3 patches
+                for frame in range(250):
+                    tracker.step(np.full((84, 84, 3), frame, dtype=np.uint8), frame)
+            return tracker
+
+        tracker = run(carry='confidence')
+        # ReanchorMaps itself asserts the old map's images and KV were released at the cut.
+        carry, event = carries[1], tracker.events[0]
+        self.assertEqual((carries[0], carry['id'], int(carry['image'][0, 0, 0])), (None, 49 - 125, 49))
+        self.assertEqual(carry['keep'].nonzero()[:, 0].tolist(), [1, 12, 35])
+        self.assertEqual((event['carry_policy'], event['carried_frame'], event['carried_patches']),
+                         ('confidence', 49, [1, 12, 35]))
+        self.assertTrue(event['connection'].startswith('pose-anchored at b'))
+        self.assertAlmostEqual(float(tracker.transforms[1][0]), 3.)
+
+        run(carry='random', carry_seed=4)
+        expected = sorted(np.random.default_rng([4, 125]).choice(36, 3, replace=False).tolist())
+        self.assertEqual(carries[1]['keep'].nonzero()[:, 0].tolist(), expected)
+
+        tracker = run(carry='confidence', carry_pin=True)
+        self.assertEqual(tracker.events[0]['latest_frame'], 49)
+        old_latest, new_latest = torch.from_numpy(raw_latest).double(), torch.from_numpy(carried_pose).double()
+        old_latest[:3, 3] *= 2.
+        new_latest[:3, 3] *= 2.  # both maps restore output units with rebuild_scale 2
+        torch.testing.assert_close(transform_pose(new_latest, tracker.transforms[1]), old_latest,
+                                   atol=1e-5, rtol=1e-5)
+
+    def test_carry_excludes_other_connections(self):
+        for option in (dict(two_way=True), dict(latest_anchor=True), dict(local_keyframe_cap=3)):
+            with self.assertRaises(AssertionError):
+                ReanchorMaps(SimpleNamespace(cache={}), (0, 60), Mock(), Mock(), carry='confidence', **option)
+        with self.assertRaises(AssertionError):
+            ReanchorMaps(SimpleNamespace(cache={}), (0, 60), Mock(), Mock(), carry_pin=True)
+
     def test_overlap_connection_requires_retirement_without_pin(self):
         with self.assertRaises(AssertionError):
             ReanchorMaps(SimpleNamespace(cache={}), (0, 60), Mock(), Mock(), pin_rebuilds=True,

@@ -79,10 +79,16 @@ def main(args):
     # The context probe and custom segment length are diagnostics of anchor-only segments.
     assert not args.context_probe or args.anchor_segments
     assert args.segment_length == 48 or args.anchor_segments == 'schedule'
+    # Carry-over keeps part of the old latest keyframe; only the plain segmented design.
+    assert args.carry is None or not (
+        args.disable_retirement or args.retrieval_bank or args.overlap_bridge or args.two_way_bridge
+        or args.latest_anchor or args.anchor_segments or args.local_keyframe_cap != 2)
+    assert args.carry is not None or not args.carry_pin
     # Fixed cut frames (placement control): same maps and connections, no detector.
     assert args.cut_frames is None or not (
         args.disable_retirement or args.anchor_segments or args.segmentation or args.detector_config)
     cap = args.retrieval_bank or args.local_keyframe_cap
+    images_cap = cap + (args.carry is not None)  # the carried keyframe joins every rebuild
     if args.native_metrics:
         assert args.detector_config is not None or args.anchor_segments or args.cut_frames, \
             'Non-office runs require a live detector policy, anchor-only segments or fixed cut frames'
@@ -131,6 +137,8 @@ def main(args):
                     else 'segment first frame + latest') + ', rebuilt every 50; '
                    'later rebuilds rescaled to the first via the anchor pointmap'),
         connection='none' if args.disable_retirement else
+                   'pose-anchored at the carried old latest keyframe L (old rebuild vs new joint rebuild), '
+                   'point-fit scale at b, always committed, 49-frame delay' if args.carry_pin else
                    'pose-anchored at the old latest keyframe L, point-fit scale at b, always committed, '
                    '49-frame delay' if args.latest_anchor else
                    'pose-anchored at b, ' + ('scale from old/new camera displacements on every 5th frame of '
@@ -151,6 +159,11 @@ def main(args):
         retrieval_bank=args.retrieval_bank,
         cut_frames=args.cut_frames and str(args.cut_frames),
         context_probe=args.context_probe,
+        carry=args.carry and dict(policy=args.carry, fraction=args.carry_fraction, seed=args.carry_seed,
+                                  frame='old map latest rebuild keyframe L, patches by its old rebuild confidence'
+                                        if args.carry == 'confidence' else
+                                        'old map latest rebuild keyframe L, uniformly random patches',
+                                  connection='pinned at carried L' if args.carry_pin else 'unchanged (pinned at b)'),
         anchor_segments=args.anchor_segments and dict(cut=args.anchor_segments, length=args.segment_length, covisibility=.7,
                                                       view_degrees=20., bank='segment anchor only, never rebuilt',
                                                       connection='immediate at the cut: pose-pinned, point-fit scale'),
@@ -206,7 +219,9 @@ def main(args):
                                    pin_rebuilds=args.pin_rebuilds, pin_scale=args.pin_scale,
                                    shared_scale=args.shared_scale, fuse_scale=args.fuse_scale,
                                    novelty_refresh=novelty, overlap_stride=5 if args.overlap_bridge else None,
-                                   two_way=args.two_way_bridge, latest_anchor=args.latest_anchor)
+                                   two_way=args.two_way_bridge, latest_anchor=args.latest_anchor,
+                                   carry=args.carry, carry_fraction=args.carry_fraction,
+                                   carry_seed=args.carry_seed, carry_pin=args.carry_pin)
         torch.cuda.reset_peak_memory_stats()
         torch.cuda.synchronize()
         started = time.perf_counter()
@@ -254,7 +269,7 @@ def main(args):
     assert tracker.pending is None and len(tracker.transforms) == len(boundaries) - 1
     assert [e['boundary'] for e in tracker.events] == boundaries[1:-1]
     rows = [json.loads(x) for x in (result / 'inference.jsonl').read_text().splitlines()]
-    assert all(r['input_images'] <= cap for r in rows if 'input_images' in r)
+    assert all(r['input_images'] <= images_cap for r in rows if 'input_images' in r)
     assert all(len(r['bank_ids']) <= cap for r in rows if r['kind'] == 'query')
     np.save(result / 'local_traj.npy', local_poses)
     global_poses = np.concatenate([np.stack([
@@ -351,6 +366,12 @@ if __name__ == '__main__':
                         help='Pin connection rotation/position on the old latest keyframe instead of b')
     parser.add_argument('--two-way-bridge', action='store_true',
                         help='Connection scale from b and the old latest keyframe, each seen by both maps')
+    parser.add_argument('--carry', choices=('confidence', 'random'),
+                        help='Carry part of the old latest keyframe L into every new-map rebuild')
+    parser.add_argument('--carry-fraction', type=float, default=.25, help='Fraction of L patches carried')
+    parser.add_argument('--carry-seed', type=int, default=0, help='Seed for --carry random (per cut)')
+    parser.add_argument('--carry-pin', action='store_true',
+                        help='Pin the connection on L (old rebuild vs new joint rebuild); requires --carry')
     parser.add_argument('--retrieval-bank', type=int, choices=(3, 4, 5),
                         help='GPU bank size retrieved from a CPU keyframe memory; requires --disable-retirement')
     main(parser.parse_args())
