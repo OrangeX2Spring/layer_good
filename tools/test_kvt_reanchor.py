@@ -451,7 +451,7 @@ class ReanchorTests(unittest.TestCase):
         class LocalMap:
             def __init__(self, model, mode, log, save, query_executor=None, local_keyframe_cap=2,
                          pin_rebuilds=False, pin_scale=False, shared_scale=False, fuse_scale=False,
-                         novelty_refresh=None):
+                         novelty_refresh=None, carry=None):
                 self.model = model
                 self.transform = (torch.tensor(1., dtype=torch.float64),
                                   torch.eye(3, dtype=torch.float64), torch.zeros(3, dtype=torch.float64))
@@ -568,7 +568,7 @@ class ReanchorTests(unittest.TestCase):
         class LocalMap:
             def __init__(self, model, mode, log, save, query_executor=None, local_keyframe_cap=2,
                          pin_rebuilds=False, pin_scale=False, shared_scale=False, fuse_scale=False,
-                         novelty_refresh=None):
+                         novelty_refresh=None, carry=None):
                 self.model = model
                 self.transform = (torch.tensor(1., dtype=torch.float64),
                                   torch.eye(3, dtype=torch.float64), torch.zeros(3, dtype=torch.float64))
@@ -619,7 +619,7 @@ class ReanchorTests(unittest.TestCase):
         class LocalMap:
             def __init__(self, model, mode, log, save, query_executor=None, local_keyframe_cap=2,
                          pin_rebuilds=False, pin_scale=False, shared_scale=False, fuse_scale=False,
-                         novelty_refresh=None):
+                         novelty_refresh=None, carry=None):
                 self.model = model
                 self.transform = (torch.tensor(1., dtype=torch.float64),
                                   torch.eye(3, dtype=torch.float64), torch.zeros(3, dtype=torch.float64))
@@ -680,7 +680,7 @@ class ReanchorTests(unittest.TestCase):
         class LocalMap:
             def __init__(self, model, mode, log, save, query_executor=None, local_keyframe_cap=2,
                          pin_rebuilds=False, pin_scale=False, shared_scale=False, fuse_scale=False,
-                         novelty_refresh=None):
+                         novelty_refresh=None, carry=None):
                 self.model, self.rebuild_scale = model, 1.
                 self.transform = (torch.tensor(1., dtype=torch.float64),
                                   torch.eye(3, dtype=torch.float64), torch.zeros(3, dtype=torch.float64))
@@ -726,7 +726,7 @@ class ReanchorTests(unittest.TestCase):
         class LocalMap:
             def __init__(self, model, mode, log, save, query_executor=None, local_keyframe_cap=2,
                          pin_rebuilds=False, pin_scale=False, shared_scale=False, fuse_scale=False,
-                         novelty_refresh=None):
+                         novelty_refresh=None, carry=None):
                 self.model, self.rebuild_scale = model, 1.
                 self.transform = (torch.tensor(1., dtype=torch.float64),
                                   torch.eye(3, dtype=torch.float64), torch.zeros(3, dtype=torch.float64))
