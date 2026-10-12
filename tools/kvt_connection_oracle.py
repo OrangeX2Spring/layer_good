@@ -17,6 +17,13 @@ connections only, never the tracking. Per run directory of tools/kvt_reanchor_ma
 - pinned, segment scale (non-causal diagnostic): the same pin at b, scale from GT
   displacements over the whole segment; separates connection-scale noise from drift
   inside the segment after b.
+- design chain + GT scale (commit / progressive / segment): the run's own connection
+  rotations and cut-frame positions (old map's pose of b, bridge_<b>.npz), with only each
+  segment's scale replaced by its GT metric factor over the same windows; the target for
+  any per-segment metric-scale signal. Re-chaining with the run's own scales must
+  reproduce traj.npy (asserted).
+- GT pin + design scale: the GT pin at b with the run's own cumulative segment scales
+  (one global constant absorbed by the Sim(3)); isolates the connection pose.
 - hindsight oracle: one Sim(3) per segment fitted on all its frames (the
   between/within split's "within"); a lower bound, not reachable causally.
 ATE in metres over the run's GT-valid frames.
@@ -47,6 +54,23 @@ def ate(positions, gt):
     return float(np.sqrt(np.mean(np.sum((s * positions @ r.T + t - gt) ** 2, 1))))
 
 
+def rechain(run, bounds, local, factor):
+    """Global positions from the run's own connections with segment scale factor(s, f)."""
+    positions = np.full((len(local), 3), np.nan)
+    rotation, origin = np.eye(3), np.zeros(3)
+    for s, (start, end) in enumerate(zip(bounds[:-1], bounds[1:])):
+        if s > 0:
+            with np.load(run / f'bridge_{start:04d}.npz') as bridge:
+                old, new = bridge['old_pose'], bridge['new_pose']
+            np.testing.assert_allclose(new, local[start], atol=1e-5)
+            previous = bounds[s - 1]
+            origin = factor(s - 1, start) * rotation @ (old[:3, 3] - local[previous, :3, 3]) + origin
+            rotation = rotation @ old[:3, :3] @ new[:3, :3].T
+        for f in range(start, end):
+            positions[f] = factor(s, f) * rotation @ (local[f, :3, 3] - local[start, :3, 3]) + origin
+    return positions
+
+
 def analyse(run):
     bounds = json.loads((run / 'config.json').read_text())['boundaries']
     local, estimate = np.load(run / 'local_traj.npy'), np.load(run / 'traj.npy')[:, :3, 3]
@@ -54,9 +78,11 @@ def analyse(run):
         index, reference = q['rgb_indices'], q['reference']
     assert local.shape == (bounds[-1], 4, 4) and reference.shape == (len(index), 4, 4)
     gt_of = dict(zip(index.tolist(), reference))
-    names = ('commit', 'w100', 'w200', 'progressive', 'segment')
+    names = ('commit', 'w100', 'w200', 'progressive', 'segment', 'design_scale')
+    design = [t['scale'] for t in json.loads((run / 'transforms.json').read_text())]
     placed = {name: np.full((len(local), 3), np.nan) for name in names}
     lengths = []
+    gt_scale = dict(commit=[], progressive=[], segment=[])
     within = []
     for start, end in zip(bounds[:-1], bounds[1:]):
         frames = [f for f in range(start, end) if f in gt_of]
@@ -75,12 +101,23 @@ def analyse(run):
         fixed = dict(commit=start + COMMIT, w100=start + 100, w200=start + 200, segment=end)
         for name, last in fixed.items():
             placed[name][start:end] = scale_until(last) * moved_all[start:end] + gt_of[pin][:3, 3]
+        placed['design_scale'][start:end] = design[len(lengths) - 1] * moved_all[start:end] + gt_of[pin][:3, 3]
         for f in range(start, end):
             placed['progressive'][f] = scale_until(max(f, start + COMMIT)) * moved_all[f] + gt_of[pin][:3, 3]
+        # Per frame of the segment; the next connection (at end) sees the whole segment.
+        gt_scale['commit'].append(np.full(end - start + 1, scale_until(start + COMMIT)))
+        gt_scale['segment'].append(np.full(end - start + 1, scale_until(end)))
+        gt_scale['progressive'].append(np.array([scale_until(max(f, start + COMMIT))
+                                                 for f in range(start, end + 1)]))
         inside = (index >= start) & (index < end)
         s, r, t = umeyama(estimate[index[inside]], reference[inside, :3, 3])
         within.append(np.sum((s * estimate[index[inside]] @ r.T + t - reference[inside, :3, 3]) ** 2, 1))
     gt = reference[:, :3, 3]
+    # Validation: the run's own cumulative scales reproduce its trajectory up to one Sim(3).
+    replay = rechain(run, bounds, local, lambda s, f: design[s])
+    assert ate(replay, estimate) < 1e-6, 'offline re-chaining does not reproduce traj.npy'
+    chained = {name: rechain(run, bounds, local, lambda s, f, name=name: gt_scale[name][s][f - bounds[s]])
+               for name in ('commit', 'progressive', 'segment')}
     return dict(run=str(run), segments=len(bounds) - 1,
                 actual_ate_m=ate(estimate[index], gt),
                 segment_length_median=float(np.median(lengths)),
@@ -90,6 +127,10 @@ def analyse(run):
                 window200_ate_m=ate(placed['w200'][index], gt),
                 progressive_ate_m=ate(placed['progressive'][index], gt),
                 pinned_segment_scale_ate_m=ate(placed['segment'][index], gt),
+                gt_pin_design_scale_ate_m=ate(placed['design_scale'][index], gt),
+                design_chain_gt_commit_scale_ate_m=ate(chained['commit'][index], gt),
+                design_chain_gt_progressive_scale_ate_m=ate(chained['progressive'][index], gt),
+                design_chain_gt_segment_scale_ate_m=ate(chained['segment'][index], gt),
                 hindsight_oracle_ate_m=float(np.sqrt(np.concatenate(within).mean())))
 
 
@@ -101,7 +142,11 @@ def main(args):
               'ATE m actual %.4f commit %.4f w100 %.4f w200 %.4f progressive %.4f segment %.4f hindsight %.4f' % (
                   row['actual_ate_m'], row['causal_oracle_ate_m'], row['window100_ate_m'],
                   row['window200_ate_m'], row['progressive_ate_m'], row['pinned_segment_scale_ate_m'],
-                  row['hindsight_oracle_ate_m']))
+                  row['hindsight_oracle_ate_m']),
+              '| GT pin + design scale %.4f' % row['gt_pin_design_scale_ate_m'],
+              '| design chain + GT scale: commit %.4f progressive %.4f segment %.4f' % (
+                  row['design_chain_gt_commit_scale_ate_m'], row['design_chain_gt_progressive_scale_ate_m'],
+                  row['design_chain_gt_segment_scale_ate_m']))
     if args.out:
         args.out.write_text(json.dumps(rows, indent=1))
 
