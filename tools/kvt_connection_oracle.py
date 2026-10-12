@@ -1,4 +1,4 @@
-"""Offline: how much ATE is left if every segment connection were exact (TUM runs).
+"""Offline: how much ATE is left if every segment connection were exact (TUM and ARCTIC runs).
 
 CPU artifact analysis only; imports no project/model modules. GT replaces the
 connections only, never the tracking. Per run directory of tools/kvt_reanchor_maps.py
@@ -26,7 +26,9 @@ connections only, never the tracking. Per run directory of tools/kvt_reanchor_ma
   (one global constant absorbed by the Sim(3)); isolates the connection pose.
 - hindsight oracle: one Sim(3) per segment fitted on all its frames (the
   between/within split's "within"); a lower bound, not reachable causally.
-ATE in metres over the run's GT-valid frames.
+ATE in metres over the run's GT-valid frames. ARCTIC runs (`--arctic-gt DIR` holding
+<scene>.object.npy and <scene>.egocam.dist.npy) use KV-Tracker's eval.load_gt_arctic
+convention, re-implemented here; the recomputed actual ATE must match summary.json.
 """
 import argparse
 import json
@@ -35,6 +37,33 @@ from pathlib import Path
 import numpy as np
 
 COMMIT = 49  # connection commits at b+49 (kv_tracker.reanchor_maps)
+ARCTIC = ('box_grab_01', 'ketchup_grab_01', 'espressomachine_grab_01')
+
+
+def rotvec_matrix(v):
+    """Rodrigues: (n, 3) rotation vectors to (n, 3, 3) matrices (scipy from_rotvec)."""
+    angle = np.linalg.norm(v, axis=1)[:, None, None]
+    k = np.zeros((len(v), 3, 3))
+    k[:, 0, 1], k[:, 0, 2], k[:, 1, 2] = -v[:, 2], v[:, 1], -v[:, 0]
+    k = k - k.transpose(0, 2, 1)
+    safe = np.where(angle > 1e-12, angle, 1.)
+    return (np.eye(3) + np.sin(angle) / safe * k
+            + (1 - np.cos(angle)) / safe ** 2 * k @ k)
+
+
+def arctic_gt(directory, scene, frames):
+    """kv_tracker eval.load_gt_arctic: object-to-camera poses, first two frames skipped."""
+    obj = np.load(directory / f'{scene}.object.npy', allow_pickle=True)[:, 1:]
+    cam = np.load(directory / f'{scene}.egocam.dist.npy', allow_pickle=True).item()
+    w2c = np.tile(np.eye(4), (len(obj), 1, 1))
+    w2c[:, :3, 3] = cam['T_k_cam_np'].squeeze()
+    w2c[:, :3, :3] = cam['R_k_cam_np']
+    w2obj = np.tile(np.eye(4), (len(obj), 1, 1))
+    w2obj[:, :3, 3] = obj[:, 3:] * 1e-3
+    w2obj[:, :3, :3] = rotvec_matrix(obj[:, :3].astype(float))
+    gt = np.linalg.inv(np.linalg.inv(w2c) @ w2obj)[2:][:frames]
+    assert len(gt) == frames
+    return gt
 
 
 def umeyama(x, y):
@@ -50,6 +79,9 @@ def umeyama(x, y):
 
 
 def ate(positions, gt):
+    """None when a scale window was undefined (non-positive GT scale fit)."""
+    if not np.isfinite(positions).all():
+        return None
     s, r, t = umeyama(positions, gt)
     return float(np.sqrt(np.mean(np.sum((s * positions @ r.T + t - gt) ** 2, 1))))
 
@@ -71,11 +103,16 @@ def rechain(run, bounds, local, factor):
     return positions
 
 
-def analyse(run):
+def analyse(run, gt_directory):
     bounds = json.loads((run / 'config.json').read_text())['boundaries']
     local, estimate = np.load(run / 'local_traj.npy'), np.load(run / 'traj.npy')[:, :3, 3]
-    with np.load(run / 'evaluation.npz') as q:
-        index, reference = q['rgb_indices'], q['reference']
+    scene = [name for name in ARCTIC if run.name.endswith(name)]
+    if scene:
+        assert gt_directory is not None, 'ARCTIC runs need --arctic-gt'
+        index, reference = np.arange(len(local)), arctic_gt(gt_directory, scene[0], len(local))
+    else:
+        with np.load(run / 'evaluation.npz') as q:
+            index, reference = q['rgb_indices'], q['reference']
     assert local.shape == (bounds[-1], 4, 4) and reference.shape == (len(index), 4, 4)
     gt_of = dict(zip(index.tolist(), reference))
     names = ('commit', 'w100', 'w200', 'progressive', 'segment', 'design_scale')
@@ -83,6 +120,7 @@ def analyse(run):
     placed = {name: np.full((len(local), 3), np.nan) for name in names}
     lengths = []
     gt_scale = dict(commit=[], progressive=[], segment=[])
+    undefined = set()
     within = []
     for start, end in zip(bounds[:-1], bounds[1:]):
         frames = [f for f in range(start, end) if f in gt_of]
@@ -95,7 +133,9 @@ def analyse(run):
             window = [f for f in frames if f <= last]
             target = np.stack([gt_of[f][:3, 3] for f in window]) - gt_of[pin][:3, 3]
             scale = float((moved_all[window] * target).sum() / (moved_all[window] ** 2).sum())
-            assert scale > 0, (start, last, scale)
+            if scale <= 0:  # tracked displacement opposes GT over the window (seen on ARCTIC)
+                undefined.add((start, last))
+                return np.nan
             return scale
 
         fixed = dict(commit=start + COMMIT, w100=start + 100, w200=start + 200, segment=end)
@@ -113,12 +153,14 @@ def analyse(run):
         s, r, t = umeyama(estimate[index[inside]], reference[inside, :3, 3])
         within.append(np.sum((s * estimate[index[inside]] @ r.T + t - reference[inside, :3, 3]) ** 2, 1))
     gt = reference[:, :3, 3]
+    recorded = json.loads((run / 'summary.json').read_text())['metrics']['ate_m']
+    assert abs(ate(estimate[index], gt) - recorded) < 1e-4 * max(1, recorded), (ate(estimate[index], gt), recorded)
     # Validation: the run's own cumulative scales reproduce its trajectory up to one Sim(3).
     replay = rechain(run, bounds, local, lambda s, f: design[s])
     assert ate(replay, estimate) < 1e-6, 'offline re-chaining does not reproduce traj.npy'
     chained = {name: rechain(run, bounds, local, lambda s, f, name=name: gt_scale[name][s][f - bounds[s]])
                for name in ('commit', 'progressive', 'segment')}
-    return dict(run=str(run), segments=len(bounds) - 1,
+    return dict(run=str(run), segments=len(bounds) - 1, undefined_scale_windows=len(undefined),
                 actual_ate_m=ate(estimate[index], gt),
                 segment_length_median=float(np.median(lengths)),
                 segments_longer_than_100=int(sum(n > 100 for n in lengths)),
@@ -135,8 +177,9 @@ def analyse(run):
 
 
 def main(args):
-    rows = [analyse(run) for run in args.runs]
+    rows = [analyse(run, args.arctic_gt) for run in args.runs]
     for row in rows:
+        row = {k: (float('nan') if v is None else v) for k, v in row.items()}
         print('CONNECTION ORACLE', row['run'], 'segments', row['segments'],
               'median length', row['segment_length_median'], '>100:', row['segments_longer_than_100'],
               'ATE m actual %.4f commit %.4f w100 %.4f w200 %.4f progressive %.4f segment %.4f hindsight %.4f' % (
@@ -147,7 +190,7 @@ def main(args):
               '| design chain + GT scale: commit %.4f progressive %.4f segment %.4f' % (
                   row['design_chain_gt_commit_scale_ate_m'], row['design_chain_gt_progressive_scale_ate_m'],
                   row['design_chain_gt_segment_scale_ate_m']))
-    if args.out:
+    if args.out:  # undefined variants are null
         args.out.write_text(json.dumps(rows, indent=1))
 
 
@@ -155,4 +198,5 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('runs', type=Path, nargs='+', help='run directories with local_traj.npy')
     parser.add_argument('--out', type=Path)
+    parser.add_argument('--arctic-gt', type=Path, help='directory with ARCTIC raw GT .npy files')
     main(parser.parse_args())
