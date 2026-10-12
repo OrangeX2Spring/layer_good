@@ -77,10 +77,14 @@ KEYS = ('ate_m', 'rpe_translation_m', 'translation_p99_m')
 RESERVE_SECONDS = 900  # left for archiving after the last run
 
 
+SPLIT_MIN_FRAMES = 10  # per-segment Sim(3) needs non-degenerate GT positions
+
+
 def segment_split(result, native_dir, cuts, frames):
     """Squared ATE (m^2) under the one global Sim(3) versus one Sim(3) per segment, for the
     run and native on the same GT-valid frames; between = global - within (FINDINGS 26159
-    decomposition). Segments with fewer than 3 GT-valid frames (fr2 gaps) are skipped."""
+    decomposition). Segments with fewer than SPLIT_MIN_FRAMES GT-valid frames are skipped
+    (fr2 GT gaps: job 26600 hit a segment whose few GT positions were rank-deficient)."""
     from kv_tracker.geometry import umeyama_alignment
     bounds = [0, *cuts, frames]
     split = {}
@@ -91,7 +95,7 @@ def segment_split(result, native_dir, cuts, frames):
         within, used = [], np.zeros(len(index), dtype=bool)
         for start, end in zip(bounds[:-1], bounds[1:]):
             inside = (index >= start) & (index < end)
-            if inside.sum() < 3:
+            if inside.sum() < SPLIT_MIN_FRAMES:
                 continue
             rotation, translation, scale = umeyama_alignment(estimate[inside].T, gt[inside].T, with_scale=True)
             within.append(np.linalg.norm(scale * estimate[inside] @ rotation.T + translation - gt[inside], axis=1))
