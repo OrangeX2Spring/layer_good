@@ -5,6 +5,19 @@ stop rules: [DYNAMIC_CACHE_BIAS_PLAN.md](DYNAMIC_CACHE_BIAS_PLAN.md). Start with
 `prepare`, inspect its log/archive, then select ONE input clip. Do not chain a
 pilot or full evaluation behind prepare.
 
+User steering, 2026-10-16: **TUM dynamic first**, rather than waiting for
+Sintel/Bonn. Dataset identity is not essential to the first retention-bias test.
+Prefer `freiburg3_walking_xyz` if present, with `sitting_xyz` a possible lower-motion
+comparison (not a static control). Official descriptions:
+https://webshare.cvg.cit.tum.de/g/rgbd/dataset/ . The near-stationary-camera
+`walking_static` can test retention but is a poor choice for this pilot's
+nondegenerate translation-ATE gate. TUM existence does not establish availability
+of these particular sequences or pixelwise motion labels. Inventory now includes
+TUM/walking/sitting names. No substitute annotations are claimed; the runner's
+dataset-independent RGB/GT/motion-mask contract is unchanged. Semantic/predicted
+person masks could support an explicitly labelled exploratory foreground test,
+but that would require a separate non-GT mode, not relabelling them as motion GT.
+
 ## Container and source
 
 Borrow `/mnt/projects/gr/3DRecon/optpose.tar` (`localhost/optpose`) read-only.

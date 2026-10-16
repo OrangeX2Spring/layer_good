@@ -64,7 +64,8 @@ for directory in /mnt/datasets "$ROOT" "$ROOT/stream3r_data" "$ROOT/dynamic_cach
     if [ -d "$directory" ]; then
         echo "DATASET ROOT $directory"
         find "$directory" -maxdepth 2 \
-            \( -iname '*sintel*' -o -iname '*bonn*' -o -iname '*scannet*' \) \
+            \( -iname '*sintel*' -o -iname '*bonn*' -o -iname '*scannet*' \
+               -o -iname '*tum*' -o -iname '*walking*' -o -iname '*sitting*' \) \
             -printf '%y %s %p\n'
         if [ "$directory" = /mnt/datasets ]; then
             find "$directory" -mindepth 1 -maxdepth 1 -printf '%f\n'
