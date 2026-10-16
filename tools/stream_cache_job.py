@@ -11,7 +11,7 @@ import sys
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--host', choices=('stream3r', 'streamvggt', 'longstream'), required=True)
+    parser.add_argument('--host', choices=('stream3r', 'streamvggt', 'longstream', 'infinitevggt'), required=True)
     parser.add_argument('--checkpoint', type=Path, required=True)
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--manifest', type=Path)
@@ -31,7 +31,7 @@ def main():
     constraints.write_text(''.join(f"{row['name']}=={row['version']}\n" for row in installed))
     # Only add absent inference dependencies, without changing existing packages.
     requirements = {'einops': 'einops'}
-    if args.host == 'streamvggt':
+    if args.host in ('streamvggt', 'infinitevggt'):
         requirements['transformers'] = 'transformers==5.17.0'
     if args.host == 'longstream':
         requirements.update(cv2='opencv-python-headless', yaml='PyYAML')
@@ -45,14 +45,17 @@ def main():
     (args.work / 'packages_after.json').write_text(after)
     versions = {row['name']: row['version'] for row in json.loads(after)}
     assert all(versions[row['name']] == row['version'] for row in installed), 'Existing package changed'
-    sys.path.insert(0, str(repo / ('streamvggt/src' if args.host == 'streamvggt' else args.host)))
+    sys.path.insert(0, str(repo / (f'{args.host}/src' if args.host in ('streamvggt', 'infinitevggt') else args.host)))
     modules = {'stream3r': 'stream3r.models.stream3r',
                'streamvggt': 'streamvggt.models.streamvggt',
-               'longstream': 'longstream.core.model'}
+               'longstream': 'longstream.core.model',
+               'infinitevggt': 'streamvggt.models.streamvggt'}
     importlib.import_module(modules[args.host])
     print(f'MODEL IMPORT OK {args.host}', flush=True)
     if args.setup_only:
         return
+    if args.host == 'infinitevggt':
+        parser.error('InfiniteVGGT uses --setup-only here; run dynamic_cache_bias.py for the pilot')
     subprocess.run([python, '-m', 'unittest', 'discover', '-s', 'tools',
                     '-p', 'test_*cache*.py'], cwd=repo, check=True)
     if json.loads(args.sweep.read_text()).get('dynamic_history'):

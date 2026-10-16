@@ -34,3 +34,7 @@
 [submodule "longstream"]
 	path = longstream
 	url = git@github.com:OrangeX2Spring/LongStream.git
+[submodule "infinitevggt"]
+	path = infinitevggt
+	url = git@github.com:OrangeX2Spring/StreamVGGT.git
+	branch = codex/infinite-dynamic-cache
