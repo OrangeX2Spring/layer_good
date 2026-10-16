@@ -1,22 +1,122 @@
 # InfiniteVGGT dynamic-cache diagnostic on CAMP
 
 Implementation prepared 2026-10-16; no CAMP execution yet. Research motivation and
-stop rules: [DYNAMIC_CACHE_BIAS_PLAN.md](DYNAMIC_CACHE_BIAS_PLAN.md). Start with
-`prepare`, inspect its log/archive, then select ONE input clip. Do not chain a
-pilot or full evaluation behind prepare.
+stop rules: [DYNAMIC_CACHE_BIAS_PLAN.md](DYNAMIC_CACHE_BIAS_PLAN.md). User steering:
+run `pilot /absolute/path/manifest.json` as the first job, without a separate
+synthetic smoke run. Pilot retains contract tests and real-clip logging fidelity.
+The selected `pilot-tum` mode generates the manifest and SAM3 person masks in the
+same allocation. SAM3 setup/download authorized 2026-10-17; the new setup wrapper
+builds the missing environment and continues directly into this pilot.
+Review the pilot before any full evaluation.
 
 User steering, 2026-10-16: **TUM dynamic first**, rather than waiting for
 Sintel/Bonn. Dataset identity is not essential to the first retention-bias test.
-Prefer `freiburg3_walking_xyz` if present, with `sitting_xyz` a possible lower-motion
+Selected `freiburg3_walking_xyz`: user CAMP listing confirms its ZIP on 2026-10-16.
+ZIP inspection confirms RGB and depth/camera metadata but no mask/label/segment
+filenames. User authorized SAM3 predicted person masks. `sitting_xyz` is a possible lower-motion
 comparison (not a static control). Official descriptions:
 https://webshare.cvg.cit.tum.de/g/rgbd/dataset/ . The near-stationary-camera
 `walking_static` can test retention but is a poor choice for this pilot's
-nondegenerate translation-ATE gate. TUM existence does not establish availability
-of these particular sequences or pixelwise motion labels. Inventory now includes
+nondegenerate translation-ATE gate. Sequence availability does not establish
+pixelwise motion labels. Inventory now includes
 TUM/walking/sitting names. No substitute annotations are claimed; the runner's
 dataset-independent RGB/GT/motion-mask contract is unchanged. Semantic/predicted
-person masks could support an explicitly labelled exploratory foreground test,
-but that would require a separate non-GT mode, not relabelling them as motion GT.
+person masks support the explicitly labelled exploratory foreground mode below;
+they are never relabelled as motion GT.
+
+## First run: TUM with SAM3 person masks
+
+### SAM3 setup and pilot in one job (authorized 2026-10-17)
+
+The user listings found only kvt.tar/optpose.tar and no SAM3 entry in the documented
+HF cache. They do not prove when or whether SAM3 was deleted. User authorized a
+new environment/checkpoint. First review `getusage /mnt/projects/gr/3DRecon` and
+`getquota /mnt/projects/gr/3DRecon` before submission: checkpoint is about 3.45 GB,
+and image size is unmeasured. Allow at least 20 GiB additional quota headroom for
+the image, checkpoint and pilot archives; this is a planning reserve, not a size
+measurement. Existing image archives are preserved. Builds/install files use
+job-local `/tmp` and Podman's job-local store.
+
+After storage review and publication, from CAMP head in `layer_good`:
+
+```bash
+W='git -c fetch.recurseSubmodules=false pull --ff-only'
+W="$W && bash tools/sam3_setup.sbatch"
+sbatch -A students --qos=students_normal -p 24g -w stuttgart \
+  --gres=gpu:1 --time=04:00:00 --propagate=NONE \
+  -o ../sam3_setup-%j.log --wrap="$W"
+```
+
+`sam3_setup.sbatch` uses the existing `hf_download.sbatch` inside this allocation
+for `facebook/sam3`, files `sam3.pt`, `LICENSE`, `README.md`, destination
+`/mnt/projects/gr/3DRecon/sam3_ckpt`. It uses the documented `.hf_env` identity;
+access errors stop the job. The model is gated: https://huggingface.co/facebook/sam3 .
+No duplicate safetensors checkpoint or new dataset is downloaded.
+
+Build: `python:3.12-slim-bookworm`, PyTorch 2.10.0/torchvision 0.25.0 CUDA 12.8
+wheels (https://pytorch.org/get-started/previous-versions/), pinned SAM3 submodule,
+numpy 1.26.4, setuptools 80.9.0 for its pkg_resources import, declared inference
+dependencies and transitive scipy/einops/pycocotools/psutil imports. No optional
+flash-attn/cc_torch compilation. Source audit found HF fetching in the builder;
+pilot passes the explicit checkpoint and `load_from_HF=False`. Package versions,
+source revision and base image identity are recorded. `pip check` and actual
+builder/processor imports, CUDA/bfloat16 availability and SDPA API checks must
+pass before saving. No model construction or synthetic inference in build checks.
+
+The image is saved immediately after commit as `sam3_JOB.tar` with tag
+`localhost/sam3:job-JOB`; successful save, archive listing and SHA256 are recorded.
+`dynamic_cache_out/sam3_JOB_env.sh` records the exact environment for reuse.
+Then the SAME allocation calls `dynamic_cache_bias.sbatch pilot-tum`.
+No full evaluation follows the pilot. Success markers include `SAM3 IMPORTS OK`,
+`SAM3 IMAGE SAVED`, the real-pilot markers below and `SAM3 SETUP AND REAL PILOT OK`.
+Setup/failure evidence lives in `dynamic_cache_out/sam3_setup_JOB.tar`; pilot
+evidence in `dynamic_cache_JOB_pilot-tum.tar`. A pilot failure does not erase the
+saved environment. Review evidence before a retry; reuse the saved image rather
+than rerunning setup. Runtime, gated access and image size remain unverified.
+
+### Reusing a saved SAM3 environment
+
+`bash tools/dynamic_cache_bias.sbatch pilot-tum` runs preparation and the real
+pilot in one allocation, without synthetic smoke. Export three verified paths/tag
+before submitting: `SAM3_IMAGE_TAR` (saved working SAM3 image), `SAM3_IMAGE`
+(its Podman tag), and `SAM3_CHECKPOINT`. The wrapper initializes the existing
+`third_party/sam3` submodule and records its revision. Checkpoint must be under
+`/mnt` or `/tmp`, which are
+mounted into the container. Existing SAM2/KV-Tracker or SAM 3D images are not
+assumed to provide SAM3. These three values remain unverified; do not guess them.
+Historical documentation audit: STATUS's September 23 correspondence handoff explicitly
+deferred SAM3; its SAM swap section says not started. The source submodule is
+documented, but no SAM3 container/checkpoint path was found in the working docs,
+storage inventory, protocols or build scripts. Verify actual stored assets next.
+
+The wrapper loads the supplied image read-only, with network disabled, and runs
+`dynamic_cache_tum.py` against the verified walking_xyz ZIP. It selects 32 RGB
+frames starting five seconds after the first RGB timestamp, stride two, before
+inspecting masks/results. GT uses nearest association within 20 ms, TUM xyzw
+quaternions and camera-to-world translations in metres. Missing GT stays null.
+Only selected RGB files and metadata are copied into job-local `/tmp`.
+
+SAM3 runs independently per frame with text `person`, confidence >0.5 and mask
+probability >0.5, using bfloat16 autocast. All detected person masks are unioned:
+255 means predicted person, 0 means predicted non-person. No detections produces
+an empty mask, recorded with its instance count; the pilot rejects an entire clip
+without both foreground/background patches. No motion inference is claimed.
+
+After the SAM3 process exits, the existing optpose container runs the contracts
+and eight pilot arms on this real clip. `--predicted-person-masks` explicitly
+enables the new provenance kind; default `pilot` still requires motion GT.
+The existing `oracle` arm name now denotes hindsight person suppression for this
+mode. Enrichment measures person retention; non-person pixels are not verified
+static, and segmentation mistakes can confound results. Summary JSON records
+these limits and the mask source. Fidelity is measured on the real clip.
+
+The archive includes source RGB/masks, manifest, original metadata, SAM3 source,
+image/checkpoint hashes, container identity, per-frame scores/counts/coverage and
+all existing pilot evidence. Output is `dynamic_cache_JOB_pilot-tum.tar` under
+`/mnt/projects/gr/3DRecon/dynamic_cache_out/`. Success requires `TUM PERSON INPUTS
+OK`, both contract suites, both real-data fidelity checks, `METRICS OK`,
+`DYNAMIC CACHE PILOT COMPLETE`, `DYNAMIC CACHE JOB OK pilot-tum`, archive exit=0
+and Slurm COMPLETED 0:0. Review outputs before expanding beyond this clip.
 
 ## Container and source
 
@@ -56,7 +156,9 @@ Source audit corrections to the initial plan:
   patch choices change. This is a controlled offline diagnostic, not a deployable
   causal policy; quota replay deliberately removes source-age/capacity changes.
 
-## First submission: prepare
+## Optional prepare mode (superseded as the first submission)
+
+The command below is retained for reference, not the current next action.
 
 From CAMP head, in `/mnt/projects/gr/3DRecon/layer_good`, after publication:
 
@@ -111,7 +213,8 @@ Every frame has `rgb`, `motion_mask` (paths relative to the manifest, or absolut
 valid GT poses and a nondegenerate camera path are needed. Preserve source-frame
 IDs and all derivation parameters in the manifest as additional fields.
 
-Masks must be original-RGB-sized grayscale PNG: 0 static, 255 moving, 128 unknown.
+In the default motion-GT mode, masks must be original-RGB-sized grayscale PNG:
+0 static, 255 moving, 128 unknown.
 Semantic/person/instance masks are not accepted as GT motion. A GT-derived mask
 must record derivation, coordinate conventions, thresholds and invalid/occlusion
 handling in its description/reference; do not call it direct GT. No mask generator
@@ -123,7 +226,7 @@ coverage is pooled over 14x14 patches; any unknown pixel makes that patch unknow
 Original RGB/masks, transformed inputs, manifest and hashes are archived. This is
 a reduced-resolution diagnostic, not a reproduction of published benchmark scores.
 
-After prepare and data review, the SAME wrapper's `pilot` mode runs eight fresh
+With a reviewed input manifest, the SAME wrapper's `pilot` mode runs eight fresh
 processes at FP32, with TF32 disabled and a fixed total of eight dense-frame
 equivalents summed over global layers (head multiplicity is accounted in bytes):
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# First submit prepare; review its evidence before submitting one pilot clip.
+# First run: pilot with a reviewed real-data manifest; prepare is optional.
 #SBATCH --job-name=dynamic-cache
 #SBATCH --account=students
 #SBATCH --qos=students_normal
@@ -11,8 +11,8 @@
 #SBATCH --propagate=NONE
 #SBATCH --output=/mnt/projects/gr/3DRecon/dynamic_cache_slurm-%j.log
 set -euo pipefail
-MODE=${1:?Choose prepare or pilot}
-case "$MODE" in prepare|pilot) ;; *) echo "Unknown mode: $MODE"; exit 2 ;; esac
+MODE=${1:?Choose prepare, pilot, or pilot-tum}
+case "$MODE" in prepare|pilot|pilot-tum) ;; *) echo "Unknown mode: $MODE"; exit 2 ;; esac
 MANIFEST=${2:-}
 if [ "$MODE" = pilot ]; then
     test -n "$MANIFEST"
@@ -58,6 +58,7 @@ cp "$REPO/tools/dynamic_cache_bias.py" "$REPO/tools/dynamic_cache_bias.sbatch" \
    "$REPO/tools/DYNAMIC_CACHE_BIAS.md" "$REPO/tools/DYNAMIC_CACHE_BIAS_PLAN.md" \
    "$REPO/tools/stream_cache_job.py" "$REPO/tools/stream3r_ycbv_metrics.py" \
    "$REPO/tools/test_dynamic_cache_bias.py" \
+   "$REPO/tools/dynamic_cache_tum.py" \
    "$WORK/context/"
 # Bounded inventory only. An archive name is NOT a verified motion annotation.
 for directory in /mnt/datasets "$ROOT" "$ROOT/stream3r_data" "$ROOT/dynamic_cache_data"; do
@@ -75,6 +76,30 @@ for directory in /mnt/datasets "$ROOT" "$ROOT/stream3r_data" "$ROOT/dynamic_cach
     fi
 done > "$WORK/context/dataset_inventory.txt"
 cat "$WORK/context/dataset_inventory.txt"
+if [ "$MODE" = pilot-tum ]; then
+    : "${SAM3_IMAGE_TAR:?Set the existing SAM3 container archive}"
+    : "${SAM3_IMAGE:?Set its Podman image tag}"
+    SAM3_SOURCE="$REPO/third_party/sam3"
+    : "${SAM3_CHECKPOINT:?Set the SAM3 checkpoint path}"
+    git -C "$REPO" submodule update --init third_party/sam3
+    git -C "$SAM3_SOURCE" rev-parse HEAD > "$WORK/context/sam3_commit.txt"
+    test -f "$SAM3_IMAGE_TAR"
+    test -f "$SAM3_CHECKPOINT"
+    test -f "$SAM3_SOURCE/sam3/model_builder.py"
+    sha256sum "$SAM3_IMAGE_TAR" "$SAM3_CHECKPOINT" > "$WORK/context/sam3_assets.sha256"
+    tar -C "$SAM3_SOURCE" -cf "$WORK/context/sam3_source.tar" sam3
+    podman load -i "$SAM3_IMAGE_TAR"
+    podman image inspect "$SAM3_IMAGE" > "$WORK/context/sam3_container.json"
+    podman run --rm --network=none \
+        --device="nvidia.com/gpu=${CUDA_VISIBLE_DEVICES:?GPU allocation required}" \
+        -v /mnt:/mnt:ro -v /tmp:/tmp:rw -w "$REPO" \
+        -e "PYTHONPATH=$SAM3_SOURCE" -e HF_HUB_OFFLINE=1 \
+        -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONUNBUFFERED=1 \
+        "$SAM3_IMAGE" python tools/dynamic_cache_tum.py \
+        --zip /mnt/datasets/tum-rgbd/rgbd_dataset_freiburg3_walking_xyz.zip \
+        --checkpoint "$SAM3_CHECKPOINT" --output "$WORK/tum_person"
+    MANIFEST="$WORK/tum_person/manifest.json"
+fi
 IMAGE=localhost/optpose
 IMAGE_TAR="$ROOT/optpose.tar"
 CKPT="$ROOT/streamvggt_ckpt/checkpoints.pth"
@@ -102,8 +127,10 @@ podman run --rm --network=host \
         python tools/dynamic_cache_bias.py smoke --work "$1" --checkpoint "$3"
         echo "PREPARE ENV OK; DATA INVENTORY ONLY; review annotations before pilot"
     else
+        flags=()
+        if [ "$2" = pilot-tum ]; then flags+=(--predicted-person-masks); fi
         python tools/dynamic_cache_bias.py pilot --work "$1" \
-            --checkpoint "$3" --manifest "$4"
+            --checkpoint "$3" --manifest "$4" "${flags[@]}"
     fi
     ' -- "$WORK" "$MODE" "$CKPT" "$MANIFEST"
 echo "DYNAMIC CACHE JOB OK $MODE"

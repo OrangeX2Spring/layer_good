@@ -32,10 +32,13 @@ def digest(path):
     return checksum.hexdigest()
 
 
-def prepare(manifest_path, destination):
+def prepare(manifest_path, destination, predicted_person_masks=False):
     """Archive source pixels and labels; apply one recorded RGB/mask transform."""
     manifest = json.loads(manifest_path.read_text())
-    if manifest['mask_source']['kind'] not in ('gt_motion', 'gt_derived_motion'):
+    kind = manifest['mask_source']['kind']
+    if predicted_person_masks and kind != 'predicted_person':
+        raise ValueError('Person diagnostic requires predicted_person provenance')
+    if not predicted_person_masks and kind not in ('gt_motion', 'gt_derived_motion'):
         raise ValueError('Pilot requires documented GT or GT-derived motion masks, not semantic/predicted masks')
     if not manifest['mask_source']['description'] or not manifest['mask_source']['reference']:
         raise ValueError('Mask description and provenance reference are required')
@@ -210,7 +213,8 @@ def worker(args):
 
 def metrics(work, arms):
     from stream3r_ycbv_metrics import umeyama_sim3
-    frames = json.loads((work / 'inputs/manifest.json').read_text())['frames']
+    manifest = json.loads((work / 'inputs/manifest.json').read_text())
+    frames = manifest['frames']
     indices = np.array([i for i, row in enumerate(frames) if row.get('gt_c2w') is not None])
     gt = np.array([frames[i]['gt_c2w'] for i in indices], dtype=np.float64)
     times = np.array([frames[i]['timestamp'] for i in indices])
@@ -250,7 +254,12 @@ def metrics(work, arms):
                       oracle_gain_fraction=(native - summaries['oracle']['ate_m']) / native if native > 1e-8 else None,
                       random_median_ate_m=float(np.median([summaries[f'random{s}']['ate_m'] for s in range(3)])),
                       interpretation='one-clip screening only; raw per-layer/head events retained; no independent-token significance')
+    if manifest['mask_source']['kind'] == 'predicted_person':
+        comparison['interpretation'] = ('Predicted person/background diagnostic only; oracle is a '
+            'hindsight person-suppression intervention, not a motion-GT oracle. '
+            'Background is not verified static; segmentation errors confound retention.')
     write_json(work / 'summary.json', dict(arms=summaries, comparison=comparison,
+               mask_source=manifest['mask_source'],
                alignment='one sequence-wide Sim(3), no window alignment',
                rpe='adjacent selected frames, <=100 ms, no bridge over missing GT'))
     print('METRICS OK ' + json.dumps(comparison), flush=True)
@@ -299,6 +308,7 @@ def main():
     parser.add_argument('--checkpoint', type=Path, required=True)
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--manifest', type=Path)
+    parser.add_argument('--predicted-person-masks', action='store_true')
     parser.add_argument('--arm', choices=('full', 'native_unlogged', 'native', 'prefix', 'oracle', 'random0', 'random1', 'random2'))
     args = parser.parse_args()
     assert sys.platform == 'linux' and torch.cuda.is_available(), 'CAMP GPU execution only'
@@ -311,7 +321,7 @@ def main():
         return
     if args.manifest is None:
         parser.error('pilot requires --manifest; prepare/inventory does not establish data readiness')
-    prepare(args.manifest, args.work / 'inputs')
+    prepare(args.manifest, args.work / 'inputs', args.predicted_person_masks)
     arms = ['full', 'native_unlogged', 'native', 'prefix', 'oracle', 'random0', 'random1', 'random2']
     for arm in arms:
         subprocess.run([sys.executable, __file__, 'worker', '--checkpoint', str(args.checkpoint),
