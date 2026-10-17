@@ -61,10 +61,21 @@ export SAM3_CHECKPOINT="$ROOT/sam3_ckpt/sam3.pt"
 test ! -e "$SAM3_IMAGE_TAR"
 podman pull "$BASE"
 podman image inspect "$BASE" > "$WORK/base_image.json"
-podman run --name "$CONTAINER" --network=host \
+if podman run --name "$CONTAINER" --network=host \
     --device="nvidia.com/gpu=${CUDA_VISIBLE_DEVICES:?GPU allocation required}" \
     -v /mnt:/mnt:ro -v /tmp:/tmp:rw \
-    "$BASE" bash "$WORK/sam3_build.sh" "$WORK/source"
+    "$BASE" bash -x "$WORK/sam3_build.sh" "$WORK/source"; then
+    echo "SAM3 BUILD OK"
+else
+    status=$?
+    echo "SAM3 BUILD FAILED exit=$status"
+    # Preserve diagnostics before the allocation's container store disappears.
+    podman logs "$CONTAINER" > "$WORK/container.log" 2>&1 || \
+        echo "Podman log collection failed; see container.log"
+    podman inspect "$CONTAINER" > "$WORK/container_inspect.json" 2>&1 || \
+        echo "Podman inspection failed; see container_inspect.json"
+    exit "$status"
+fi
 podman commit "$CONTAINER" "$SAM3_IMAGE"
 podman image inspect "$SAM3_IMAGE" > "$WORK/sam3_image.json"
 # Save immediately to a new path. Never replace either shared existing image.

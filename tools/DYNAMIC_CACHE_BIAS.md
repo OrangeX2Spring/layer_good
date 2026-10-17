@@ -69,8 +69,13 @@ The image is saved immediately after commit as `sam3_JOB.tar` with tag
 Then the SAME allocation calls `dynamic_cache_bias.sbatch pilot-tum`.
 No full evaluation follows the pilot. Success markers include `SAM3 IMPORTS OK`,
 `SAM3 IMAGE SAVED`, the real-pilot markers below and `SAM3 SETUP AND REAL PILOT OK`.
-Setup/failure evidence lives in `dynamic_cache_out/sam3_setup_JOB.tar`; pilot
-evidence in `dynamic_cache_JOB_pilot-tum.tar`. A pilot failure does not erase the
+Setup/failure evidence lives in `dynamic_cache_out/sam3_setup_JOB.tar`.
+Container builds run with Bash command tracing. On build failure the setup
+archive also includes `container.log` and `container_inspect.json`, and the
+wrapper preserves the build exit code. Job 26814 failed with exit 100 after
+56 seconds; both supplied logs ended at the Podman startup warning, so its
+root cause remains unresolved. Review these additional diagnostics on a retry.
+Pilot evidence lives in `dynamic_cache_JOB_pilot-tum.tar`. A pilot failure does not erase the
 saved environment. Review evidence before a retry; reuse the saved image rather
 than rerunning setup. Runtime, gated access and image size remain unverified.
 
